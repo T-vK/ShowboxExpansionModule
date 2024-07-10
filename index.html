@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firmware Installer for ShowboxExpansionModule</title>
+    <script type="module" src="https://unpkg.com/esp-web-tools@10.0.1/dist/web/install-button.js"></script>
+    <script>
+        window.releases = {};
+        window.dynamicManifestUrl = window.location.href.replace(/\/$/, '') + '/firmware-manifest.json';
+
+        if (window.location.protocol === 'file:') {
+            window.user = 't-vk';
+            window.path = 'ShowboxExpansionModule';
+        } else {
+            window.user = window.location.hostname.split('.')[0];
+            window.path = window.location.pathname.replace(/^\/|\/$/g, '');
+        }
+        window.releasesApiUrl = `https://api.github.com/repos/${window.user}/${window.path}/releases`;
+
+        /**
+         * Intercept fetch requests to the dynamic manifest URL and return a generated/mocked response
+         */
+        async function setupInterceptor() {
+            // Save the original fetch to call it later if needed
+            const originalFetch = fetch;
+
+            // Override fetch
+            window.fetch = async (url, options) => {
+                // Check if the URL matches the one you want to intercept
+                if (url.startsWith(window.dynamicManifestUrl)) {
+                    const urlObj = new URL(url);
+                    const tag = urlObj.searchParams.get('tag');
+                    const version = tag.replace(/^v/, '');
+                    // Return a mocked response with the JSON data
+                    const resJson = {
+                        "name": "ShowboxExpansionModule",
+                        "version": version,
+                        "builds": [],
+                    };
+                    window.releases[tag].assets.forEach(asset => {
+                        const chipFamily = asset.name.toLowerCase().includes('s3') ? 'ESP32-S3' : 'ESP32';
+                        const firmwareUrl = `https://${window.user}.github.io/${window.path}/firmware/${tag}/${asset.name}`;
+                        resJson.builds.push({
+                            chipFamily: chipFamily,
+                            parts: [{ path: firmwareUrl, offset: 0, }],
+                        });
+                    });
+                    console.log(resJson);
+                    return new Response(JSON.stringify(resJson), {
+                        status: 200, // Status code for a successful response
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                // For all other URLs, call the original fetch
+                return originalFetch(url, options);
+            };
+        }
+
+        async function fetchReleases() {
+            await setupInterceptor();
+            const response = await fetch(window.releasesApiUrl);
+            const releases = await response.json();
+            const releaseSelect = document.getElementById('release-select');
+            const installButtonContainer= document.getElementById('install-button-container');
+
+            releases.forEach(release => {
+                const option = document.createElement('option');
+                option.textContent = release.name;
+                option.value = release.tag_name;
+                releaseSelect.appendChild(option);
+                window.releases[release.tag_name] = release;
+            });
+            releaseSelect.addEventListener('change', () => {
+                const tag = releaseSelect.value;
+                const installButton = document.createElement('esp-web-install-button');
+                installButton.setAttribute('manifest', `${dynamicManifestUrl}?tag=${tag}`);
+                installButtonContainer.innerHTML = '';
+                installButtonContainer.appendChild(installButton);
+            });
+            releaseSelect.dispatchEvent(new Event('change'));
+        }
+
+        document.addEventListener('DOMContentLoaded', fetchReleases);
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        h1 {
+            margin: 0;
+            padding: 1em;
+            background-color: #333;
+            color: white;
+        }
+        select {
+            font-size: 1em;
+            width: 100%;
+        }
+        #install-button-container {
+            margin: 1em;
+            padding: 0.5em;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>Firmware Installer for ShowboxExpansionModule</h1>
+    <select id="release-select"></select>
+    <div id="install-button-container"></div>
+</body>
+</html>
