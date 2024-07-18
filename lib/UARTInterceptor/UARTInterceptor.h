@@ -20,8 +20,9 @@ public:
     void setStartBytes(uint8_t startByte1, uint8_t startByte2);
     void setEndBytes(uint8_t endByte1, uint8_t endByte2);
 
-    void setPacketHandler(void (*handler)(uint8_t* packet, size_t& length, Direction direction));
-    void setPacketInjector(void (*injector)(const uint8_t* packet, size_t length, Direction direction));
+    using PacketHandler = bool(*)(void*, uint8_t*, size_t&, Direction);
+    void setPacketHandler(PacketHandler handler, void* context);
+
     void loop();
     void injectPacket(const uint8_t* packet, size_t length, Direction direction);
 
@@ -33,8 +34,8 @@ private:
     HardwareSerial _uartA, _uartB;
 
     // Packet handling
-    void (*_packetHandler)(uint8_t* packet, size_t& length, Direction direction) = nullptr;
-    void (*_packetInjector)(const uint8_t* packet, size_t length, Direction direction) = nullptr;
+    PacketHandler _packetHandler = nullptr;  // Callback function
+    void* _packetHandlerContext = nullptr;   // Context for the callback
 
     // Default start and end byte sequences
     uint8_t _startByte1 = 0xBE;

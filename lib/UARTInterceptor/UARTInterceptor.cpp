@@ -27,13 +27,9 @@ void UARTInterceptor::setEndBytes(uint8_t endByte1, uint8_t endByte2) {
 }
 
 // Set the packet handler callback
-void UARTInterceptor::setPacketHandler(void (*handler)(uint8_t* packet, size_t& length, Direction direction)) {
+void UARTInterceptor::setPacketHandler(PacketHandler handler, void* context) {
     _packetHandler = handler;
-}
-
-// Set the packet injector callback
-void UARTInterceptor::setPacketInjector(void (*injector)(const uint8_t* packet, size_t length, Direction direction)) {
-    _packetInjector = injector;
+    _packetHandlerContext = context;
 }
 
 // Main loop
@@ -74,18 +70,21 @@ void UARTInterceptor::parsePacket(HardwareSerial& serial, uint8_t* buffer, size_
 
             if (bufferIndex >= 4 && buffer[bufferIndex - 2] == _endByte1 && buffer[bufferIndex - 1] == _endByte2) {
                 size_t length = bufferIndex;
+                bool drop = false;
                 if (_packetHandler) {
-                    _packetHandler(buffer, length, direction);
+                    drop = _packetHandler(_packetHandlerContext, buffer, length, direction);
                 }
 
-                // Always forward the packet even if it was not modified
-                if (direction == Direction::TO_B) {
-                    _uartB.write(buffer, length);
-                } else if (direction == Direction::TO_A) {
-                    _uartA.write(buffer, length);
-                } else if (direction == Direction::BOTH) {
-                    _uartA.write(buffer, length);
-                    _uartB.write(buffer, length);
+                // Always forward the packet even if it was not modified, unless it should get dropped
+                if (!drop) {
+                    if (direction == Direction::TO_B) {
+                        _uartB.write(buffer, length);
+                    } else if (direction == Direction::TO_A) {
+                        _uartA.write(buffer, length);
+                    } else if (direction == Direction::BOTH) {
+                        _uartA.write(buffer, length);
+                        _uartB.write(buffer, length);
+                    }
                 }
 
                 bufferIndex = 0; // Reset buffer index

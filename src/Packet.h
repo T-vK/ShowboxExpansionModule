@@ -2,8 +2,6 @@
 #ifndef PACKET_H
 #define PACKET_H
 
-#include "constants.h"
-
 template <uint8_t type, typename T>
 struct Packet {
     uint8_t start_seq[2] {0xBE, 0xEF};

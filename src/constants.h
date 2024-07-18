@@ -9,7 +9,7 @@ enum packet_type : uint8_t {
     ENTITY = 0x03,
     UNKNOWN_04 = 0x04,
     UNKNOWN_05 = 0x05,
-    DATA_REQUEST = 0x06,
+    DATA_REQUEST = 0x09,
     UNKNOWN_15 = 0x15,
     UNKNOWN_16 = 0x16,
     TUNER_TOGGLE = 0x18,
@@ -122,102 +122,7 @@ enum entity_id : uint8_t {
     FX_BYPASS = 93
 };
 
-std::unordered_map<entity_id, entity_data_type> entity_type_mapping = {
-    {FRONT_LED, BOOL},
-    {FEEDBACK_ELIM, UINT8},
-    {AMP_PA_MODE, BOOL},
-    {LOCATION_MODE, BOOL},
-    {SELECTED_CHAN, UINT8},
-    {INPUT1_GAIN, FLOAT},
-    {INPUT1_VOLUME, FLOAT},
-    {INPUT1_MUTE, BOOL},
-    {INPUT1_CLIP_OL_PRE, BOOL},
-    {INPUT1_CLIP_OL_POST, BOOL},
-    {INPUT1_EFFECT_1_MUTE, BOOL},
-    {INPUT1_EFFECT_1_AMOUNT, FLOAT},
-    {INPUT1_EFFECT_2_MUTE, BOOL},
-    {INPUT1_EFFECT_2_AMOUNT, FLOAT},
-    {INPUT1_EQ_ENABLE, BOOL},
-    {INPUT1_EQ_LOW_GAIN, FLOAT},
-    {INPUT1_EQ_MID_GAIN, FLOAT},
-    {INPUT1_EQ_HIGH_GAIN, FLOAT},
-    {INPUT1_COMPRESSOR_ENABLE, BOOL},
-    {INPUT1_COMPRESSOR_AMOUNT, FLOAT},
-    {INPUT1_EXT_FX_MUTE, BOOL},
-    {INPUT1_EXT_FX_SENDS, FLOAT},
-    {INPUT2_GAIN, FLOAT},
-    {INPUT2_VOLUME, FLOAT},
-    {INPUT2_MUTE, BOOL},
-    {INPUT2_CLIP_OL_PRE, BOOL},
-    {INPUT2_CLIP_OL_POST, BOOL},
-    {INPUT2_EFFECT_1_MUTE, BOOL},
-    {INPUT2_EFFECT_1_AMOUNT, FLOAT},
-    {INPUT2_EFFECT_2_MUTE, BOOL},
-    {INPUT2_EFFECT_2_AMOUNT, FLOAT},
-    {INPUT2_EQ_ENABLE, BOOL},
-    {INPUT2_EQ_LOW_GAIN, FLOAT},
-    {INPUT2_EQ_MID_GAIN, FLOAT},
-    {INPUT2_EQ_HIGH_GAIN, FLOAT},
-    {INPUT2_COMPRESSOR_ENABLE, BOOL},
-    {INPUT2_COMPRESSOR_AMOUNT, FLOAT},
-    {INPUT2_EXT_FX_MUTE, BOOL},
-    {INPUT2_EXT_FX_SENDS, FLOAT},
-    {INPUT3_GAIN, FLOAT},
-    {INPUT3_VOLUME, FLOAT},
-    {INPUT3_MUTE, BOOL},
-    {INPUT3_CLIP_OL_PRE, BOOL},
-    {INPUT3_CLIP_OL_POST, BOOL},
-    {INPUT3_EFFECT_1_MUTE, BOOL},
-    {INPUT3_EFFECT_1_AMOUNT, FLOAT},
-    {INPUT3_EFFECT_2_MUTE, BOOL},
-    {INPUT3_EFFECT_2_AMOUNT, FLOAT},
-    {INPUT3_EQ_ENABLE, BOOL},
-    {INPUT3_EQ_LOW_GAIN, FLOAT},
-    {INPUT3_EQ_MID_GAIN, FLOAT},
-    {INPUT3_EQ_HIGH_GAIN, FLOAT},
-    {INPUT3_COMPRESSOR_ENABLE, BOOL},
-    {INPUT3_COMPRESSOR_AMOUNT, FLOAT},
-    {INPUT3_EXT_FX_MUTE, BOOL},
-    {INPUT3_EXT_FX_SENDS, FLOAT},
-    {INPUT4_GAIN, FLOAT},
-    {INPUT4_VOLUME, FLOAT},
-    {INPUT4_MUTE, BOOL},
-    {INPUT4_CLIP_OL_PRE, BOOL},
-    {INPUT4_CLIP_OL_POST, BOOL},
-    {INPUT4_EFFECT_1_MUTE, BOOL},
-    {INPUT4_EFFECT_1_AMOUNT, FLOAT},
-    {INPUT4_EFFECT_2_MUTE, BOOL},
-    {INPUT4_EFFECT_2_AMOUNT, FLOAT},
-    {INPUT4_EQ_ENABLE, BOOL},
-    {INPUT4_EQ_LOW_GAIN, FLOAT},
-    {INPUT4_EQ_MID_GAIN, FLOAT},
-    {INPUT4_EQ_HIGH_GAIN, FLOAT},
-    {INPUT4_COMPRESSOR_ENABLE, BOOL},
-    {INPUT4_COMPRESSOR_AMOUNT, FLOAT},
-    {INPUT4_EXT_FX_MUTE, BOOL},
-    {INPUT4_EXT_FX_SENDS, FLOAT},
-    {STEREO_INPUT1_VOLUME, FLOAT},
-    {STEREO_INPUT1_MUTE, BOOL},
-    {STEREO_INPUT1_CLIP_OL_PRE, BOOL},
-    {STEREO_INPUT1_CLIP_OL_POST, BOOL},
-    {STEREO_INPUT1_EQ_ENABLE, BOOL},
-    {STEREO_INPUT1_EQ_LOW_GAIN, FLOAT},
-    {STEREO_INPUT1_EQ_MID_GAIN, FLOAT},
-    {STEREO_INPUT1_EQ_HIGH_GAIN, FLOAT},
-    {EFFECT11_TYPEID, UINT8},
-    {EFFECT12_TYPEID, UINT8},
-    {EFFECT13_TYPEID, UINT8},
-    {EFFECT14_TYPEID, UINT8},
-    {EFFECT21_TYPEID, UINT8},
-    {EFFECT22_TYPEID, UINT8},
-    {MAIN_HEADPHONE_GAIN, FLOAT},
-    {MAIN_MASTER_GAIN, FLOAT},
-    {MAIN_MUTE, BOOL},
-    {MAIN_CLIP_OL, BOOL},
-    {LOOPER_LEVEL, FLOAT},
-    {LOOPER_STATE, UINT8},
-    {FX_BYPASS, BOOL}
-};
+extern std::unordered_map<entity_id, entity_data_type> entity_type_mapping;
 
 enum looper_state : uint8_t {
     RECORD_INITIAL_LOOP = 1,
@@ -227,6 +132,86 @@ enum looper_state : uint8_t {
     DELETE = 0
 };
 
+namespace Showbox {
+    namespace DataTypes {
+        typedef uint8_t FRONT_LED_STATE;
+        typedef uint8_t FEEDBACK_ELIM_STATE;
+        typedef uint8_t AMP_PA_MODE_STATE;
+        typedef uint8_t LOCATION_MODE_STATE;
+        typedef uint8_t SELECTED_CHAN;
+        typedef uint8_t INPUT_GAIN;
+        typedef uint8_t INPUT_VOLUME;
+        typedef uint8_t INPUT_MUTE_STATE;
+        typedef uint8_t INPUT_CLIP_OL_PRE_STATE;
+        typedef uint8_t INPUT_CLIP_OL_POST_STATE;
+        typedef uint8_t INPUT_EFFECT_MUTE_STATE;
+        typedef uint8_t INPUT_EFFECT_AMOUNT;
+        typedef uint8_t INPUT_EQ_ENABLE_STATE;
+        typedef uint8_t INPUT_EQ_GAIN;
+        typedef uint8_t INPUT_COMPRESSOR_ENABLE_STATE;
+        typedef uint8_t INPUT_COMPRESSOR_AMOUNT;
+        typedef uint8_t INPUT_EXT_FX_MUTE_STATE;
+        typedef uint8_t INPUT_EXT_FX_SENDS;
+        typedef uint8_t EFFECT_TYPEID;
+        typedef uint8_t EFFECT1_CHAN;
+        typedef uint8_t EFFECT2_CHAN;
+        typedef uint8_t MAIN_HEADPHONE_GAIN;
+        typedef uint8_t MAIN_MASTER_GAIN;
+        typedef uint8_t MAIN_MUTE_STATE;
+        typedef uint8_t MAIN_CLIP_OL_STATE;
+        typedef uint8_t LOOPER_LEVEL;
+        typedef uint8_t LOOPER_STATE;
+        typedef uint8_t FX_BYPASS_STATE;
+        typedef uint8_t TUNER_STATE;
+        typedef uint8_t TUNER_CHAN;
+        typedef uint8_t SNAPSHOT_ACTION;
+        typedef uint8_t SNAPSHOT_SLOT;
+        typedef uint8_t SD_RECORD_STATE;
+    } // namespace DataTypes
+
+    namespace FrontLed {
+        constexpr uint8_t ON = 0x01;
+        constexpr uint8_t OFF = 0x00;
+    } // namespace FrontLed
+    namespace FeedbackElim {
+        constexpr uint8_t ON = 0x01;
+        constexpr uint8_t OFF = 0x00;
+        constexpr uint8_t UNKNOWN = 0x02;
+    } // namespace FeedbackElim
+    namespace AmpPaMode {
+        constexpr uint8_t AMP = 0x01;
+        constexpr uint8_t PA = 0x00;
+    } // namespace AmpPaMode
+    namespace LocationMode {
+        constexpr uint8_t OUTDOOR = 0x01;
+        constexpr uint8_t INDOOR = 0x00;
+    } // namespace LocationMode
+    namespace SelectedChan {
+        constexpr uint8_t CHAN1 = 0x00;
+        constexpr uint8_t CHAN2 = 0x01;
+        constexpr uint8_t CHAN3 = 0x02;
+        constexpr uint8_t CHAN4 = 0x03;
+        constexpr uint8_t CHAN5_6 = 0x04;
+    } // namespace SelectedChan
+    namespace MainMasterGain {
+        constexpr float POSITION_16 = 6.0;
+        constexpr float POSITION_15 = 4.112315;
+        constexpr float POSITION_14 = 2.084685;
+        constexpr float POSITION_13 = -0.10532999;
+        constexpr float POSITION_12 = -2.48601365;
+        constexpr float POSITION_11 = -5.093745;
+        constexpr float POSITION_10 = -7.97647;
+        constexpr float POSITION_9 = -11.1990757;
+        constexpr float POSITION_8 = -14.85257;
+        constexpr float POSITION_7 = -19.0702229;
+        constexpr float POSITION_6 = -24.0586376;
+        constexpr float POSITION_5 = -30.1639671;
+        constexpr float POSITION_4 = -38.0351067;
+        constexpr float POSITION_3 = -49.12886;
+        constexpr float POSITION_2 = -68.09374;
+        constexpr float POSITION_1 = -120.0;
+    } // namespace MainMasterGain
+} // namespace Showbox
 
 
 #endif // CONSTANTS_H
