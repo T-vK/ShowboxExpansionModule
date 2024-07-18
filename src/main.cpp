@@ -1,194 +1,139 @@
-#include <UARTInterceptor.h>
-#include <BLEMidi.h>
-#define SHOWBOX_DEBUG
-#include <Entity.h>
-#include <Looper.h>
-#include <Packet.h>
+#define SHOWBOX_MOCK_MODE // use fake packet data
+#define DEBUG // enable debug constants and functions
 
+#include <Arduino.h>
+#include <UARTInterceptor.h>
+#include "Packet.h"
+#include "constants.h"
+#ifdef DEBUG
+#include "debug.h"
+#endif
+
+const UARTInterceptor::Direction TO_MIXER = UARTInterceptor::Direction::TO_A;
+const UARTInterceptor::Direction TO_BASE = UARTInterceptor::Direction::TO_B;
+
+#ifndef SHOWBOX_MOCK_MODE
 // Define UART pins
 constexpr uint8_t MIXER_RX = 16; // Mixer RX (Blue) | GPIO16 = TX2
 constexpr uint8_t MIXER_TX = 17; // Mixer TX (Green) | GPIO17 = RX2
 constexpr uint8_t BASE_RX = 10; // Base RX (Green) | GPIO10 = RX1 = SD3
 constexpr uint8_t BASE_TX = 9; // Base TX (Blue) | GPIO09 = TX1 = SD2
 
-const UARTInterceptor::Direction TO_MIXER = UARTInterceptor::Direction::TO_A;
-const UARTInterceptor::Direction TO_BASE = UARTInterceptor::Direction::TO_B;
-
 UARTInterceptor interceptor(MIXER_RX, MIXER_TX, BASE_RX, BASE_TX);
-
-
-void handlePacket(uint8_t* packet, size_t& length, UARTInterceptor::Direction direction) {
-    Showbox::Packet::General generalPacket(packet, length);
-    // if (generalPacket.type != Showbox::Packet::Types::USER) {
-    //     return;
-    // }
-
-    if (generalPacket.type == Showbox::Packet::Types::COMMAND_ACKNOWLEDGED) {
-        Showbox::Packet::SystemCommandAcknowledged ackPacket(packet, length);
-        // filter out heartbeat acks
-        if (ackPacket.ackCmdType == Showbox::Packet::Types::HEARTBEAT) {
-            return;
-        }
-    }
-
-    if (generalPacket.type == Showbox::Packet::Types::HEARTBEAT) {
-        return;
-    }
-
-
-    if (direction == TO_BASE) {
-        Serial.print("<From Mixer>");
-    } else if (direction == TO_MIXER) {
-        Serial.print("<From Base>");
-    }
-    
-    // Packet manipulation example (inverting with bitwise NOT)
-    //for (size_t i = 0; i < length; ++i) {
-    //    packet[i] ^= 0xFF;
-    //}
-
-    //Showbox::Packet::General generalPacket(packet, length);
-    const char* typeName = Showbox::Packet::Types::getName(generalPacket.type);
-    Serial.printf(" Decoded: { Type: %s, ", typeName);
-
-    if (generalPacket.type == Showbox::Packet::Types::USER) {
-        Showbox::Packet::User userPacket(packet, length);
-        // utilize ShowBox::Entity::getName(entityId) to get the name of the entity
-        const char* entityName = Showbox::Entity::getName(userPacket.entityId);
-        Serial.printf("Entity: %s, ", entityName);
-        Serial.print("Value: ");
-        if (Showbox::Entity::getDataType(userPacket.entityId) == Showbox::Entity::DataTypes::BOOL) {
-            bool value = userPacket.getBoolValue();
-            Serial.print(value);
-        } else if (Showbox::Entity::getDataType(userPacket.entityId) == Showbox::Entity::DataTypes::UINT8) {
-            uint8_t value = userPacket.getUint8Value();
-            Serial.print(value);
-        } else if (Showbox::Entity::getDataType(userPacket.entityId) == Showbox::Entity::DataTypes::FLOAT_LE) {
-            float value = userPacket.getFloatLeValue();
-            //Serial.println(value);
-            uint8_t unitId = Showbox::Entity::getUnit(userPacket.entityId);
-            const char* unitName = Showbox::Entity::Units::getName(unitId);
-            if (unitId == Showbox::Entity::Units::PERCENT) {
-                Serial.print(value*100);
-                Serial.print(" %");
-            } else {
-                Serial.print(value);
-                Serial.print(" ");
-                Serial.print(unitName);
-            }
-        }
-        Serial.print(" ");
-    } else if (generalPacket.type == Showbox::Packet::Types::COMMAND_ACKNOWLEDGED) {
-        Showbox::Packet::SystemCommandAcknowledged ackPacket(packet, length);
-        const char* ackCmdTypeName = Showbox::Packet::Types::getName(ackPacket.ackCmdType);
-        Serial.printf("Unknown byte: %02X, ", generalPacket.unknown);
-        Serial.printf("Acknowledged command type: %02X (%s) ", ackPacket.ackCmdType, ackCmdTypeName);
-    } else {
-        Serial.printf("Unknown byte: %02X, ", generalPacket.unknown);
-
-        Serial.print("Body bytes: ");
-        for (size_t i = 0; i < generalPacket.body.size(); ++i) {
-            Serial.printf("%02X ", generalPacket.body[i]);
-        }
-    }
-    Serial.print("} Raw: { ");
-
-    // Print the incoming packet
-    for (size_t i = 0; i < length; ++i) {
-        Serial.printf("%02X ", packet[i]);
-    }
-
-    Serial.println("}");
-}
-
 
 void injectPacket(const uint8_t* packet, size_t length, UARTInterceptor::Direction direction) {
     interceptor.injectPacket(packet, length, direction);
 }
+#endif
 
-/////////
+struct LogFloatEntityPacket : Packet<ENTITY, EntityBody<FLOAT, float>> {
+    void intercept() override {
+        Serial.printf("Value: %f", p.value);
+    }
+};
 
-void onNoteOn(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t timestamp) {
-  Serial.printf("Note on : channel %d, note %d, velocity %d (timestamp %dms)\n", channel, note, velocity, timestamp);
+struct LogBoolEntityPacket : Packet<ENTITY, EntityBody<BOOL, bool>> {
+    void intercept() override {
+        Serial.printf("Value: %d", p.value);
+    }
+};
+
+struct LogUint8EntityPacket : Packet<ENTITY, EntityBody<UINT8, uint8_t>> {
+    void intercept() override {
+        Serial.printf("Value: %d", p.value);
+    }
+};
+
+void handlePacket(uint8_t *raw_packet, UARTInterceptor::Direction direction) {
+    #ifdef DEBUG
+    printRawPacket("[Raw] (before): ", raw_packet);
+    #endif
+
+    packet_type packetType = static_cast<packet_type>(raw_packet[3]);
+    #ifdef DEBUG
+    Serial.printf("[Decoded] Type: %s | ", packet_type_to_string[packetType].c_str());
+    #endif
+    switch (packetType) {
+        case ENTITY:
+        entity_id entityId = static_cast<entity_id>(raw_packet[5]);
+        entity_data_type entityType = entity_type_mapping[entityId];
+        #ifdef DEBUG
+        Serial.printf("Decoded Entity { Name: %s, Data Type: %s, ", entity_id_to_string[entityId].c_str(), entity_data_type_to_string[entityType].c_str());
+        #endif
+        switch (entityType) {
+            case BOOL:
+            {
+                //Serial.println("BoolEntityPacket");
+                LogBoolEntityPacket boolPacket;
+                boolPacket.handle(raw_packet);
+                break;
+            }
+            case UINT8:
+            {
+                //Serial.println("Uint8EntityPacket");
+                LogUint8EntityPacket uint8Packet;
+                uint8Packet.handle(raw_packet);
+                break;
+            }
+            case FLOAT:
+            {
+                //Serial.println("FloatEntityPacket");
+                LogFloatEntityPacket floatPacket;
+                floatPacket.handle(raw_packet);
+                break;
+            }
+        }
+        Serial.println(" }");
+    }
+
+    #ifdef DEBUG
+    printRawPacket("[Raw] (after):  ", raw_packet);
+    Serial.println();
+    #endif
 }
-
-void onNoteOff(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t timestamp) {
-  Serial.printf("Note off : channel %d, note %d, velocity %d (timestamp %dms)\n", channel, note, velocity, timestamp);
-}
-
-void onAfterTouchPoly(uint8_t channel, uint8_t note, uint8_t pressure, uint16_t timestamp) {
-  Serial.printf("Polyphonic after touch : channel %d, note %d, pressure %d (timestamp %dms)\n", channel, note, pressure, timestamp);
-}
-
-void onControlChange(uint8_t channel, uint8_t controller, uint8_t value, uint16_t timestamp) {
-    Serial.printf("Control change : channel %d, controller %d, value %d (timestamp %dms)\n", channel, controller, value, timestamp);
-}
-
-void onProgramChange(uint8_t channel, uint8_t program, uint16_t timestamp) {
-    Serial.printf("Program change : channel %d, program %d (timestamp %dms)\n", channel, program, timestamp);
-}
-
-void onAfterTouch(uint8_t channel, uint8_t pressure, uint16_t timestamp) {
-    Serial.printf("After touch : channel %d, pressure %d (timestamp %dms)\n", channel, pressure, timestamp);
-}
-
-void onPitchbend(uint8_t channel, uint16_t value, uint16_t timestamp) {
-    Serial.printf("Pitch bend : channel %d, value %d (timestamp %dms)\n", channel, value, timestamp);
-}
-
-/////////
-
-
 
 void setup() {
-    Serial.begin(230400);
+    Serial.begin(115200);
+    delay(2000);
+
+    #ifndef SHOWBOX_MOCK_MODE
     interceptor.begin(115200, 115200); // Baud rates for Base and Mixer
     interceptor.setStartBytes(0xBE, 0xEF);
     interceptor.setEndBytes(0xEF, 0xBE);
     interceptor.setPacketHandler(handlePacket);
     interceptor.setPacketInjector(injectPacket);
     Serial.println("\nUART Interceptor ready\n");
-
-    /*
-    BLEMidiServer.begin("Showbox Interceptor");
-      BLEMidiServer.setOnConnectCallback([]() {
-        Serial.println("Connected");
-    });
-    BLEMidiServer.setOnDisconnectCallback([]() {
-        Serial.println("Disconnected");
-    });
-    BLEMidiServer.setNoteOnCallback(onNoteOn);
-    BLEMidiServer.setNoteOffCallback(onNoteOff);
-    BLEMidiServer.setAfterTouchPolyCallback(onAfterTouchPoly);
-    BLEMidiServer.setControlChangeCallback(onControlChange);
-    BLEMidiServer.setProgramChangeCallback(onProgramChange);
-    BLEMidiServer.setAfterTouchCallback(onAfterTouch);
-    BLEMidiServer.setPitchBendCallback(onPitchbend);
-    BLEMidiServer.enableDebugging();
-
-    Serial.println("Bluetooth MIDI ready");
-    */
+    #endif
 }
 
-unsigned long previousMillis = 0; 
-unsigned long interval = 1000; // interval between note on and note off
-bool noteOnSent = false;
-
 void loop() {
+    #ifndef SHOWBOX_MOCK_MODE
     interceptor.loop();
-    /*if (BLEMidiServer.isConnected()) {
-        unsigned long currentMillis = millis();
+    #endif
 
-        if (!noteOnSent) {
-            BLEMidiServer.noteOn(0, 69, 127);
-            previousMillis = currentMillis;
-            noteOnSent = true;
-        }
+    #ifdef SHOWBOX_MOCK_MODE
+    // Example packet
+    uint8_t raw_packet[] = {
+        // ------ HEADER ------
+        0xBE, 0xEF, // start sequence
+        0x08,       // body size uint8_t
+        0x03,       // type uint8_t
+        0x00,       // unknown
+        // ------ HEADER ------
 
-        if (noteOnSent && (currentMillis - previousMillis >= interval)) {
-            BLEMidiServer.noteOff(0, 69, 127);
-            previousMillis = currentMillis;
-            noteOnSent = false;
-        }
-    }*/
+        // ------ BODY ------
+        0x58,                   // entity id uint8_t
+        0x00, 0x00, 0x00,       // reserved
+        0x00, 0x00, 0xC0, 0x40, // value (float, little-endian) // 6.0f
+        // ------ BODY ------
+
+        // ------ FOOTER ------
+        0xEF, 0xBE // end sequence
+        // ------ FOOTER ------
+    };
+
+    handlePacket(raw_packet, TO_BASE);
+
+    delay(5000);
+    #endif
 }
