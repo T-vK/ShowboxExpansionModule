@@ -5,8 +5,12 @@
 #include "debug.h"
 #endif
 
-MackieShowbox::MackieShowbox(uint8_t mixerRx, uint8_t mixerTx, uint8_t baseRx, uint8_t baseTx)
-    : interceptor(mixerRx, mixerTx, baseRx, baseTx) {
+MackieShowbox::MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, uint8_t mixerTx)
+    : interceptor() {
+    this->baseRx = baseRx;
+    this->baseTx = baseTx;
+    this->mixerRx = mixerRx;
+    this->mixerTx = mixerTx;
 
     // Initialize entityValues with default values based on entity_type_mapping
     for (const auto& pair : entity_type_mapping) {
@@ -16,15 +20,19 @@ MackieShowbox::MackieShowbox(uint8_t mixerRx, uint8_t mixerTx, uint8_t baseRx, u
 }
 
 void MackieShowbox::begin() {
-    // Initialize UARTInterceptor
-    interceptor.begin(115200, 115200);
-    interceptor.setStartBytes(0xBE, 0xEF);
-    interceptor.setEndBytes(0xEF, 0xBE);
+    interceptor.begin(baseRx, baseTx, mixerRx, mixerTx, 115200, 115200, 256, 256);
 
-    // Set packet handler and injector
-    interceptor.setPacketHandler(&MackieShowbox::handlePacketStatic, this);
+    uint8_t startSig[] = {0xBE, 0xEF};
+    uint8_t endSig[] = {0xEF, 0xBE};
+    interceptor.setPacketFinderStartEndSig(startSig, sizeof(startSig), endSig, sizeof(endSig));
+
+    interceptor.setPacketHandler([this](uint8_t* packet, size_t& length, UARTInterceptor::Direction direction) {
+        return this->handlePacket(packet, length, direction);
+    });
+    
+
     #ifdef SHOWBOX_DEBUG
-    Serial.println("\nUART Interceptor ready\n");
+    Serial.println("\nMackieShowbox Interceptor ready\n");
     #endif
 }
 
@@ -32,16 +40,16 @@ void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
     entityValues[entityId].boolValue = value;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
-        interceptor.injectPacket(packet, sizeof(packet), TO_MIXER); // Set value on the base
-        interceptor.injectPacket(packet, sizeof(packet), TO_BASE); // Notify the mixer of the change
+        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+        interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
     }
 }
 void MackieShowbox::setEntityValue(entity_id entityId, uint8_t value, bool emit) {
     entityValues[entityId].uint8Value = value;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
-        interceptor.injectPacket(packet, sizeof(packet), TO_MIXER); // Set value on the base
-        interceptor.injectPacket(packet, sizeof(packet), TO_BASE); // Notify the mixer of the change
+        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+        interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
     }
 }
 void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
@@ -51,8 +59,8 @@ void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
 
         uint8_t packet[15] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, floatBytes[0], floatBytes[1], floatBytes[2], floatBytes[3], 0xEF, 0xBE };
 
-        interceptor.injectPacket(packet, sizeof(packet), TO_MIXER); // Set value on the base
-        interceptor.injectPacket(packet, sizeof(packet), TO_BASE); // Notify the mixer of the change
+        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+        interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
     }
     entityValues[entityId].floatValue = value;
 }
@@ -66,67 +74,92 @@ float MackieShowbox::getFloatEntityValue(entity_id entityId) {
     return entityValues[entityId].floatValue;
 }
 
-// static bool MackieShowbox::handlePacketStatic(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, MackieShowbox* instance); implementation:
-bool MackieShowbox::handlePacketStatic(void* context, uint8_t* raw_packet, size_t& length, UARTInterceptor::Direction direction) {
-    MackieShowbox* self = static_cast<MackieShowbox*>(context);
-    return self->handlePacket(raw_packet, length, direction);
+void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
+    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, action, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
-bool MackieShowbox::handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction) {
+UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction) {
     #ifdef SHOWBOX_DEBUG
-    // print raw_packet as hex bytes
-    printRawPacket("[Raw]: ", raw_packet);
-    // print direction:
+    // printRawPacket("[Raw]: ", raw_packet);
     #endif
 
     packet_type packetType = static_cast<packet_type>(raw_packet[3]);
+
     #ifdef SHOWBOX_DEBUG
-    Serial.printf("%s ", direction == TO_MIXER ? "BASE->MIXER" : "MIXER->BASE");
-    Serial.printf("[Decoded] Type: %s", packet_type_to_string[packetType].c_str());
+    String directionString = direction == TO_MIXER ? "BASE->MIXER" : "MIXER->BASE";
+    String packetTypeString = packet_type_to_string[packetType].c_str();
     #endif
-    switch (packetType) {
-        case ENTITY:
+
+    if (packetType == ENTITY) {
         entity_id entityId = static_cast<entity_id>(raw_packet[5]);
         entity_data_type entityType = entity_type_mapping[entityId];
         #ifdef SHOWBOX_DEBUG
-        Serial.printf("| { Set %s to ", entity_id_to_string[entityId].c_str());
+        String entityString = entity_id_to_string[entityId].c_str();
+        Serial.printf("%s [Decoded] Type: %s | Entity: %s | { Set %s to ", directionString.c_str(), packetTypeString.c_str(), entityString.c_str(), entityString.c_str());
         #endif
-        switch (entityType) {
-            case BOOL:
-            {
-                //LogBoolEntityPacket boolPacket;
-                //boolPacket.handle(raw_packet);
-                //bool value = showbox.getBoolEntityValue(entityId);
-                break;
+        if (entityType == BOOL) {
+            bool value = raw_packet[9];
+            #ifdef SHOWBOX_DEBUG
+            Serial.printf("%s", value ? "true" : "false");
+            #endif
+            setEntityValue(entityId, value, false);
+        } else if (entityType == UINT8) {
+            uint8_t value = raw_packet[9];
+            #ifdef SHOWBOX_DEBUG
+            if (entityId == LOOPER_STATE) {
+                Serial.printf("%s", looper_state_to_string[value].c_str());
+            } else {
+                Serial.printf("%d", value);
             }
-            case UINT8:
-            {
-                //LogUint8EntityPacket uint8Packet;
-                //uint8Packet.handle(raw_packet);
-                //uint8_t value = showbox.getUint8EntityValue(entityId);
-                //Serial.printf("\nValue stored in showbox: %d", value);
-                break;
-            }
-            case FLOAT:
-            {
-                //LogFloatEntityPacket floatPacket;
-                //floatPacket.handle(raw_packet);
-
-                //float value = showbox.getFloatEntityValue(entityId);
-                //Serial.printf("\nValue stored in showbox: %f", value);
-                break;
-            }
+            #endif
+            setEntityValue(entityId, value, false);
+        } else if (entityType == FLOAT) {
+            float value;
+            memcpy(&value, &raw_packet[9], sizeof(float));
+            #ifdef SHOWBOX_DEBUG
+            Serial.printf("%f", value);
+            #endif
+            setEntityValue(entityId, value, false);
         }
         #ifdef SHOWBOX_DEBUG
-        Serial.print(" }");
+        Serial.print(" }\n");
+        #endif
+    } else if (packetType == HEARTBEAT) {
+        #ifdef SHOWBOX_DEBUG
+        // Serial.print("Heartbeat");
+        #endif
+    } else if (packetType == ACK) {
+        uint8_t ackCmd = raw_packet[5];
+        if (ackCmd != HEARTBEAT && ackCmd != UNKNOWN_00 && ackCmd != UNKNOWN_FE) {
+            #ifdef SHOWBOX_DEBUG
+            String ackCmdString = packet_type_to_string[static_cast<packet_type>(ackCmd)].c_str();
+            //printRawPacket("[Raw]: ", raw_packet);
+            Serial.printf("%s Acknowoleged %s command\n", directionString.c_str(), ackCmdString.c_str());
+            #endif
+        }
+        #ifdef SHOWBOX_DEBUG
+        #endif
+    } else if (packetType == DATA_REQUEST) {
+        #ifdef SHOWBOX_DEBUG
+        // Serial.print("Data Request");
+        #endif
+    } else if (packetType == LOOPER_BUTTON) {
+        #ifdef SHOWBOX_DEBUG
+        // Serial.print("Data Request");
+        #endif
+    } else {
+        #ifdef SHOWBOX_DEBUG
+        Serial.printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
+        printRawPacket("[Raw]: ", raw_packet);
         #endif
     }
     #ifdef SHOWBOX_DEBUG
-    Serial.println();
+    //Serial.println();
     //printRawPacket("[Raw]: ", raw_packet);
-    Serial.println();
+    //Serial.println();
     #endif
-    return false; // false == do not drop packet
+    return UARTInterceptor::PACKET_NOT_MODIFIED; // Packet not modified
 }
 
 void MackieShowbox::loop() {

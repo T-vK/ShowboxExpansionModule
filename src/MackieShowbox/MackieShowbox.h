@@ -12,7 +12,7 @@
 
 class MackieShowbox {
 public:
-    MackieShowbox(uint8_t mixerRx, uint8_t mixerTx, uint8_t baseRx, uint8_t baseTx);
+    MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, uint8_t mixerTx);
     
     void setEntityValue(entity_id entityId, bool value, bool emit = true);
     void setEntityValue(entity_id entityId, uint8_t value, bool emit = true);
@@ -21,10 +21,14 @@ public:
     bool getBoolEntityValue(entity_id entityId);
     uint8_t getUint8EntityValue(entity_id entityId);
     float getFloatEntityValue(entity_id entityId);
+
+    void sendLooperButtonAction(looper_button_action action);
+
     void loop();
     void begin();
 
 private:
+    uint8_t baseRx, baseTx, mixerRx, mixerTx;
     struct EntityValue {
         bool boolValue;
         uint8_t uint8Value;
@@ -34,13 +38,10 @@ private:
     };
     std::unordered_map<entity_id, EntityValue> entityValues;
     UARTInterceptor interceptor;
-    UARTInterceptor::Direction TO_MIXER = UARTInterceptor::Direction::TO_A;
-    UARTInterceptor::Direction TO_BASE = UARTInterceptor::Direction::TO_B;
+    UARTInterceptor::Direction TO_MIXER = UARTInterceptor::DEVICE1_TO_DEVICE2;
+    UARTInterceptor::Direction TO_BASE = UARTInterceptor::DEVICE2_TO_DEVICE1;
 
-    // Instance method for packet handling
-    static bool handlePacketStatic(void* context, uint8_t* raw_packet, size_t& length, UARTInterceptor::Direction direction);
-    bool handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction);
-
+    UARTInterceptor::PacketHandlerResult handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction);
 };
 
 #endif // MACKIESHOWBOX_H

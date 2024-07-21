@@ -10,17 +10,20 @@ void printRawPacket(const char* message, uint8_t* raw_packet) {
 }
 
 std::unordered_map<packet_type, std::string> packet_type_to_string = {
+    {UNKNOWN_00, "UNKNOWN_00"},
     {ACK, "ACK"},
     {ENTITY, "ENTITY"},
     {UNKNOWN_04, "UNKNOWN_04"},
-    {UNKNOWN_05, "UNKNOWN_05"},
+    {UNKNOWN_MASS_TRANSFER, "UNKNOWN_MASS_TRANSFER"},
     {DATA_REQUEST, "DATA_REQUEST"},
     {UNKNOWN_15, "UNKNOWN_15"},
-    {UNKNOWN_16, "UNKNOWN_16"},
+    {BATTERY_LEVEL, "BATTERY_LEVEL"},
+    {LOOPER_BUTTON, "LOOPER_BUTTON"},
     {TUNER_TOGGLE, "TUNER_TOGGLE"},
     {TUNER_FEEDBACK, "TUNER_FEEDBACK"},
     {SNAPSHOT, "SNAPSHOT"},
     {SD_CARD_EVENT, "SD_CARD_EVENT"},
+    {UNKNOWN_FE, "UNKNOWN_FE"},
     {HEARTBEAT, "HEARTBEAT"}
 };
 
@@ -35,6 +38,7 @@ std::unordered_map<entity_id, std::string> entity_id_to_string = {
     {FEEDBACK_ELIM, "FEEDBACK_ELIM"},
     {AMP_PA_MODE, "AMP_PA_MODE"},
     {LOCATION_MODE, "LOCATION_MODE"},
+    {SELECTED_CHAN, "SELECTED_CHAN"},
     {INPUT1_GAIN, "INPUT1_GAIN"},
     {INPUT1_VOLUME, "INPUT1_VOLUME"},
     {INPUT1_MUTE, "INPUT1_MUTE"},
