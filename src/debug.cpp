@@ -13,7 +13,7 @@ std::unordered_map<packet_type, std::string> packet_type_to_string = {
     {UNKNOWN_00, "UNKNOWN_00"},
     {ACK, "ACK"},
     {ENTITY, "ENTITY"},
-    {UNKNOWN_04, "UNKNOWN_04"},
+    {SNAPSHOT_MENU, "SNAPSHOT_MENU"},
     {UNKNOWN_MASS_TRANSFER, "UNKNOWN_MASS_TRANSFER"},
     {DATA_REQUEST, "DATA_REQUEST"},
     {UNKNOWN_15, "UNKNOWN_15"},

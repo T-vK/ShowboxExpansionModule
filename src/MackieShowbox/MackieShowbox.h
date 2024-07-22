@@ -23,12 +23,19 @@ public:
     float getFloatEntityValue(entity_id entityId);
 
     void sendLooperButtonAction(looper_button_action action);
+    void toggleSdCardRecord();
+    void snapshotAction(snapshot_action action, snapshot_slot slot);
+    void tunerAction(tuner_action action, tuner_chan chan);
+    float getBatteryLevel();
+    sd_card_state getSdCardState();
 
-    void loop();
+    void tick();
     void begin();
 
 private:
     uint8_t baseRx, baseTx, mixerRx, mixerTx;
+    float batteryLevel = 0.0f;
+    sd_card_state sdCardState = sd_card_state::NOT_DETECTED;
     struct EntityValue {
         bool boolValue;
         uint8_t uint8Value;

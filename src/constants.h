@@ -8,7 +8,7 @@ enum packet_type : uint8_t {
     UNKNOWN_00 = 0x00, // only seen as ack so far
     ACK = 0x01,
     ENTITY = 0x03,
-    UNKNOWN_04 = 0x04, // e.g. BE EF 04 04 00 00 00 00 00 EF BE 
+    SNAPSHOT_MENU = 0x04, // e.g. SNAPSHOT1: BE EF 04 04 01 00 00 00 00 EF BE, DEFAULT: BE EF 04 04 05 00 00 00 00 EF BE, Not sure about:  BE EF 04 04 00 00 00 00 00 EF BE
     UNKNOWN_MASS_TRANSFER = 0x05, // e.g. BE EF E3 05 00 00 00 00 00 01 01 00 00 04 CC CC 0C 42 BA DA 6C 40 00 01 01 00 5C 8F 02 3F 00 AB AA AA 3E 01 00 00 00 00 01 35 9D 00 00 35 9D 00 C0 89 88 08 3F 00 00 00 00 00 9E D8 19 41 9E D8 19 41 7B 01 01 9E 5C 8F 02 3F 00 CD CC CC 3E 01 00 00 00 00 00 00 00 00 00 00 00 00 01 89 88 08 3F 00 EF EE EE 3E 00 00 20 42 02 72 8D C0 00 01 01 00 00 00 00 00 00 AB AA AA 3E 01 00 00 00 00 00 00 00 00 00 00 00 00 01 89 88 08 3F 00 EF EE EE 3E 66 66 1A 42 28 14 B9 BF 00 01 01 00 5C 8F 02 3F 00 AB AA AA 3E 01 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 80 3F 00 EF EE EE 3E 90 D1 63 3F 00 01 01 01 00 00 00 00 00 00 00 00 00 00 70 C1 00 00 00 00 04 11 9E D8 19 41 CE 4F F1 C1 00 00 00 4E 6C BF 00 00 EF BE 
     DATA_REQUEST = 0x09,
     UNKNOWN_15 = 0x15, // e.g. BE EF 00 15 00 EF BE 
@@ -142,6 +142,43 @@ enum looper_button_action : uint8_t {
     LONG_PRESS = 3
 };
 
+enum snapshot_action : uint8_t {
+    RECALL = 1,
+    SAVE = 2
+};
+
+enum snapshot_slot : uint8_t {
+    SNAPSHOT_1 = 0,
+    SNAPSHOT_2 = 1,
+    SNAPSHOT_3 = 2,
+    SNAPSHOT_4 = 3,
+    SNAPSHOT_5 = 4,
+    SNAPSHOT_DEFAULT = 5
+};
+
+enum tuner_action : uint8_t {
+    TURN_ON = 0,
+    TURN_OFF = 1
+};
+
+enum tuner_chan : uint8_t {
+    ONE = 0,
+    TWO = 1,
+    THREE = 2,
+    FOUR = 3
+};
+
+enum sd_card_state : uint8_t {
+    NOT_DETECTED = 0,
+    DETECTED = 2,
+    RECORDING = 3
+};
+
+enum sd_card_action : uint8_t {
+    TOGGLE_RECORD = 2,
+    FORMAT = 3
+};
+
 namespace Showbox {
     namespace DataTypes {
         typedef uint8_t FRONT_LED_STATE;
@@ -221,7 +258,122 @@ namespace Showbox {
         constexpr float POSITION_2 = -68.09374;
         constexpr float POSITION_1 = -120.0;
     } // namespace MainMasterGain
+    
+    namespace InputGain {
+        constexpr float POSITION_16 = 60.0;
+        constexpr float POSITION_15 = 56.0;
+        constexpr float POSITION_14 = 52.0;
+        constexpr float POSITION_13 = 48.0;
+        constexpr float POSITION_12 = 44.0;
+        constexpr float POSITION_11 = 40.0;
+        constexpr float POSITION_10 = 36.0;
+        constexpr float POSITION_9 = 32.0;
+        constexpr float POSITION_8 = 28.0;
+        constexpr float POSITION_7 = 24.0;
+        constexpr float POSITION_6 = 20.0;
+        constexpr float POSITION_5 = 16.0;
+        constexpr float POSITION_4 = 12.0;
+        constexpr float POSITION_3 = 8.0;
+        constexpr float POSITION_2 = 4.0;
+        constexpr float POSITION_1 = 0.0;
+    } // namespace InputGain
+
+    namespace InputVolume {
+        constexpr float POSITION_16 = 10.0;
+        constexpr float POSITION_15 = 8.052388;
+        constexpr float POSITION_14 = 5.960389;
+        constexpr float POSITION_13 = 3.700850;
+        constexpr float POSITION_12 = 1.244589;
+        constexpr float POSITION_11 = -1.445928;
+        constexpr float POSITION_10 = -4.420167;
+        constexpr float POSITION_9 = -7.745078;
+        constexpr float POSITION_8 = -11.514557;
+        constexpr float POSITION_7 = -15.866102;
+        constexpr float POSITION_6 = -21.012880;
+        constexpr float POSITION_5 = -27.312031;
+        constexpr float POSITION_4 = -35.433048;
+        constexpr float POSITION_3 = -46.878983;
+        constexpr float POSITION_2 = -66.445930;
+        constexpr float POSITION_1 = -120.0;
+    } // namespace InputVolume
+
+    namespace InputCompressorAmount {
+        constexpr float POSITION_16 = 1.0;
+        constexpr float POSITION_15 = 0.933333;
+        constexpr float POSITION_14 = 0.866667;
+        constexpr float POSITION_13 = 0.800000;
+        constexpr float POSITION_12 = 0.733333;
+        constexpr float POSITION_11 = 0.666667;
+        constexpr float POSITION_10 = 0.600000;
+        constexpr float POSITION_9 = 0.533333;
+        constexpr float POSITION_8 = 0.466667;
+        constexpr float POSITION_7 = 0.400000;
+        constexpr float POSITION_6 = 0.333333;
+        constexpr float POSITION_5 = 0.266667;
+        constexpr float POSITION_4 = 0.200000;
+        constexpr float POSITION_3 = 0.133333;
+        constexpr float POSITION_2 = 0.066667;
+        constexpr float POSITION_1 = 0.0;
+    } // namespace InputCompressorAmount
+
+    namespace InputEqGain {
+        constexpr float POSITION_16 = 15.0;
+        constexpr float POSITION_15 = 12.857142;
+        constexpr float POSITION_14 = 10.714285;
+        constexpr float POSITION_13 = 8.571428;
+        constexpr float POSITION_12 = 6.428571;
+        constexpr float POSITION_11 = 4.285714;
+        constexpr float POSITION_10 = 2.142857;
+        constexpr float POSITION_9 = 0.0;
+        constexpr float POSITION_8 = -2.142858;
+        constexpr float POSITION_7 = -4.285716;
+        constexpr float POSITION_6 = -6.428574;
+        constexpr float POSITION_5 = -8.571432;
+        constexpr float POSITION_4 = -10.714290;
+        constexpr float POSITION_3 = -12.857147;
+        constexpr float POSITION_2 = -15.0;
+    } // namespace InputEqGain
+
+    namespace InputExtFxSends {
+        constexpr float POSITION_16 = 1.0;
+        constexpr float POSITION_15 = 0.933333;
+        constexpr float POSITION_14 = 0.866667;
+        constexpr float POSITION_13 = 0.800000;
+        constexpr float POSITION_12 = 0.733333;
+        constexpr float POSITION_11 = 0.666667;
+        constexpr float POSITION_10 = 0.600000;
+        constexpr float POSITION_9 = 0.533333;
+        constexpr float POSITION_8 = 0.466667;
+        constexpr float POSITION_7 = 0.400000;
+        constexpr float POSITION_6 = 0.333333;
+        constexpr float POSITION_5 = 0.266667;
+        constexpr float POSITION_4 = 0.200000;
+        constexpr float POSITION_3 = 0.133333;
+        constexpr float POSITION_2 = 0.066667;
+        constexpr float POSITION_1 = 0.0;
+    } // namespace InputEffectAmount
+
+    namespace InputEffectAmount {
+        constexpr float POSITION_16 = 1.0;
+        constexpr float POSITION_15 = 0.933333;
+        constexpr float POSITION_14 = 0.866667;
+        constexpr float POSITION_13 = 0.800000;
+        constexpr float POSITION_12 = 0.733333;
+        constexpr float POSITION_11 = 0.666667;
+        constexpr float POSITION_10 = 0.600000;
+        constexpr float POSITION_9 = 0.533333;
+        constexpr float POSITION_8 = 0.466667;
+        constexpr float POSITION_7 = 0.400000;
+        constexpr float POSITION_6 = 0.333333;
+        constexpr float POSITION_5 = 0.266667;
+        constexpr float POSITION_4 = 0.200000;
+        constexpr float POSITION_3 = 0.133333;
+        constexpr float POSITION_2 = 0.066667;
+        constexpr float POSITION_1 = 0.0;
+    } // namespace InputEffectAmount
+
 } // namespace Showbox
+
 
 
 #endif // CONSTANTS_H

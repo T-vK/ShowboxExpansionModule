@@ -2,6 +2,8 @@
 
 Gain more control over your Showbox. This project allows for controlling your Showbox and breakaway Mixer using an ESP32-S3, ESP32, ESP8266 or Arduino. (ESP32-S3 will probably have the least bugs because I will primarily test against that. Also it supports most features.)
 
+This project is still a work in progress. I have reverse-engineered most of the protocol, but a few bits here and there are still missing.
+
 ### Hardware
 I will try to make make this project as accessible as possible. Soldering skills will not be necessary, but they may allow for a cleaner and more stable build.
 
@@ -40,6 +42,34 @@ If you don't want to solder, look for breakout boards/sockets with screw termina
 - [ ] Add webinterface to allow controlling the Showbox from the browser (over either WiFi or Ethernet)
 - [ ] Web flasher to allow flashing the micro controller from the browser
 - [ ] Add support for OTA updates
+
+### Example code usage
+This basic example shows how you could implement your own mute toggle button:
+
+``` C++
+#include <Arduino.h>
+#include <OneButton.h>
+#include "MackieShowbox/MackieShowbox.h"
+
+MackieShowbox showbox(9, 10, 17, 18); // Base RX, Base TX, Mixer RX, Mixer TX
+
+OneButton muteButton(48, true); // Mute button pin, internal pull-up
+
+void handleMuteButton() {
+    bool mute = showbox.getBoolEntityValue(entity_id::MAIN_MUTE);
+    showbox.setEntityValue(entity_id::MAIN_MUTE, !mute);
+}
+
+void setup() {
+    muteButton.attachClick(handleMuteButton);
+    showbox.begin();
+}
+
+void loop() {
+    showbox.loop();
+    muteButton.tick();
+}
+```
 
 ### Reading
 You can easily read and log what the two devices are talking about. Here is a short example:
@@ -92,3 +122,35 @@ It is technically possible to manipulate packets on the fly. This functionality 
 
 ### Dropping
 It is technically possible to drop packets entirely, preventing them from arriving at their destination. This functionality is just not exposed to the outside of the class for now because I haven't found a good use-case for it yet.
+
+
+### Documentation
+Unfortunately I haven't found the time to document everything properly, but I created a lot of contants that acs as a reference for possible values to be passed the available functions: [src/constants.h](src/constants.h)   
+Other than that, all I can give you for now, is a list of the available public methods:
+
+``` C++
+class MackieShowbox {
+public:
+    MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, uint8_t mixerTx);
+    
+    void setEntityValue(entity_id entityId, bool value, bool emit = true);
+    void setEntityValue(entity_id entityId, uint8_t value, bool emit = true);
+    void setEntityValue(entity_id entityId, float value, bool emit = true);
+
+    bool getBoolEntityValue(entity_id entityId);
+    uint8_t getUint8EntityValue(entity_id entityId);
+    float getFloatEntityValue(entity_id entityId);
+
+    void sendLooperButtonAction(looper_button_action action);
+    void toggleSdCardRecord();
+    void snapshotAction(snapshot_action action, snapshot_slot slot);
+    void tunerAction(tuner_action action, tuner_chan chan);
+    float getBatteryLevel();
+    sd_card_state getSdCardState();
+
+    void tick();
+    void begin();
+}
+```
+
+(might be out of date by the time you read this, so check against: [src/MackieShowbox/MackieShowbox.h](src/MackieShowbox/MackieShowbox.h) )

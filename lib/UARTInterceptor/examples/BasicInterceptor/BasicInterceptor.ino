@@ -39,5 +39,5 @@ void setup() {
 }
 
 void loop() {
-    uartInterceptor.loop();
+    uartInterceptor.tick();
 }

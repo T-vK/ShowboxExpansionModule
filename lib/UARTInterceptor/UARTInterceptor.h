@@ -30,7 +30,7 @@ public:
     void setPacketFinder(PacketFinderCallback callback);
     void setPacketFinderStartEndSig(uint8_t* start_sig, size_t start_sig_length, uint8_t* end_sig, size_t end_sig_length);
     void sendPacket(uint8_t* packet, size_t length, Direction direction);
-    void loop();
+    void tick();
 
 private:
     HardwareSerial Serial1 = HardwareSerial(1);

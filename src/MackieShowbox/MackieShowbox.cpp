@@ -79,6 +79,38 @@ void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
+/**
+    void sendLooperButtonAction(looper_button_action action);
+    void toggleSdCardRecord();
+    void snapshotAction(snapshot_action action, snapshot_slot slot);
+    void tunerAction(tuner_action action, tuner_chan chan);
+    float getBatteryLevel();
+    sd_card_state getSdCardState();
+ */
+
+void MackieShowbox::toggleSdCardRecord() {
+    uint8_t packet[8] = { 0xBE, 0xEF, 0x00, SD_CARD_EVENT, 0x02, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+}
+
+void MackieShowbox::snapshotAction(snapshot_action action, snapshot_slot slot) {
+    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, SNAPSHOT, action, action, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+}
+
+void MackieShowbox::tunerAction(tuner_action action, tuner_chan chan) {
+    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, TUNER_TOGGLE, action, chan, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+}
+
+float MackieShowbox::getBatteryLevel() {
+    return batteryLevel;
+}
+
+sd_card_state MackieShowbox::getSdCardState() {
+    return sdCardState;
+}
+
 UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction) {
     #ifdef SHOWBOX_DEBUG
     // printRawPacket("[Raw]: ", raw_packet);
@@ -148,6 +180,24 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         #ifdef SHOWBOX_DEBUG
         // Serial.print("Data Request");
         #endif
+    } else if (packetType == BATTERY_LEVEL) {
+        float value;
+        memcpy(&value, &raw_packet[9], sizeof(float));
+        batteryLevel = value;
+        #ifdef SHOWBOX_DEBUG
+        Serial.printf("%s [Decoded] Type: %s | Battery Level: %f\n", directionString.c_str(), packetTypeString.c_str(), value);
+        #endif
+    } else if (packetType == SD_CARD_EVENT) {
+        sdCardState = static_cast<sd_card_state>(raw_packet[5]);
+        #ifdef SHOWBOX_DEBUG
+        if (sdCardState == sd_card_state::NOT_DETECTED) {
+            Serial.printf("%s [Decoded] Type: %s | SD Card: Not Detected\n", directionString.c_str(), packetTypeString.c_str());
+        } else if (sdCardState == sd_card_state::DETECTED) {
+            Serial.printf("%s [Decoded] Type: %s | SD Card: Detected\n", directionString.c_str(), packetTypeString.c_str());
+        } else {
+            Serial.printf("%s [Decoded] Type: %s | SD Card: Unknown\n", directionString.c_str(), packetTypeString.c_str());
+        } 
+        #endif
     } else {
         #ifdef SHOWBOX_DEBUG
         Serial.printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
@@ -162,6 +212,6 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     return UARTInterceptor::PACKET_NOT_MODIFIED; // Packet not modified
 }
 
-void MackieShowbox::loop() {
-    interceptor.loop();
+void MackieShowbox::tick() {
+    interceptor.tick();
 }

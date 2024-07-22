@@ -70,7 +70,7 @@ void UARTInterceptor::sendPacket(uint8_t* packet, size_t length, Direction direc
     }
 }
 
-void UARTInterceptor::loop() {
+void UARTInterceptor::tick() {
     _processSerial(Serial1, buffer1, buffer1Position, DEVICE1_TO_DEVICE2);
     _processSerial(Serial2, buffer2, buffer2Position, DEVICE2_TO_DEVICE1);
 }
