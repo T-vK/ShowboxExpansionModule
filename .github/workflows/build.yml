@@ -56,7 +56,6 @@ jobs:
           tag_name: ${{ steps.semantic_release.outputs.new_release_tag }}
           files: |
             .pio/build/*/sbxm-firmware-*.bin
-            firmware-manifest.json
           draft: false
           prerelease: false
         env:

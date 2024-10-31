@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firmware Releases</title>
+    <title>Firmware Installer for ShowboxExpansionModule</title>
     <script type="module" src="https://unpkg.com/esp-web-tools@10.0.1/dist/web/install-button.js"></script>
     <script>
         async function fetchReleases() {
@@ -17,8 +17,7 @@
             const installButtonContainer= document.getElementById('install-button-container');
 
             releases.forEach(release => {
-                const manifest = release.assets.find(asset => asset.name === 'firmware-manifest.json');
-                const manifestUrl = manifest ? manifest.browser_download_url : null;
+                const manifestUrl = `https://raw.githubusercontent.com/T-vK/ShowboxInterceptor/refs/tags/${release.tag_name}/firmware-manifest.json`;
 
                 const option = document.createElement('option');
                 option.textContent = release.name;
@@ -37,6 +36,30 @@
 
         document.addEventListener('DOMContentLoaded', fetchReleases);
     </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        h1 {
+            margin: 0;
+            padding: 1em;
+            background-color: #333;
+            color: white;
+        }
+        select {
+            margin: 1em;
+            padding: 0.5em;
+            font-size: 1em;
+            width: 100%;
+        }
+        #install-button-container {
+            margin: 1em;
+            padding: 0.5em;
+            width: 100%;
+        }
+    </style>
 </head>
 <body>
     <h1>Firmware Releases</h1>

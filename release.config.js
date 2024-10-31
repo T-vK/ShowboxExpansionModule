@@ -7,8 +7,7 @@ module.exports = {
       "@semantic-release/github",
       {
         assets: [
-          { path: ".pio/build/*/sbxm-firmware-*.bin" },
-          { path: "firmware-manifest.json" },
+          { path: ".pio/build/*/sbxm-firmware-*.bin" }
         ],
       },
     ],
