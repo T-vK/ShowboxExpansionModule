@@ -1,0 +1,62 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Install Node
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Get environments from platformio.ini
+        id: get_envs
+        run: |
+          environments=$(grep -oP '^\s*\[env:\K[^\]]+' platformio.ini | tr '\n' ' ')
+          echo "Environments: $environments"
+          echo "envs=$environments" >> $GITHUB_ENV
+
+      - name: Build firmware for all environments
+        run: |
+          environments=(${{ env.envs }})
+          for env in "${environments[@]}"; do
+            echo "Building for environment: $env"
+            platformio run -e "$env"
+          done
+
+      - name: Run Semantic Release
+        id: semantic_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release  # Use npx to run semantic-release without global install
+
+      - name: Upload Firmware to Release
+        if: steps.semantic_release.outputs.released == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.semantic_release.outputs.new_release_tag }}
+          files: |
+            .pio/build/*/sbxm-firmware-*.bin
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

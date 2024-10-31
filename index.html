@@ -2,17 +2,44 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Showbox Expansion Module Firmware</title>
-    <script type="module" src="https://unpkg.com/esp-web-tools@10.0.1/dist/web/install-button.js?module"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firmware Releases</title>
+    <script type="module" src="https://unpkg.com/esp-web-tools@10.0.1/dist/web/install-button.js"></script>
+    <script>
+        async function fetchReleases() {
+            const user = window.location.hostname.split('.')[0];
+            const path = window.location.pathname.replace(/^\/|\/$/g, '');
+            const url = `https://api.github.com/repos/${user}/${path}/releases`;
+
+            const response = await fetch(url);
+            const releases = await response.json();
+            const releasesList = document.getElementById('releases-list');
+
+            releases.forEach(release => {
+                const releaseItem = document.createElement('div');
+                releaseItem.innerHTML = `<h3>${release.tag_name}</h3><ul></ul>`;
+                
+                release.assets.forEach(asset => {
+                    const envItem = document.createElement('li');
+                    // Create the install button for each firmware asset
+                    const installButton = document.createElement('install-button');
+                    installButton.setAttribute('url', asset.browser_download_url);
+                    installButton.setAttribute('label', asset.name);
+                    installButton.setAttribute('description', 'Install this firmware on your ESP device');
+
+                    envItem.appendChild(installButton);
+                    releaseItem.querySelector('ul').appendChild(envItem);
+                });
+
+                releasesList.appendChild(releaseItem);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', fetchReleases);
+    </script>
 </head>
 <body>
-    <h1>Showbox Expansion Module Firmware Installer</h1>
-    <p>Select your device below to install the firmware.</p>
-
-    <h3>Wemos D1 Mini 32</h3>
-    <esp-web-install-button manifest="./manifest_wemos_d1_mini32.json"></esp-web-install-button>
-
-    <h3>ESP32-S3 Devkit</h3>
-    <esp-web-install-button manifest="./manifest_esp32_s3_n16r8.json"></esp-web-install-button>
+    <h1>Firmware Releases</h1>
+    <div id="releases-list"></div>
 </body>
 </html>
