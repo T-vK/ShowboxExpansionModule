@@ -1,0 +1,13 @@
+{
+    "name": "ShowboxExpansionModule",
+    "version": "1.0.0",
+    "home_assistant_domain": "showbox_expansion",
+    "builds": [
+      {
+        "chipFamily": "ESP32-S3",
+        "parts": [
+          { "path": "firmware_esp32_s3_n16r8.bin", "offset": 0 }
+        ]
+      }
+    ]
+  }  

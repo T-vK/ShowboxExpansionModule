@@ -1,0 +1,37 @@
+#ifndef SHOWBOX_EXPANSION_MODULE_H
+#define SHOWBOX_EXPANSION_MODULE_H
+
+#include <Arduino.h>
+#include
+#include "MackieShowbox/MackieShowbox.h"
+
+class ShowboxExpansionModule {
+public:
+    // Constructor
+    ShowboxExpansionModule(MackieShowbox& showbox, 
+                           uint8_t trs1tip, uint8_t trs1ring, 
+                           uint8_t trs2tip, uint8_t trs2ring, 
+                           uint8_t trs3tip, uint8_t trs3ring, 
+                           uint8_t trs4tip, uint8_t trs4ring, 
+                           uint8_t midiTx, uint8_t midiRx, 
+                           uint8_t rgbDataIn, uint8_t rgbClockIn, 
+                           uint8_t greenButton, uint8_t redButton, uint8_t blueButton, 
+                           uint8_t w5500nReset, uint8_t w5500Miso, uint8_t w5500nInt, uint8_t w5500nSs, uint8_t w5500Sclk, uint8_t w5500Mosi);
+
+    // Initialization method
+    void begin();
+
+    // Update method, to be called in the loop
+    void tick();
+
+private:
+    MackieShowbox& showbox;
+    // Pin definitions
+    uint8_t trs1tip, trs1ring, trs2tip, trs2ring, trs3tip, trs3ring, trs4tip, trs4ring;
+    uint8_t midiTx, midiRx;
+    uint8_t rgbDataIn, rgbClockIn;
+    uint8_t greenButton, redButton, blueButton;
+    uint8_t w5500nReset, w5500Miso, w5500nInt, w5500nSs, w5500Sclk, w5500Mosi;
+};
+
+#endif // SHOWBOX_EXPANSION_MODULE_H

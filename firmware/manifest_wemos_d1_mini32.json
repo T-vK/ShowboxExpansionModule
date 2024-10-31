@@ -1,0 +1,14 @@
+{
+    "name": "ShowboxExpansionModule",
+    "version": "1.0.0",
+    "home_assistant_domain": "showbox_expansion",
+    "builds": [
+      {
+        "chipFamily": "ESP32",
+        "parts": [
+          { "path": "firmware_wemos_d1_mini32.bin", "offset": 0 }
+        ]
+      }
+    ]
+  }
+  

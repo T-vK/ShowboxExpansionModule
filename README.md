@@ -154,3 +154,79 @@ public:
 ```
 
 (might be out of date by the time you read this, so check against: [src/MackieShowbox/MackieShowbox.h](src/MackieShowbox/MackieShowbox.h) )
+
+## Pin Mappings for ESP32-S3
+
+### SPI Ethernet Module (Mini W5500)
+
+```
+µC Pin | Module Pin
+-------------------
+ 6     | nReset
+ 7     | MISO
+15     | nINT
+16     | nSS
+17     | SCLK
+18     | MOSI
+```
+
+### TRS Jacks (For Footswitches / Expression Pedals)
+
+```
+µC Pin | Module Pin
+-------------------
+ 8     | TRS 1 Tip
+ 2     | TRS 1 Ring
+21     | TRS 2 Tip
+ 1     | TRS 2 Ring
+47     | TRS 3 Tip
+ 4     | TRS 3 Ring
+48     | TRS 4 Tip
+ 5     | TRS 4 Ring
+```
+
+### MIDI UART Module (Arduinio MIDI Shield)
+
+```
+µC Pin | Module Pin
+-------------------
+ 9     | TX
+10     | RX
+```
+
+### RGB LED Controller (P9813)
+
+```
+µC Pin | Module Pin
+-------------------
+42     | Data In
+41     | Clock In
+```
+
+### Buttons
+
+```
+µC Pin | Module Pin
+-------------------
+40     | Green Button
+39     | Red Button
+38     | Blue Button
+```
+
+### Mackie Showbox Base-Unit
+
+```
+µC Pin | Module Pin
+-------------------
+11     | TX
+12     | RX
+```
+
+### Mackie Showbox Breakaway Mixer
+
+```
+µC Pin | Module Pin
+-------------------
+13     | RX
+14     | TX
+```

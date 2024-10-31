@@ -160,6 +160,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     } else if (packetType == HEARTBEAT) {
         #ifdef SHOWBOX_DEBUG
         // Serial.print("Heartbeat");
+        Serial.print(".");
         #endif
     } else if (packetType == ACK) {
         uint8_t ackCmd = raw_packet[5];
