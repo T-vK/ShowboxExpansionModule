@@ -13,26 +13,23 @@
 
             const response = await fetch(url);
             const releases = await response.json();
-            const releasesList = document.getElementById('releases-list');
+            const releaseSelect = document.getElementById('release-select');
+            const installButton = document.getElementById('install-button');
 
             releases.forEach(release => {
-                const releaseItem = document.createElement('div');
-                releaseItem.innerHTML = `<h3>${release.tag_name}</h3><ul></ul>`;
+                const option = document.createElement('option');
+                option.value = release.name;
+                option.textContent = release.name;
                 
-                release.assets.forEach(asset => {
-                    const envItem = document.createElement('li');
-                    // Create the install button for each firmware asset
-                    const installButton = document.createElement('install-button');
-                    installButton.setAttribute('url', asset.browser_download_url);
-                    installButton.setAttribute('label', asset.name);
-                    installButton.setAttribute('description', 'Install this firmware on your ESP device');
+                const manifest = release.assets.find(asset => asset.name === 'firmware-manifest.json');
+                const manifestUrl = manifest ? manifest.browser_download_url : null;
 
-                    envItem.appendChild(installButton);
-                    releaseItem.querySelector('ul').appendChild(envItem);
+                option.addEventListener('click', () => {
+                    installButton.setAttribute('manifest', manifestUrl);
                 });
 
-                releasesList.appendChild(releaseItem);
-            });
+                select.appendChild(option);
+            });            
         }
 
         document.addEventListener('DOMContentLoaded', fetchReleases);
@@ -40,6 +37,7 @@
 </head>
 <body>
     <h1>Firmware Releases</h1>
-    <div id="releases-list"></div>
+    <select id="release-select"></div>
+    <esp-web-install-button id="install-button"></div>
 </body>
 </html>
