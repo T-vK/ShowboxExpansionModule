@@ -8,6 +8,7 @@ module.exports = {
       {
         assets: [
           { path: ".pio/build/*/sbxm-firmware-*.bin" },
+          { path: "firmware-manifest.json" },
         ],
       },
     ],
