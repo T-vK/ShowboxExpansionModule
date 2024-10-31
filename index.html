@@ -14,7 +14,7 @@
             const response = await fetch(url);
             const releases = await response.json();
             const releaseSelect = document.getElementById('release-select');
-            const installButton = document.getElementById('install-button');
+            const installButtonContainer= document.getElementById('install-button-container');
 
             releases.forEach(release => {
                 const option = document.createElement('option');
@@ -25,7 +25,9 @@
                 const manifestUrl = manifest ? manifest.browser_download_url : null;
 
                 option.addEventListener('click', () => {
+                    const installButton = document.createElement('esp-web-install-button');
                     installButton.setAttribute('manifest', manifestUrl);
+                    installButtonContainer.appendChild(installButton);
                 });
 
                 releaseSelect.appendChild(option);
@@ -38,6 +40,6 @@
 <body>
     <h1>Firmware Releases</h1>
     <select id="release-select"></div>
-    <esp-web-install-button id="install-button" />
+    <div id="install-button-container"></div>
 </body>
 </html>
