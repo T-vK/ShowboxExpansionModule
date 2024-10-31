@@ -7,14 +7,14 @@
       {
         "chipFamily": "ESP32-S3",
         "parts": [
-          { "path": "firmware_esp32_s3_n16r8.bin", "offset": 0 }
+          { "path": "https://github.com/T-vK/ShowboxInterceptor/releases/download/v1.0.0/firmware_esp32_s3_n16r8.bin", "offset": 0 }
         ]
       },
       {
         "chipFamily": "ESP32",
         "parts": [
-          { "path": "firmware_wemos_d1_mini32.bin", "offset": 0 }
+          { "path": "https://github.com/T-vK/ShowboxInterceptor/releases/download/v1.0.0/firmware_wemos_d1_mini32.bin", "offset": 0 }
         ]
       }
     ]
-  }  
+  }
