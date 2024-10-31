@@ -17,22 +17,21 @@
             const installButtonContainer= document.getElementById('install-button-container');
 
             releases.forEach(release => {
-                const option = document.createElement('option');
-                option.value = release.name;
-                option.textContent = release.name;
-                
                 const manifest = release.assets.find(asset => asset.name === 'firmware-manifest.json');
                 const manifestUrl = manifest ? manifest.browser_download_url : null;
 
-                option.addEventListener('click', () => {
-                    const installButton = document.createElement('esp-web-install-button');
-                    installButton.setAttribute('manifest', manifestUrl);
-                    installButtonContainer.appendChild(installButton);
-                });
+                const option = document.createElement('option');
+                option.textContent = release.name;
+                option.value = manifestUrl;
 
                 releaseSelect.appendChild(option);
             });
-            releaseSelect.children[0].click();
+            releaseSelect.addEventListener('change', () => {
+                const installButton = document.createElement('esp-web-install-button');
+                installButton.setAttribute('manifest', releaseSelect.value);
+                installButtonContainer.innerHTML = '';
+                installButtonContainer.appendChild(installButton);
+            });
         }
 
         document.addEventListener('DOMContentLoaded', fetchReleases);
