@@ -32,6 +32,7 @@
                 installButtonContainer.innerHTML = '';
                 installButtonContainer.appendChild(installButton);
             });
+            releaseSelect.dispatchEvent(new Event('change'));
         }
 
         document.addEventListener('DOMContentLoaded', fetchReleases);
