@@ -18,6 +18,9 @@
         }
         window.releasesApiUrl = `https://api.github.com/repos/${window.user}/${window.path}/releases`;
 
+        /**
+         * Intercept fetch requests to the dynamic manifest URL and return a generated/mocked response
+         */
         async function setupInterceptor() {
             // Save the original fetch to call it later if needed
             const originalFetch = fetch;
