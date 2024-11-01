@@ -85,6 +85,11 @@ jobs:
           git tag -l --points-at HEAD
           echo "new_release_tag=v$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
 
+      - name: Move firmware files to /tmp
+        run: |
+          mkdir -p /tmp/firmware/${{ env.new_release_tag }}
+          mv .pio/build/*/sbxm-firmware-*.bin /tmp/firmware/${{ env.new_release_tag }}
+
       - name: Checkout gh-pages branch
         uses: actions/checkout@v4
         with:
@@ -94,7 +99,7 @@ jobs:
       - name: Copy built binaries
         run: |
           mkdir -p firmware/${{ env.new_release_tag }}
-          cp .pio/build/*/sbxm-firmware-*.bin firmware/${{ env.new_release_tag }}/
+          mv /tmp/firmware/${{ env.new_release_tag }}/* firmware/${{ env.new_release_tag }}
 
       - name: Commit and push binaries to gh-pages
         env:
