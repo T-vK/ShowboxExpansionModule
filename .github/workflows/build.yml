@@ -10,6 +10,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.semantic_release.outputs.released }}
+      new_release_tag: ${{ steps.semantic_release.outputs.new_release_tag }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -50,14 +54,15 @@ jobs:
           npx semantic-release
 
       - name: Set output for released and tag
-        if: ${{ steps.semantic_release.outputs.released == 'true' }}
+        id: set_outputs
         run: |
-          echo "released=true" >> $GITHUB_ENV
+          echo "released=${{ steps.semantic_release.outputs.released }}" >> $GITHUB_ENV
           echo "new_release_tag=${{ steps.semantic_release.outputs.new_release_tag }}" >> $GITHUB_ENV
-
-    outputs:
-      released: ${{ steps.semantic_release.outputs.released }}
-      new_release_tag: ${{ steps.semantic_release.outputs.new_release_tag }}
+          
+      - name: Debug outputs
+        run: |
+          echo "Released: ${{ steps.semantic_release.outputs.released }}"
+          echo "New release tag: ${{ steps.semantic_release.outputs.new_release_tag }}"
 
   deploy-to-gh-pages:
     runs-on: ubuntu-latest
