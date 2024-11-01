@@ -6,9 +6,55 @@
     <title>Firmware Installer for ShowboxExpansionModule</title>
     <script type="module" src="https://unpkg.com/esp-web-tools@10.0.1/dist/web/install-button.js"></script>
     <script>
+        window.releases = {};
+        window.dynamicManifestUrl = window.location.href.replace(/\/$/, '') + '/firmware-manifest.json';
+        async function setupInterceptor() {
+            // Save the original fetch to call it later if needed
+            const originalFetch = fetch;
+
+            // Override fetch
+            window.fetch = async (url, options) => {
+                // Check if the URL matches the one you want to intercept
+                if (url.startsWith(window.dynamicManifestUrl)) {
+                    const urlObj = new URL(url);
+                    const tag = urlObj.searchParams.get('tag');
+                    const version = tag.replace(/^v/, '');
+                    // Return a mocked response with the JSON data
+                    const resJson = {
+                        "name": "ShowboxExpansionModule",
+                        "version": version,
+                        "home_assistant_domain": "showbox_expansion",
+                        "builds": [],
+                    };
+                    window.releases[tag].assets.forEach(asset => {
+                        const chipFamily = asset.name.toLowerCase().includes('s3') ? 'ESP32-S3' : 'ESP32';
+                        resJson.builds.push({
+                            chipFamily: chipFamily,
+                            parts: [{ path: asset.browser_download_url, offset: 0, }],
+                        });
+                    });
+                    console.log(resJson);
+                    return new Response(JSON.stringify(resJson), {
+                        status: 200, // Status code for a successful response
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                // For all other URLs, call the original fetch
+                return originalFetch(url, options);
+            };
+        }
+
         async function fetchReleases() {
-            const user = window.location.hostname.split('.')[0];
-            const path = window.location.pathname.replace(/^\/|\/$/g, '');
+            await setupInterceptor();
+            let user, path;
+            if (window.location.protocol === 'file:') {
+                user = 't-vk';
+                path = 'ShowboxInterceptor';
+            } else {
+                user = window.location.hostname.split('.')[0];
+                path = window.location.pathname.replace(/^\/|\/$/g, '');
+            }
             const url = `https://api.github.com/repos/${user}/${path}/releases`;
 
             const response = await fetch(url);
@@ -17,17 +63,16 @@
             const installButtonContainer= document.getElementById('install-button-container');
 
             releases.forEach(release => {
-                const manifestUrl = `https://raw.githubusercontent.com/T-vK/ShowboxInterceptor/refs/tags/${release.tag_name}/firmware-manifest.json`;
-
                 const option = document.createElement('option');
                 option.textContent = release.name;
-                option.value = manifestUrl;
-
+                option.value = release.tag_name;
                 releaseSelect.appendChild(option);
+                window.releases[release.tag_name] = release;
             });
             releaseSelect.addEventListener('change', () => {
+                const tag = releaseSelect.value;
                 const installButton = document.createElement('esp-web-install-button');
-                installButton.setAttribute('manifest', releaseSelect.value);
+                installButton.setAttribute('manifest', `${dynamicManifestUrl}?tag=${tag}`);
                 installButtonContainer.innerHTML = '';
                 installButtonContainer.appendChild(installButton);
             });
@@ -49,8 +94,6 @@
             color: white;
         }
         select {
-            margin: 1em;
-            padding: 0.5em;
             font-size: 1em;
             width: 100%;
         }
