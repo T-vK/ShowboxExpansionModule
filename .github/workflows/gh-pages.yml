@@ -6,8 +6,6 @@ on:
       - main
     paths:
       - 'index.html'
-  release:
-    types: [created]
 
 jobs:
   gh-pages-update-html:

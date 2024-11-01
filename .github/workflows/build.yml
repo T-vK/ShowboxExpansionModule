@@ -7,8 +7,8 @@ on:
     paths:
       - '**'
       - '!index.html'
-  release:
-    types: [created]
+#  release:
+#    types: [created]
 
 jobs:
   build:
