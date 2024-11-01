@@ -83,7 +83,7 @@ jobs:
         run: |
           npx semantic-release
           git tag -l --points-at HEAD
-          echo "new_release_tag=v$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
+          echo "new_release_tag=$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
 
       - name: Move firmware files to /tmp
         run: |
