@@ -38,7 +38,7 @@ jobs:
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add index.html
+          git add index.html  # Fixed the filename here
           git commit --amend --no-edit
           git push --force origin gh-pages
 
@@ -94,6 +94,16 @@ jobs:
           fetch-depth: 0
           ref: gh-pages
 
+      - name: Set new release tag
+        id: get_tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "new_release_tag=${GITHUB_REF##*/}" >> $GITHUB_ENV
+          else
+            echo "No new tag available, skipping deployment."
+            exit 1  # This will skip the job if no tag is found
+          fi
+
       - name: Copy built binaries
         run: |
           mkdir -p firmware/${{ env.new_release_tag }}
@@ -106,5 +116,5 @@ jobs:
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
           git add firmware/${{ env.new_release_tag }}
-          git commit -m "Deploying ${env.new_release_tag}" --allow-empty
+          git commit --amend --no-edit
           git push --force origin gh-pages
