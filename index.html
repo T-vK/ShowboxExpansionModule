@@ -16,7 +16,7 @@
             window.user = window.location.hostname.split('.')[0];
             window.path = window.location.pathname.replace(/^\/|\/$/g, '');
         }
-        widnow.releasesApiUrl = `https://api.github.com/repos/${window.user}/${window.path}/releases`;
+        window.releasesApiUrl = `https://api.github.com/repos/${window.user}/${window.path}/releases`;
 
         async function setupInterceptor() {
             // Save the original fetch to call it later if needed
