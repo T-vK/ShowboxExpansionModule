@@ -17,15 +17,15 @@ jobs:
           fetch-depth: 0
           ref: main
 
-      - name: Copy index.html to gh-pages branch
-        run: |
-          cp index.html $GITHUB_WORKSPACE
-
       - name: Checkout gh-pages branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: gh-pages
+
+      - name: Copy index.html to gh-pages branch
+        run: |
+          cp index.html $GITHUB_WORKSPACE
 
       - name: Replace index.html
         run: |
