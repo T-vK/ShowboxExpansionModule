@@ -8,6 +8,16 @@
     <script>
         window.releases = {};
         window.dynamicManifestUrl = window.location.href.replace(/\/$/, '') + '/firmware-manifest.json';
+
+        if (window.location.protocol === 'file:') {
+            window.user = 't-vk';
+            window.path = 'ShowboxInterceptor';
+        } else {
+            window.user = window.location.hostname.split('.')[0];
+            window.path = window.location.pathname.replace(/^\/|\/$/g, '');
+        }
+        widnow.releasesApiUrl = `https://api.github.com/repos/${window.user}/${window.path}/releases`;
+
         async function setupInterceptor() {
             // Save the original fetch to call it later if needed
             const originalFetch = fetch;
@@ -28,6 +38,7 @@
                     };
                     window.releases[tag].assets.forEach(asset => {
                         const chipFamily = asset.name.toLowerCase().includes('s3') ? 'ESP32-S3' : 'ESP32';
+                        const firmwareUrl = `https://raw.githubusercontent.com/${window.user}/${window.path}/refs/heads/gh-pages/firmwares/${tag}/${asset.name}`;
                         resJson.builds.push({
                             chipFamily: chipFamily,
                             parts: [{ path: asset.browser_download_url, offset: 0, }],
@@ -47,17 +58,7 @@
 
         async function fetchReleases() {
             await setupInterceptor();
-            let user, path;
-            if (window.location.protocol === 'file:') {
-                user = 't-vk';
-                path = 'ShowboxInterceptor';
-            } else {
-                user = window.location.hostname.split('.')[0];
-                path = window.location.pathname.replace(/^\/|\/$/g, '');
-            }
-            const url = `https://api.github.com/repos/${user}/${path}/releases`;
-
-            const response = await fetch(url);
+            const response = await fetch(window.releasesApiUrl);
             const releases = await response.json();
             const releaseSelect = document.getElementById('release-select');
             const installButtonContainer= document.getElementById('install-button-container');
