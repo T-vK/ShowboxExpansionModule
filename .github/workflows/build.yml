@@ -82,6 +82,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           npx semantic-release
+          git tag -l --points-at HEAD
+          echo "new_release_tag=v$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
 
   deploy-fw-to-gh-pages:
     runs-on: ubuntu-latest
@@ -93,16 +95,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: gh-pages
-
-      - name: Set new release tag
-        id: get_tag
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "new_release_tag=${GITHUB_REF##*/}" >> $GITHUB_ENV
-          else
-            echo "No new tag available, skipping deployment."
-            exit 1  # This will skip the job if no tag is found
-          fi
 
       - name: Copy built binaries
         run: |
