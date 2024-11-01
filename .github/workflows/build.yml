@@ -4,44 +4,13 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '**'
+      - '!index.html'
   release:
     types: [created]
 
 jobs:
-  gh-pages-update-html:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout main branch for index.html
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: main
-
-      - name: Copy index.html to gh-pages branch
-        run: |
-          cp index.html /tmp/index.html
-
-      - name: Checkout gh-pages branch
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: gh-pages
-
-      - name: Replace index.html
-        run: |
-          rm -f index.html
-          cp /tmp/index.html .
-
-      - name: Commit and push index.html to gh-pages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add index.html  # Fixed the filename here
-          git commit --amend --no-edit
-          git push --force origin gh-pages
-
   build:
     runs-on: ubuntu-latest
     steps:
