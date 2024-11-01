@@ -38,7 +38,7 @@
                     };
                     window.releases[tag].assets.forEach(asset => {
                         const chipFamily = asset.name.toLowerCase().includes('s3') ? 'ESP32-S3' : 'ESP32';
-                        const firmwareUrl = `https://raw.githubusercontent.com/${window.user}/${window.path}/refs/heads/gh-pages/firmwares/${tag}/${asset.name}`;
+                        const firmwareUrl = `./firmware/${tag}/${asset.name}`;
                         resJson.builds.push({
                             chipFamily: chipFamily,
                             parts: [{ path: asset.browser_download_url, offset: 0, }],

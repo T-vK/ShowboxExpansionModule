@@ -85,11 +85,6 @@ jobs:
           git tag -l --points-at HEAD
           echo "new_release_tag=v$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
 
-  deploy-fw-to-gh-pages:
-    runs-on: ubuntu-latest
-    needs: [build, gh-pages-update-html]
-    if: success()
-    steps:
       - name: Checkout gh-pages branch
         uses: actions/checkout@v4
         with:
