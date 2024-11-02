@@ -47,7 +47,7 @@ def after_build(source, target, env):
     # Prepare the esptool command
     esptool_command = f"esptool.py --chip {chip_type} merge_bin -o {merged_firmware_path} " \
                       f"--flash_mode {flash_mode} --flash_freq {flash_freq} --flash_size {flash_size} " \
-                      f"0x1000 {bootloader_path} 0x8000 {partitions_path} " \
+                      f"0x0000 {bootloader_path} 0x8000 {partitions_path} " \
                       f"0xe000 {boot_app0_path} 0x10000 {firmware_path}"
     
     # Print the command before executing
