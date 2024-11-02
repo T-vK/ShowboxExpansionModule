@@ -1,6 +1,7 @@
 #define SHOWBOX_DEBUG // enable debug constants and functions
 
 #include <Arduino.h>
+#include "CustomImprovWifi/CustomImprovWifi.h"
 #include "MackieShowbox/MackieShowbox.h"
 #include "TwoButtonLooper/TwoButtonLooper.h"
 //#include "SnapshotLoader/SnapshotLoader.h"
@@ -57,6 +58,7 @@ constexpr uint8_t STOP_BUTTON_PIN = TRS1_RING; // Looper Stop/Delete button GPIO
 // Pin for booster pedal button
 //constexpr uint8_t BOOSTER_PEDAL_PIN = TRS3_TIP; // Booster pedal GPIO pin
 
+CustomImprovWifi customImprovWifi;
 MackieShowbox showbox(SHOWBOX_BASE_RX, SHOWBOX_BASE_TX, SHOWBOX_MIXER_RX, SHOWBOX_MIXER_TX);
 TwoButtonLooper looper(RECORD_BUTTON_PIN, STOP_BUTTON_PIN, showbox);
 //SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, showbox);
@@ -71,6 +73,7 @@ void setup() {
     Serial.println("Debug Serial initialized");
     #endif
 
+    customImprovWifi.setupImprov();
     showbox.begin();
     looper.begin();
     //snapshotLoader.begin();
@@ -78,6 +81,7 @@ void setup() {
 }
 
 void loop() {
+    customImprovWifi.handleLoop();
     showbox.tick();
     looper.tick();
     //snapshotLoader.tick();
