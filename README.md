@@ -1,31 +1,27 @@
-## Mackie Showbox Interceptor Library
+## Mackie Showbox Expansion Module
+Gain more control over your Showbox. This project allows for controlling your Showbox and Breakaway Mixer using an ESP32-S3 and ESP32 (in the future also ESP8266 and Arduino).  
+Change presets, volume, eq, effects or control the looper using any footswitch, expression pedal, MIDI device etc. Support for MIDI over Bluetooth, Wifi and Ethernet are planned as well.
 
-Gain more control over your Showbox. This project allows for controlling your Showbox and breakaway Mixer using an ESP32-S3, ESP32, ESP8266 or Arduino. (ESP32-S3 will probably have the least bugs because I will primarily test against that. Also it supports most features.)
-
-This project is still a work in progress. I have reverse-engineered most of the protocol, but a few bits here and there are still missing.
+### Disclaimer
+This is still a work in progress. I have reverse-engineered most of the protocol, but a few bits here and there are still missing and stability isn't perfect yet.
 
 ### Hardware
-I will try to make make this project as accessible as possible. Soldering skills will not be necessary, but they may allow for a cleaner and more stable build.
+This project is entirely based on widespread off-the-shelf hardware that can be found on aliexpress, ebay etc. 
+I am providing a reference design that includes all the supported features, a 3D-printable case and a ready-to-go firmware that can be flashed through your browser. But all you really need is an ESP32/ESP32-S3 and two RJ45 breakout boards and maybe a TRS-jack to solder to the ESP to connect a footswitch or expression pedal.
 
-Here is an example on how you could wire everything if you wanted to add two foot switches and MIDI (which is not implemented and has not been tested at all):
-
-![Interceptor Schematics](https://www.musiker-board.de/attachments/interceptorschematics-png.947497/)
-
-In this example I used:
-- ESP32 D1 Mini - e.g. https://www.amazon.de/dp/B0CM9BR387
-- 2x RJ45 Breakout Board - e.g. https://www.ebay.de/itm/166667936034
-- Wemos D1 Mini DC Shield - e.g. https://www.ebay.de/itm/166449488149
-- 2x TRS sockets  - e.g. https://www.aliexpress.com/item/32745341055.html
-- 2x MIDI sockets - e.g. https://www.ebay.de/itm/126549251439
-- Opto Isolator 4N35
-- Resistors: 33OR, 10R, 220R, 420R
-- 1N4149 Diode
-
-If you don't want to solder, look for breakout boards/sockets with screw terminals or pre-soldered pin headers (in the latter case you might want to buy a bunch of so called dupont wires as well). I highly discourage anyone from using dupont wires + pin headers though because of how unreliable they are. I only recommend it for prototyping.
-
-### TODO
+### TODO (Software)
 - [x] Class to programmatically do anything the Breakaway Mixer can do.
 - [x] Example on how to add footswitches to control anything you want
+- [ ] Add more examples
+- [ ] Split UARTInterceptor and ShowboxExpansionModule into two libraries
+- [ ] GitHub Actions for PlatformIO publishing
+- [x] GitHub Actions to provide binary builds
+- [ ] Add web interface to allow controlling the Showbox from the browser (over WiFi and Ethernet)
+- [x] ESP Web Tools - Web flasher to allow flashing the micro controller from the browser
+- [x] ImprovWifi - Configure Wifi settings from the browser
+- [x] Add support for up to 4 dual foot switches (TRS jack)
+- [x] Add support for up to 4 expression pedals (TRS jack)
+- [ ] Add support for OTA updates
 - [ ] Add support for MIDI
 - [ ] Add support for MIDI over Bluetooth
 - [ ] Add support for MIDI over WiFi
@@ -35,13 +31,21 @@ If you don't want to solder, look for breakout boards/sockets with screw termina
 - [ ] Add support for using the breakaway mixer as a DAW controller (Would anyone even want this??)
 - [ ] Add support for Bluetooth HID (to allow using it as a Bluetooth page turner as well)
 - [ ] Add support for USB HID (to allow using it as a USB page turner as well)
-- [ ] Add more examples
-- [ ] Split UARTInterceptor and MackieShowbox into two libraries
-- [ ] GitHub Actions for PlatformIO publishing
-- [ ] GitHub Actions to provide binary builds
-- [ ] Add webinterface to allow controlling the Showbox from the browser (over either WiFi or Ethernet)
-- [ ] Web flasher to allow flashing the micro controller from the browser
-- [ ] Add support for OTA updates
+
+### Reference design
+
+#### Firmware
+The firmware can be installed using the [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/) or manually by setting up PlatformIO.
+
+#### Schematics
+![Interceptor Schematics](./docs/schematics.svg)
+
+#### 3D model
+[<img src="./docs/expansion-module-slid-in.jpeg" alt="Expansion Module Slid In" width="200"/>](./docs/expansion-module-slid-in.jpeg) 
+[<img src="./docs/expansion-module-open-wired.jpeg" alt="Expansion Module Open Wired" width="200"/>](./docs/expansion-module-open-wired.jpeg) 
+[<img src="./docs/expansion-module-front-open.jpeg" alt="Expansion Module Front Open" width="200"/>](./docs/expansion-module-front-open.jpeg) 
+[<img src="./docs/expansion-module-top-open.jpeg" alt="Expansion Module Top Open" width="200"/>](./docs/expansion-module-top-open.jpeg)  
+TODO: Add link to 3D model  
 
 ### Example code usage
 This basic example shows how you could implement your own mute toggle button:

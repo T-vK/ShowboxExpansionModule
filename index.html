@@ -36,12 +36,11 @@
                     const resJson = {
                         "name": "ShowboxExpansionModule",
                         "version": version,
-                        "home_assistant_domain": "showbox_expansion",
                         "builds": [],
                     };
                     window.releases[tag].assets.forEach(asset => {
                         const chipFamily = asset.name.toLowerCase().includes('s3') ? 'ESP32-S3' : 'ESP32';
-                        const firmwareUrl = `./firmware/${tag}/${asset.name}`;
+                        const firmwareUrl = `https://${window.user}.github.io/${window.path}/firmware/${tag}/${asset.name}`;
                         resJson.builds.push({
                             chipFamily: chipFamily,
                             parts: [{ path: firmwareUrl, offset: 0, }],
