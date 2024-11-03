@@ -43,10 +43,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Run semantic-release in dry-run mode and capture the output
-          npx semantic-release --dry-run | tee semantic-release.stdout
+          npx semantic-release --dry-run | tee semantic-release.stdout || {
+            echo "Error: Semantic release dry-run failed."
+            exit 1
+          }
+
           # Extract the predicted version from the output
-          PREDICTED_VERSION="$(awk '/he next release version is/ {print $NF}' semantic-release.stdout)"
+          PREDICTED_VERSION="$(awk '/the next release version is/ {print $NF}' semantic-release.stdout)"
           echo "Predicted version: $PREDICTED_VERSION"
+
+          # Check if the predicted version is empty
+          if [ -z "$PREDICTED_VERSION" ]; then
+            echo "Error: Predicted version is empty."
+            exit 1
+          fi
+
           echo "predicted_version=$PREDICTED_VERSION" >> $GITHUB_ENV
 
       - name: Build firmware for all environments
