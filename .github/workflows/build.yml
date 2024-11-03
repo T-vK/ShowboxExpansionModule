@@ -45,7 +45,7 @@ jobs:
           # Run semantic-release in dry-run mode and capture the output
           npx semantic-release --dry-run | tee semantic-release.stdout
           # Extract the predicted version from the output
-          PREDICTED_VERSION="$(awk '/the next release version is/ {print $NF}' semantic-release.stdout)"
+          PREDICTED_VERSION="$(awk '/he next release version is/ {print $NF}' semantic-release.stdout)"
           echo "Predicted version: $PREDICTED_VERSION"
           echo "predicted_version=$PREDICTED_VERSION" >> $GITHUB_ENV
 
