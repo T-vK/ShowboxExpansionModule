@@ -54,7 +54,7 @@ jobs:
           environments=(${{ env.envs }})
           for env in "${environments[@]}"; do
             echo "Building for environment: $env with version: ${{ env.predicted_version }}"
-            SXM_VERSION="${{ env.predicted_version }}"
+            export SXM_VERSION="${{ env.predicted_version }}"
             platformio run -e "$env"
           done
 
