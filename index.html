@@ -89,27 +89,43 @@
             font-family: Arial, sans-serif;
             margin: 0;
             padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh; /* Full height for vertical centering */
         }
         h1 {
             margin: 0;
-            padding: 1em;
+            padding: 0.5em;
             background-color: #333;
             color: white;
+            width: 100%;
+            text-align: center; /* Center text in header */
+        }
+        .content {
+            display: flex;
+            flex-direction: column;
+            justify-content: center; /* Center contents vertically */
+            align-items: center; /* Center contents horizontally */
+            flex-grow: 1; /* Allow this section to take up remaining space */
         }
         select {
-            font-size: 1em;
-            width: 100%;
+            font-size: 1em; /* Set a slightly smaller font size */
+            width: 150px; /* Fixed width for dropdown */
+            height: 35px; /* Set a slightly smaller height for the dropdown */
+            margin: 1em 0; /* Spacing around the dropdown */
+            padding: 0.25em; /* Reduced padding inside the dropdown */
         }
         #install-button-container {
-            margin: 1em;
-            padding: 0.5em;
-            width: 100%;
+            display: flex;
+            justify-content: center; /* Center button */
         }
     </style>
 </head>
 <body>
     <h1>Firmware Installer for ShowboxExpansionModule</h1>
-    <select id="release-select"></select>
-    <div id="install-button-container"></div>
+    <div class="content">
+        <select id="release-select"></select>
+        <div id="install-button-container"></div>
+    </div>
 </body>
 </html>
