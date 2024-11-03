@@ -38,7 +38,7 @@ I am providing a reference design that includes all the supported features, a 3D
 The firmware can be installed using the [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/) or manually by setting up PlatformIO.
 
 #### Schematics
-[![Interceptor Schematics](./docs/schematics.svg)](./docs/schematics.svg)
+[![Interceptor Schematics](./docs/schematics.svg)](https://raw.githubusercontent.com/T-vK/ShowboxExpansionModule/refs/heads/main/docs/schematics.svg)
 
 #### 3D model
 [<img src="./docs/expansion-module-slid-in.jpeg" alt="Expansion Module Slid In" width="200"/>](./docs/expansion-module-slid-in.jpeg) [<img src="./docs/expansion-module-top-open.jpeg" alt="Expansion Module Top Open" width="200"/>](./docs/expansion-module-top-open.jpeg)  
