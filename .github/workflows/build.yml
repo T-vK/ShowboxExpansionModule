@@ -39,6 +39,8 @@ jobs:
 
       - name: Predict Semantic Version
         id: predict_version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Run semantic-release in dry-run mode and capture the output
           npx semantic-release --dry-run | tee semantic-release.stdout
