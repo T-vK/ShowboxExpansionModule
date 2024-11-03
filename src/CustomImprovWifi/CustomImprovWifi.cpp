@@ -9,7 +9,7 @@ CustomImprovWifi::CustomImprovWifi() {
 }
 
 void CustomImprovWifi::setupImprov() {
-    improvSerial.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "ImprovWiFiLib", "1.0.0", "BasicWebServer", "http://{LOCAL_IPV4}?name=Guest");
+    improvSerial.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "ShowboxExpansionModule", SXM_VERSION, "ShowboxExpansionModule Server", "http://{LOCAL_IPV4}?name=Guest");
     improvSerial.onImprovError(onImprovWiFiErrorCb);
     improvSerial.onImprovConnected(onImprovWiFiConnectedCb);
     improvSerial.setCustomConnectWiFi(connectWifi);  // Register static callback function

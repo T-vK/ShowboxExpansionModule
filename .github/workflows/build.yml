@@ -37,11 +37,22 @@ jobs:
           echo "Environments: $environments"
           echo "envs=$environments" >> $GITHUB_ENV
 
+      - name: Predict Semantic Version
+        id: predict_version
+        run: |
+          # Run semantic-release in dry-run mode and capture the output
+          npx semantic-release --dry-run | tee semantic-release.stdout
+          # Extract the predicted version from the output
+          PREDICTED_VERSION="$(awk '/the next release version is/ {print $NF}' semantic-release.stdout)"
+          echo "Predicted version: $PREDICTED_VERSION"
+          echo "predicted_version=$PREDICTED_VERSION" >> $GITHUB_ENV
+
       - name: Build firmware for all environments
         run: |
           environments=(${{ env.envs }})
           for env in "${environments[@]}"; do
-            echo "Building for environment: $env"
+            echo "Building for environment: $env with version: ${{ env.predicted_version }}"
+            SXM_VERSION="${{ env.predicted_version }}"
             platformio run -e "$env"
           done
 
