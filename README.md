@@ -2,6 +2,12 @@
 Gain more control over your Showbox. This project allows for controlling your Showbox and Breakaway Mixer using an ESP32-S3 and ESP32 (in the future also ESP8266 and Arduino).  
 Change presets, volume, eq, effects or control the looper using any footswitch, expression pedal, MIDI device etc. Support for MIDI over Bluetooth, Wifi and Ethernet are planned as well.
 
+### Important links
+- [Firmware Web Installer](https://t-vk.github.io/ShowboxExpansionModule/)
+- [3D Model](https://grabcad.com/library/showboxexpansionmodule-v1-1)
+- [Schematics](https://raw.githubusercontent.com/T-vK/ShowboxExpansionModule/refs/heads/main/docs/schematics.svg)
+- [Parts List](./PartsList.md)
+
 ### Disclaimer
 This is still a work in progress. I have reverse-engineered most of the protocol, but a few bits here and there are still missing and stability isn't perfect yet.
 
