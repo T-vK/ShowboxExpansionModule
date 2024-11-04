@@ -9,10 +9,30 @@ CustomImprovWifi::CustomImprovWifi() {
 }
 
 void CustomImprovWifi::setupImprov() {
-    improvSerial.setDeviceInfo(ImprovTypes::ChipFamily::CF_ESP32, "ShowboxExpansionModule", SXM_VERSION, "ShowboxExpansionModule Server", "http://{LOCAL_IPV4}?name=Guest");
+    ImprovTypes::ChipFamily detectedChipFamily;
+    #if defined(ESP32)
+        #if CONFIG_IDF_TARGET_ESP32
+            detectedChipFamily = ImprovTypes::ChipFamily::CF_ESP32;
+        #elif CONFIG_IDF_TARGET_ESP32C3
+            detectedChipFamily = ImprovTypes::ChipFamily::CF_ESP32_C3;
+        #elif CONFIG_IDF_TARGET_ESP32S2
+            detectedChipFamily = ImprovTypes::ChipFamily::CF_ESP32_S2;
+        #elif CONFIG_IDF_TARGET_ESP32S3
+            detectedChipFamily = ImprovTypes::ChipFamily::CF_ESP32_S3;
+        #else
+            //Serial.println("Unsupported ESP32 variant detected.");
+            return;  // Exit setup if the chip is unsupported
+        #endif
+    #elif defined(ESP8266)
+        detectedChipFamily = ImprovTypes::ChipFamily::CF_ESP8266;
+    #else
+        //Serial.println("Unsupported platform detected.");
+        return;  // Exit setup if the platform is unsupported
+    #endif
+    improvSerial.setDeviceInfo(detectedChipFamily, "ShowboxExpansionModule", SXM_VERSION, "ShowboxExpansionModule Server", "http://{LOCAL_IPV4}?name=Guest");
     improvSerial.onImprovError(onImprovWiFiErrorCb);
     improvSerial.onImprovConnected(onImprovWiFiConnectedCb);
-    improvSerial.setCustomConnectWiFi(connectWifi);  // Register static callback function
+    improvSerial.setCustomConnectWiFi(connectWifi); // Register static callback function
     blinkLed(100, 5);
 }
 

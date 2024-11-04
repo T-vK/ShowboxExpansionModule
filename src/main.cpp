@@ -70,17 +70,7 @@ void setup() {
     #endif
     delay(2000);
     #ifdef SHOWBOX_DEBUG
-    Serial.println();
-    Serial.println("Debug Serial initialized");
-    Serial.println();
-    Serial.println("Firmware Info");
-    Serial.println("Name: ShowboxExpansionModule");
-    Serial.print("Firmware Version: v");
-    Serial.println(SXM_VERSION);
-    Serial.print("Build Time: ");
-    Serial.println(CURRENT_TIME);
-    Serial.print("Build Environment: ");
-    Serial.println(BUILD_ENV_NAME);
+    printFirmwareInfo();
     #endif
 
     customImprovWifi.setupImprov();
@@ -96,4 +86,17 @@ void loop() {
     looper.tick();
     //snapshotLoader.tick();
     //boosterPedal.tick();
+}
+
+// Print firmware info
+void printFirmwareInfo() {
+    Serial.println();
+    Serial.println("Firmware Info");
+    Serial.println("Name: ShowboxExpansionModule");
+    Serial.print("Firmware Version: v");
+    Serial.println(SXM_VERSION);
+    Serial.print("Build Time: ");
+    Serial.println(CURRENT_TIME);
+    Serial.print("Build Environment: ");
+    Serial.println(BUILD_ENV_NAME);
 }

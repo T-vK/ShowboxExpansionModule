@@ -7,9 +7,12 @@ on:
     paths:
       - '**'
       - '!index.html'
+      - '!docs/**'
+      - '*.md'
+      - '.github/workflows/gh-pages.yml'
 
 jobs:
-  check-version:
+  pre-build-check:
     runs-on: ubuntu-latest
     outputs:
       predicted_version: ${{ steps.predict_version.outputs.predicted_version }}
@@ -46,8 +49,8 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: check-version
-    if: needs.check-version.outputs.version_available == 'true'
+    needs: pre-build-check
+    if: needs.pre-build-check.outputs.version_available == 'true'
     outputs:
       artifact_path: ${{ steps.upload_firmware.outputs.artifact_path }}
     steps:
@@ -73,8 +76,8 @@ jobs:
         run: |
           environments=(${{ env.envs }})
           for env in "${environments[@]}"; do
-            echo "Building for environment: $env with version: ${{ needs.check-version.outputs.predicted_version }}"
-            export SXM_VERSION="${{ needs.check-version.outputs.predicted_version }}"
+            echo "Building for environment: $env with version: ${{ needs.pre-build-check.outputs.predicted_version }}"
+            export SXM_VERSION="${{ needs.pre-build-check.outputs.predicted_version }}"
             platformio run -e "$env"
           done
 
@@ -88,7 +91,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: build
-    if: needs.check-version.outputs.version_available == 'true'
+    if: needs.pre-build-check.outputs.version_available == 'true'
     steps:
       - name: Download firmware artifacts
         uses: actions/download-artifact@v4
