@@ -7,13 +7,52 @@ on:
     paths:
       - '**'
       - '!index.html'
-#  release:
-#    types: [created]
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      predicted_version: ${{ steps.predict_version.outputs.predicted_version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Predict Semantic Version
+        id: predict_version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --dry-run | tee semantic-release.stdout || {
+            echo "Error: Semantic release dry-run failed!"
+          }
+
+          PREDICTED_VERSION="$(awk '/the next release version is/ {print $NF}' semantic-release.stdout)"
+          echo "Predicted version: $PREDICTED_VERSION"
+
+          if [ -z "$PREDICTED_VERSION" ]; then
+            echo "Error: Predicted version is empty!"
+          fi
+
+          echo "::set-output name=predicted_version::$PREDICTED_VERSION"
+
   build:
     runs-on: ubuntu-latest
+    needs: check-version
+    outputs:
+      artifact_path: ${{ steps.upload_firmware.outputs.artifact_path }}
     steps:
+      - name: Check if predicted version is available
+        run: |
+          if [ -z "${{ needs.check-version.outputs.predicted_version }}" ]; then
+            echo "Error: Predicted version is not available!"
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -25,11 +64,6 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Install Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Get environments from platformio.ini
         id: get_envs
         run: |
@@ -37,37 +71,36 @@ jobs:
           echo "Environments: $environments"
           echo "envs=$environments" >> $GITHUB_ENV
 
-      - name: Predict Semantic Version
-        id: predict_version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Run semantic-release in dry-run mode and capture the output
-          npx semantic-release --dry-run | tee semantic-release.stdout || {
-            echo "Error: Semantic release dry-run failed."
-            exit 1
-          }
-
-          # Extract the predicted version from the output
-          PREDICTED_VERSION="$(awk '/the next release version is/ {print $NF}' semantic-release.stdout)"
-          echo "Predicted version: $PREDICTED_VERSION"
-
-          # Check if the predicted version is empty
-          if [ -z "$PREDICTED_VERSION" ]; then
-            echo "Error: Predicted version is empty."
-            exit 1
-          fi
-
-          echo "predicted_version=$PREDICTED_VERSION" >> $GITHUB_ENV
-
       - name: Build firmware for all environments
         run: |
           environments=(${{ env.envs }})
           for env in "${environments[@]}"; do
-            echo "Building for environment: $env with version: ${{ env.predicted_version }}"
-            export SXM_VERSION="${{ env.predicted_version }}"
+            echo "Building for environment: $env with version: ${{ needs.check-version.outputs.predicted_version }}"
+            export SXM_VERSION="${{ needs.check-version.outputs.predicted_version }}"
             platformio run -e "$env"
           done
+
+      - name: Upload firmware artifacts
+        id: upload_firmware
+        uses: actions/upload-artifact@v3
+        with:
+          name: firmware
+          path: .pio/build/*/sbxm-firmware-*.bin
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: firmware
+          path: /tmp/firmware
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Run Semantic Release
         id: semantic_release
@@ -78,23 +111,18 @@ jobs:
           git tag -l --points-at HEAD
           echo "new_release_tag=$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
 
-      - name: Move firmware files to /tmp
-        run: |
-          mkdir -p /tmp/firmware/${{ env.new_release_tag }}
-          mv .pio/build/*/sbxm-firmware-*.bin /tmp/firmware/${{ env.new_release_tag }}
-
       - name: Checkout gh-pages branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: gh-pages
 
-      - name: Copy built binaries
+      - name: Copy firmware files
         run: |
           mkdir -p firmware/${{ env.new_release_tag }}
-          mv /tmp/firmware/${{ env.new_release_tag }}/* firmware/${{ env.new_release_tag }}
+          mv /tmp/firmware/* firmware/${{ env.new_release_tag }}
 
-      - name: Commit and push binaries to gh-pages
+      - name: Commit and push firmware
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
