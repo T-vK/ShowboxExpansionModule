@@ -31,7 +31,8 @@ jobs:
             echo "Error: Semantic release dry-run failed!"
           }
 
-          PREDICTED_VERSION="$(awk '/the next release version is/ {print $NF}' semantic-release.stdout)"
+          # Note: We use `he` so that we can match both `... the ...` and `The ...`.
+          PREDICTED_VERSION="$(awk '/he next release version is/ {print $NF}' semantic-release.stdout)"
           echo "Predicted version: $PREDICTED_VERSION"
 
           if [ -z "$PREDICTED_VERSION" ]; then
