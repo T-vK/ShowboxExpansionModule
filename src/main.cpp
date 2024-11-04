@@ -64,6 +64,19 @@ TwoButtonLooper looper(RECORD_BUTTON_PIN, STOP_BUTTON_PIN, showbox);
 //SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, showbox);
 //BoosterPedal boosterPedal(BOOSTER_PEDAL_PIN, showbox, entity_id::INPUT2_GAIN, Showbox::InputGain::POSITION_11, Showbox::InputGain::POSITION_13);
 
+// Print firmware info
+void printFirmwareInfo() {
+    Serial.println();
+    Serial.println("Firmware Info");
+    Serial.println("Name: ShowboxExpansionModule");
+    Serial.print("Firmware Version: v");
+    Serial.println(SXM_VERSION);
+    Serial.print("Build Time: ");
+    Serial.println(CURRENT_TIME);
+    Serial.print("Build Environment: ");
+    Serial.println(BUILD_ENV_NAME);
+}
+
 void setup() {
     #ifdef SHOWBOX_DEBUG
     Serial.begin(921600);
@@ -86,17 +99,4 @@ void loop() {
     looper.tick();
     //snapshotLoader.tick();
     //boosterPedal.tick();
-}
-
-// Print firmware info
-void printFirmwareInfo() {
-    Serial.println();
-    Serial.println("Firmware Info");
-    Serial.println("Name: ShowboxExpansionModule");
-    Serial.print("Firmware Version: v");
-    Serial.println(SXM_VERSION);
-    Serial.print("Build Time: ");
-    Serial.println(CURRENT_TIME);
-    Serial.print("Build Environment: ");
-    Serial.println(BUILD_ENV_NAME);
 }

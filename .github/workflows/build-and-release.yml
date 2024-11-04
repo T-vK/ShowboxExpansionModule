@@ -8,8 +8,8 @@ on:
       - '**'
       - '!index.html'
       - '!docs/**'
-      - '*.md'
-      - '.github/workflows/gh-pages.yml'
+      - '!*.md'
+      - '!.github/workflows/gh-pages.yml'
 
 jobs:
   pre-build-check:
@@ -40,12 +40,12 @@ jobs:
 
           if [ -z "$PREDICTED_VERSION" ]; then
             echo "No new version detected, skipping build and release."
-            echo "::set-output name=version_available::false"
+            echo "version_available=false" >> $GITHUB_ENV
           else
-            echo "::set-output name=version_available::true"
+            echo "version_available=true" >> $GITHUB_ENV
           fi
 
-          echo "::set-output name=predicted_version::$PREDICTED_VERSION"
+          echo "predicted_version=$PREDICTED_VERSION" >> $GITHUB_ENV
 
   build:
     runs-on: ubuntu-latest
