@@ -64,7 +64,6 @@ TwoButtonLooper looper(RECORD_BUTTON_PIN, STOP_BUTTON_PIN, showbox);
 //SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, showbox);
 //BoosterPedal boosterPedal(BOOSTER_PEDAL_PIN, showbox, entity_id::INPUT2_GAIN, Showbox::InputGain::POSITION_11, Showbox::InputGain::POSITION_13);
 
-// Print firmware info
 void printFirmwareInfo() {
     Serial.println();
     Serial.println("Firmware Info");
