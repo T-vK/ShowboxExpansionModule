@@ -124,9 +124,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ls -la .pio/build
           mkdir -p firmware/${{ steps.semantic_release.outputs.new_release_tag }}
-          mv .pio/build/*/sbmx-firmware-*.bin firmware/${{ steps.semantic_release.outputs.new_release_tag }}/
+          mv .pio/build/*/sbxm-firmware-*.bin firmware/${{ steps.semantic_release.outputs.new_release_tag }}/
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
           git add firmware/${{ steps.semantic_release.outputs.new_release_tag }}
