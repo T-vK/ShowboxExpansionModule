@@ -3,12 +3,12 @@ Gain more control over your Mackie Showbox. This project allows for controlling 
 Change presets, volume, eq, effects or control the looper using any footswitch, expression pedal, MIDI device etc. Support for MIDI over Bluetooth, Wifi and Ethernet are planned as well.
 
 ### Getting started
-You can either create a custom build with just the parts you need or build the complete reference design.
+You can either create a custom build with just the parts you need or build the complete reference design:
 - [Parts List](./PartsList.md) 
 - [Schematics](https://raw.githubusercontent.com/T-vK/ShowboxExpansionModule/refs/heads/main/docs/schematics.svg)
+- [Pin Mappings](#pin-mappings-for-esp32-s3)
 - [3D Model](https://grabcad.com/library/showboxexpansionmodule-v1-1)
 - [Firmware Web Installer](https://t-vk.github.io/ShowboxExpansionModule/)
-
 
 ### Disclaimer
 This is still a work in progress. I have reverse-engineered most of the protocol, but a few bits here and there are still missing and stability isn't perfect yet.
@@ -40,18 +40,19 @@ I am providing a reference design that includes all the supported features, a 3D
 - [ ] Add support for Bluetooth HID (to allow using it as a Bluetooth page turner as well)
 - [ ] Add support for USB HID (to allow using it as a USB page turner as well)
 
-### Reference design
-
 #### Firmware
 The firmware can be installed using the [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/) or manually by setting up PlatformIO.
 
 #### Schematics
 [![Interceptor Schematics](./docs/schematics.svg)](https://raw.githubusercontent.com/T-vK/ShowboxExpansionModule/refs/heads/main/docs/schematics.svg)
 
-#### 3D model
+#### Photos of the Reference Design
 [<img src="./docs/expansion-module-slid-in.jpeg" alt="Expansion Module Slid In" width="200"/>](./docs/expansion-module-slid-in.jpeg) [<img src="./docs/expansion-module-top-open.jpeg" alt="Expansion Module Top Open" width="200"/>](./docs/expansion-module-top-open.jpeg)  
-[<img src="./docs/expansion-module-front-open.jpeg" alt="Expansion Module Front Open" width="200"/>](./docs/expansion-module-front-open.jpeg) [<img src="./docs/expansion-module-open-wired.jpeg" alt="Expansion Module Open Wired" width="200"/>](./docs/expansion-module-open-wired.jpeg)  
-TODO: Add link to 3D model  
+[<img src="./docs/expansion-module-front-open.jpeg" alt="Expansion Module Front Open" width="200"/>](./docs/expansion-module-front-open.jpeg) [<img src="./docs/expansion-module-open-wired.jpeg" alt="Expansion Module Open Wired" width="200"/>](./docs/expansion-module-open-wired.jpeg)
+
+## Creating your own firmware with custom functionality
+
+In order to do that, I recommend using PlatformIO. You can also do it with the Arduino IDE, but I haven't tested that yet and thus can't provide any instructions for it.
 
 ### Example code usage
 This basic example shows how you could implement your own mute toggle button:
@@ -135,7 +136,7 @@ It is technically possible to drop packets entirely, preventing them from arrivi
 
 
 ### Documentation
-Unfortunately I haven't found the time to document everything properly, but I created a lot of contants that acs as a reference for possible values to be passed the available functions: [src/constants.h](src/constants.h)   
+Unfortunately I haven't found the time to document everything properly, but I created a lot of constants that act as a reference for possible values to be passed the available functions: [src/constants.h](src/constants.h)   
 Other than that, all I can give you for now, is a list of the available public methods:
 
 ``` C++
@@ -166,6 +167,8 @@ public:
 (might be out of date by the time you read this, so check against: [src/MackieShowbox/MackieShowbox.h](src/MackieShowbox/MackieShowbox.h) )
 
 ## Pin Mappings for ESP32-S3
+
+Note: If you are using an ESP32 insteae of an ESP32-S3, you will have to adjust the pin mappings accordingly.
 
 ### SPI Ethernet Module (Mini W5500)
 
