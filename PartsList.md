@@ -1,5 +1,5 @@
-# Parts List for the Reference Design of the Showbox Expansion Module
-Note: If any of the links stop working, use the name of the part and search it on AliExpress or eBay. If in doubt if the part is the correct one, check what they look like in the [3D model](https://grabcad.com/library/showboxexpansionmodule-v1-1).
+## Parts List for the Reference Design of the Showbox Expansion Module
+Note: If any of the links stop working, use the name of the part and search it on AliExpress or eBay. If in doubt if the part is the correct one, check what they look like in the [3D model](https://grabcad.com/library/showboxexpansionmodule-v1-1). Also be aware that some of the links point to offers with more than one piece.
 
 - [1x P813 RGB LED Driver](https://www.aliexpress.com/item/1005005863723595.html)
 - [1x Momentary LED Switch 12mm Flat Head, Silver, 12-24V, Red Led](https://www.aliexpress.com/item/4001362443186.html)
@@ -24,4 +24,8 @@ Note: If any of the links stop working, use the name of the part and search it o
 - [ESP32-S3-DevKit C, N16R8, Dual USB C](https://www.aliexpress.com/item/1005007656791597.html)
 - [2x RJ45 Female Panel Mount Screw Terminal Adapter, D-Type RJ45 8P8C Female to 8pin Terminal](https://www.aliexpress.com/item/1005007506067046.html)
 - [SMA to u.fl Pigtail Cable](https://www.aliexpress.com/item/1005006638976617.html)
-- [ESP32-S3 Terminal Screw Shield MRD076A](https://www.amazon.de/dp/B0DJLND42P)
+- [ESP32-S3 Terminal Screw Shield MRD076A](https://www.amazon.de/dp/B0DJLND42P) (This one seems to be a little tough to find unfortunately.)
+- [4x Hex Screws DIN912, M4 x 20mm, black](https://www.aliexpress.com/item/4000978466742.html)
+- [4x Nut DIN934, M4, black](https://www.aliexpress.com/item/1005001639359312.html)
+- [Self tapping wood screws M1/M2/M3](https://www.aliexpress.com/item/1005002322813833.html) (Not exactly sure which ones I used, but these should work.)
+- [2x WAGO Pluggable Terminal Block 5P](https://www.aliexpress.com/item/1005006366277660.html)
