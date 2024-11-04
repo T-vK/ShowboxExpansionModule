@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       predicted_version: ${{ steps.predict_version.outputs.predicted_version }}
+      version_available: ${{ steps.predict_version.outputs.version_available }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -31,12 +32,14 @@ jobs:
             echo "Error: Semantic release dry-run failed!"
           }
 
-          # Note: We use `he` so that we can match both `... the ...` and `The ...`.
           PREDICTED_VERSION="$(awk '/he next release version is/ {print $NF}' semantic-release.stdout)"
           echo "Predicted version: $PREDICTED_VERSION"
 
           if [ -z "$PREDICTED_VERSION" ]; then
-            echo "Error: Predicted version is empty!"
+            echo "No new version detected, skipping build and release."
+            echo "::set-output name=version_available::false"
+          else
+            echo "::set-output name=version_available::true"
           fi
 
           echo "::set-output name=predicted_version::$PREDICTED_VERSION"
@@ -44,16 +47,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: check-version
+    if: needs.check-version.outputs.version_available == 'true'
     outputs:
       artifact_path: ${{ steps.upload_firmware.outputs.artifact_path }}
     steps:
-      - name: Check if predicted version is available
-        run: |
-          if [ -z "${{ needs.check-version.outputs.predicted_version }}" ]; then
-            echo "Error: Predicted version is not available!"
-            exit 1
-          fi
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -83,7 +80,7 @@ jobs:
 
       - name: Upload firmware artifacts
         id: upload_firmware
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: firmware
           path: .pio/build/*/sbxm-firmware-*.bin
@@ -91,13 +88,17 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: build
+    if: needs.check-version.outputs.version_available == 'true'
     steps:
       - name: Download firmware artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: firmware
           path: /tmp/firmware
 
+      - name: Checkout code
+        uses: actions/checkout@v4
+  
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
