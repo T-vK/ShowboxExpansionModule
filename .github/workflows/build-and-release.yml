@@ -106,7 +106,7 @@ jobs:
         run: |
           npx semantic-release
           git tag -l --points-at HEAD
-          echo "new_release_tag=$(git tag -l --points-at HEAD)" >> $GITHUB_ENV
+          echo "new_release_tag=$(git tag -l --points-at HEAD)" >> $GITHUB_OUTPUT
 
       - name: Checkout gh-pages branch
         uses: actions/checkout@v4
@@ -124,10 +124,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p firmware/${{ env.new_release_tag }}
-          mv .pio/build/*/sbmx-firmware-*.bin firmware/${{ env.new_release_tag }}/
+          ls -la .pio/build
+          mkdir -p firmware/${{ steps.semantic_release.outputs.new_release_tag }}
+          mv .pio/build/*/sbmx-firmware-*.bin firmware/${{ steps.semantic_release.outputs.new_release_tag }}/
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add firmware/${{ env.new_release_tag }}
+          git add firmware/${{ steps.semantic_release.outputs.new_release_tag }}
           git commit --amend --no-edit
           git push --force origin gh-pages
