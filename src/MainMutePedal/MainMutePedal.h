@@ -1,14 +1,14 @@
-#ifndef BOOSTER_PEDAL_H
-#define BOOSTER_PEDAL_H
+#ifndef MAIN_MUTE_PEDAL_H
+#define MAIN_MUTE_PEDAL_H
 
 #include <Arduino.h>
 #include <OneButton.h>
 #include "MackieShowbox/MackieShowbox.h"
 
-class BoosterPedal {
+class MainMutePedal {
 public:
     // Constructor
-    BoosterPedal(uint8_t button_pin, MackieShowbox* showbox, entity_id entity);
+    MainMutePedal(uint8_t button_pin, MackieShowbox* showbox);
 
     // Initialization method
     void begin();
@@ -28,11 +28,11 @@ private:
 
     OneButton button;
     MackieShowbox* showbox;
-    entity_id entity;
-    float value1 = Showbox::InputVolume::POSITION_1;
-    float value2 = Showbox::InputVolume::POSITION_16;
+    entity_id entity = entity_id::MAIN_MUTE;
+    bool onValue = Showbox::MainMute::ON;
+    bool offValue = Showbox::MainMute::OFF;
 
     Print* Debug = &Serial;
 };
 
-#endif // BOOSTER_PEDAL_H
+#endif // MAIN_MUTE_PEDAL_H

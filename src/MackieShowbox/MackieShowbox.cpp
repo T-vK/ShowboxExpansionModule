@@ -32,7 +32,7 @@ void MackieShowbox::begin() {
     
 
     #ifdef SHOWBOX_DEBUG
-    Serial.println("\nMackieShowbox Interceptor ready\n");
+    Debug->println("\nMackieShowbox Interceptor ready\n");
     #endif
 }
 
@@ -40,17 +40,19 @@ void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
     entityValues[entityId].boolValue = value;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
-        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
         interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
     }
+    entityValues[entityId].boolValue = value;
 }
 void MackieShowbox::setEntityValue(entity_id entityId, uint8_t value, bool emit) {
     entityValues[entityId].uint8Value = value;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
-        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
         interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
     }
+    entityValues[entityId].uint8Value = value;
 }
 void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
     if (emit) {
@@ -59,8 +61,8 @@ void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
 
         uint8_t packet[15] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, floatBytes[0], floatBytes[1], floatBytes[2], floatBytes[3], 0xEF, 0xBE };
 
-        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
         interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
     }
     entityValues[entityId].floatValue = value;
 }
@@ -128,21 +130,21 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         entity_data_type entityType = entity_type_mapping[entityId];
         #ifdef SHOWBOX_DEBUG
         String entityString = entity_id_to_string[entityId].c_str();
-        Serial.printf("%s [Decoded] Type: %s | Entity: %s | { Set %s to ", directionString.c_str(), packetTypeString.c_str(), entityString.c_str(), entityString.c_str());
+        Debug->printf("%s [Decoded] Type: %s | Entity: %s | { Set %s to ", directionString.c_str(), packetTypeString.c_str(), entityString.c_str(), entityString.c_str());
         #endif
         if (entityType == BOOL) {
             bool value = raw_packet[9];
             #ifdef SHOWBOX_DEBUG
-            Serial.printf("%s", value ? "true" : "false");
+            Debug->printf("%s", value ? "true" : "false");
             #endif
             setEntityValue(entityId, value, false);
         } else if (entityType == UINT8) {
             uint8_t value = raw_packet[9];
             #ifdef SHOWBOX_DEBUG
             if (entityId == LOOPER_STATE) {
-                Serial.printf("%s", looper_state_to_string[value].c_str());
+                Debug->printf("%s", looper_state_to_string[value].c_str());
             } else {
-                Serial.printf("%d", value);
+                Debug->printf("%d", value);
             }
             #endif
             setEntityValue(entityId, value, false);
@@ -150,17 +152,17 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             float value;
             memcpy(&value, &raw_packet[9], sizeof(float));
             #ifdef SHOWBOX_DEBUG
-            Serial.printf("%f", value);
+            Debug->printf("%f", value);
             #endif
             setEntityValue(entityId, value, false);
         }
         #ifdef SHOWBOX_DEBUG
-        Serial.print(" }\n");
+        Debug->print(" }\n");
         #endif
     } else if (packetType == HEARTBEAT) {
         #ifdef SHOWBOX_DEBUG
-        // Serial.print("Heartbeat");
-        Serial.print(".");
+        // Debug->print("Heartbeat");
+        Debug->print(".");
         #endif
     } else if (packetType == ACK) {
         uint8_t ackCmd = raw_packet[5];
@@ -168,40 +170,40 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             #ifdef SHOWBOX_DEBUG
             String ackCmdString = packet_type_to_string[static_cast<packet_type>(ackCmd)].c_str();
             //printRawPacket("[Raw]: ", raw_packet);
-            Serial.printf("%s Acknowoleged %s command\n", directionString.c_str(), ackCmdString.c_str());
+            Debug->printf("%s Acknowoleged %s command\n", directionString.c_str(), ackCmdString.c_str());
             #endif
         }
         #ifdef SHOWBOX_DEBUG
         #endif
     } else if (packetType == DATA_REQUEST) {
         #ifdef SHOWBOX_DEBUG
-        // Serial.print("Data Request");
+        // Debug->print("Data Request");
         #endif
     } else if (packetType == LOOPER_BUTTON) {
         #ifdef SHOWBOX_DEBUG
-        // Serial.print("Data Request");
+        // Debug->print("Data Request");
         #endif
     } else if (packetType == BATTERY_LEVEL) {
         float value;
         memcpy(&value, &raw_packet[9], sizeof(float));
         batteryLevel = value;
         #ifdef SHOWBOX_DEBUG
-        Serial.printf("%s [Decoded] Type: %s | Battery Level: %f\n", directionString.c_str(), packetTypeString.c_str(), value);
+        Debug->printf("%s [Decoded] Type: %s | Battery Level: %f\n", directionString.c_str(), packetTypeString.c_str(), value);
         #endif
     } else if (packetType == SD_CARD_EVENT) {
         sdCardState = static_cast<sd_card_state>(raw_packet[5]);
         #ifdef SHOWBOX_DEBUG
         if (sdCardState == sd_card_state::NOT_DETECTED) {
-            Serial.printf("%s [Decoded] Type: %s | SD Card: Not Detected\n", directionString.c_str(), packetTypeString.c_str());
+            Debug->printf("%s [Decoded] Type: %s | SD Card: Not Detected\n", directionString.c_str(), packetTypeString.c_str());
         } else if (sdCardState == sd_card_state::DETECTED) {
-            Serial.printf("%s [Decoded] Type: %s | SD Card: Detected\n", directionString.c_str(), packetTypeString.c_str());
+            Debug->printf("%s [Decoded] Type: %s | SD Card: Detected\n", directionString.c_str(), packetTypeString.c_str());
         } else {
-            Serial.printf("%s [Decoded] Type: %s | SD Card: Unknown\n", directionString.c_str(), packetTypeString.c_str());
+            Debug->printf("%s [Decoded] Type: %s | SD Card: Unknown\n", directionString.c_str(), packetTypeString.c_str());
         } 
         #endif
     } else {
         #ifdef SHOWBOX_DEBUG
-        Serial.printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
+        Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
         printRawPacket("[Raw]: ", raw_packet);
         #endif
     }
@@ -215,4 +217,9 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
 
 void MackieShowbox::tick() {
     interceptor.tick();
+}
+
+// Set the debug serial
+void MackieShowbox::setDebugSerial(Print* serial) {
+    Debug = serial;
 }

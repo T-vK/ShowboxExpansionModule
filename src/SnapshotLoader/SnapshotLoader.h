@@ -16,6 +16,9 @@ public:
     // Update method, to be called in the loop
     void tick();
 
+    // Set the debug serial
+    void setDebugSerial(Print* serial);
+
 private:
     // Static callback functions
     static void snapshotOneCallback(void *instance);
@@ -28,6 +31,7 @@ private:
     OneButton snapshotButton1;
     OneButton snapshotButton2;
     MackieShowbox& showbox;
+    Print* Debug = &Serial;
 };
 
 #endif // SNAPSHOT_LOADER_H

@@ -372,6 +372,11 @@ namespace Showbox {
         constexpr float POSITION_1 = 0.0;
     } // namespace InputEffectAmount
 
+    namespace MainMute {
+        constexpr bool ON = true;
+        constexpr bool OFF = false;
+    } // namespace MainMute
+
 } // namespace Showbox
 
 

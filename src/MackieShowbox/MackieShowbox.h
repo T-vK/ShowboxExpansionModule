@@ -32,10 +32,13 @@ public:
     void tick();
     void begin();
 
+    void setDebugSerial(Print* serial);
+
 private:
     uint8_t baseRx, baseTx, mixerRx, mixerTx;
     float batteryLevel = 0.0f;
     sd_card_state sdCardState = sd_card_state::NOT_DETECTED;
+    Print* Debug = &Serial;
     struct EntityValue {
         bool boolValue;
         uint8_t uint8Value;

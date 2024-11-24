@@ -8,13 +8,16 @@
 class TwoButtonLooper {
 public:
     // Constructor
-    TwoButtonLooper(uint8_t record_button_pin, uint8_t stop_button_pin, MackieShowbox& showbox);
+    TwoButtonLooper(uint8_t record_button_pin, uint8_t stop_button_pin, MackieShowbox* showbox);
 
     // Initialization method
     void begin();
 
     // Update method, to be called in the loop
     void tick();
+
+    // Set the debug serial
+    void setDebugSerial(Print* serial);
 
 private:
     // Static callback functions
@@ -29,7 +32,8 @@ private:
 
     OneButton recordButton;
     OneButton stopButton;
-    MackieShowbox& showbox;
+    MackieShowbox* showbox;
+    Print *Debug = &Serial;
 };
 
 #endif // TWO_BUTTON_LOOPER_H

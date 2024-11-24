@@ -2,8 +2,8 @@
 #define SHOWBOX_DEBUG
 
 // Constructor
-BoosterPedal::BoosterPedal(uint8_t button_pin, MackieShowbox& showbox, entity_id entity, float value1, float value2)
-    : button(button_pin, true), showbox(showbox), entity(entity), value1(value1), value2(value2) {}
+BoosterPedal::BoosterPedal(uint8_t button_pin, MackieShowbox* showbox, entity_id entity)
+    : button(button_pin, true), showbox(showbox), entity(entity) {}
 
 // Initialization
 void BoosterPedal::begin() {
@@ -24,18 +24,23 @@ void BoosterPedal::toggleCallback(void *instance) {
 
 // Instance method
 void BoosterPedal::handleToggle() {
-    float current_value = showbox.getFloatEntityValue(entity);
+    float current_value = showbox->getFloatEntityValue(entity);
     
     if (current_value == value1) {
-        showbox.setEntityValue(entity, value2);
+        showbox->setEntityValue(entity, value2);
     } else {
-        showbox.setEntityValue(entity, value1);
+        showbox->setEntityValue(entity, value1);
     }
 
-    #ifdef SHOWBOX_DEBUG
-    Serial.print("Toggled entity ");
-    Serial.print(static_cast<int>(entity));
-    Serial.print(" to value ");
-    Serial.println(showbox.getFloatEntityValue(entity));
-    #endif
+    //#ifdef SHOWBOX_DEBUG
+    Debug->print("Toggled entity ");
+    Debug->print(static_cast<int>(entity));
+    Debug->print(" to value ");
+    Debug->println(showbox->getFloatEntityValue(entity));
+    //#endif
+}
+
+// Set the debug serial
+void BoosterPedal::setDebugSerial(Print* serial) {
+    Debug = serial;
 }

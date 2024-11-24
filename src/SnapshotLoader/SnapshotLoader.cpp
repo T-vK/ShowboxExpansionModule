@@ -31,14 +31,19 @@ void SnapshotLoader::snapshotTwoCallback(void *instance) {
 // Instance methods
 void SnapshotLoader::handleSnapshotOne() {
     showbox.snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_1);
-    #ifdef SHOWBOX_DEBUG
-    Serial.println("Recall snapshot SNAPSHOT_1");
-    #endif
+    //#ifdef SHOWBOX_DEBUG
+    Debug->println("Recall snapshot SNAPSHOT_1");
+    //#endif
 }
 
 void SnapshotLoader::handleSnapshotTwo() {
     showbox.snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_2);
-    #ifdef SHOWBOX_DEBUG
-    Serial.println("Recall snapshot SNAPSHOT_2");
-    #endif
+    //#ifdef SHOWBOX_DEBUG
+    Debug->println("Recall snapshot SNAPSHOT_2");
+    //#endif
+}
+
+// Set the debug serial
+void SnapshotLoader::setDebugSerial(Print* serial) {
+    Debug = serial;
 }
