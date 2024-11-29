@@ -18,6 +18,7 @@ void UltimateBaseFirmware::setHostName(const char* hostName) {
 
 void UltimateBaseFirmware::setCustomServer(AsyncWebServer* server) {
     _server = server;
+    _customServer = true;
 }
 
 void UltimateBaseFirmware::setCustomWiFiManager(WiFiManager* wifiManager) {
@@ -44,6 +45,15 @@ void UltimateBaseFirmware::setDeviceName(const char* deviceName) {
 
 void UltimateBaseFirmware::setDeviceUrl(const char* deviceUrl) {
     _deviceUrl = deviceUrl;
+}
+
+// Getter methods
+AsyncWebServer* UltimateBaseFirmware::getWebServer() {
+    return _server;
+}
+
+const char* UltimateBaseFirmware::getHostName() {
+    return _hostName;
 }
 
 // Begin method to initialize components
@@ -99,6 +109,7 @@ void UltimateBaseFirmware::checkWiFi() {
     }
 }
 
+// Callback for first WiFi connection
 void UltimateBaseFirmware::onFirstWiFiConnect() {
     _wifiCheckInterval = 5000;
     if (!_customDebugSerial) {
@@ -107,27 +118,31 @@ void UltimateBaseFirmware::onFirstWiFiConnect() {
         Debug.println("[  OK  ] Debug Serial initialized.");
     }
 
-    Debug.println("[ INFO ] Initializing Web Server...");
+    Debug.println("[ INFO ] Preparing Web Server...");
     initializeWebServer();
-    Debug.println("[ INFO ] Web Server initialized.");
+    Debug.println("[ INFO ] Web Server prepared.");
 
     Debug.println("[  OK  ] Initializing OTA...");
     initializeOTA();
     Debug.println("[ INFO ] OTA initialized.");
     
-    Debug.println("[ INFO ] Starting Web Server...");
-    _server->begin();
-    Debug.println("[  OK  ] Web Server started.");
+    if (!_customServer) {
+        Debug.println("[ INFO ] Starting Web Server...");
+        _server->begin();
+        Debug.println("[  OK  ] Web Server started.");
+    }
 
     Debug.println("[ INFO ] Initializing MDNS...");
     initializeMdns();
     Debug.println("[  OK  ] MDNS initialized.");
 }
 
+// Callback for WiFi connected
 void UltimateBaseFirmware::onWiFiConnected() {
     Debug.println("[ INFO ] WiFi connected!");
 }
 
+// Callback for WiFi disconnected
 void UltimateBaseFirmware::onWiFiDisconnected() {
     Debug.println("[ INFO ] WiFi disconnected!");
 }
@@ -217,10 +232,9 @@ void UltimateBaseFirmware::initializeWebServer() {
         _server = new AsyncWebServer(80);
     }
 
-    _server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
+    _server->on("/ubfw", HTTP_GET, [this](AsyncWebServerRequest* request) {
         String response = generateInfoString();
         request->send(200, "text/plain", response);
-        //request->send(200, "text/plain", "Hi! This is the UltimateBaseFirmware Web Server.");
     });
 }
 

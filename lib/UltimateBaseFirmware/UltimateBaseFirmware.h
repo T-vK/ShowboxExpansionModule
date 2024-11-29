@@ -36,7 +36,8 @@ public:
     void setVersion(const char* version);
 
     // Getter methods
-    const char* getHostName() { return _hostName; }
+    const char* getHostName();
+    AsyncWebServer* getWebServer();
 
     // Main lifecycle methods
     void begin();
@@ -61,6 +62,7 @@ private:
     const char* _hostName;
     const char* _chipFamily;
     bool _customDebugSerial = false;
+    bool _customServer = false;
     wl_status_t _lastWiFiStatus = WL_DISCONNECTED;
     unsigned long _lastWifiCheck = 0;
     unsigned long _wifiCheckInterval = 100;

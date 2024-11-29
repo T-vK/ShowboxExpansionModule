@@ -6,7 +6,7 @@
 #include <UARTInterceptor.h>
 #include "constants.h"
 #ifdef SHOWBOX_DEBUG
-#include "debug.h"
+#include "string_mappings.h"
 #endif
 #include "Packet.h"
 
@@ -33,6 +33,8 @@ public:
     void begin();
 
     void setDebugSerial(Print* serial);
+
+    void printRawPacket(const char* message, uint8_t* raw_packet);
 
 private:
     uint8_t baseRx, baseTx, mixerRx, mixerTx;

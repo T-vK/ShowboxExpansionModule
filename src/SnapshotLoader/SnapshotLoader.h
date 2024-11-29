@@ -8,7 +8,7 @@
 class SnapshotLoader {
 public:
     // Constructor
-    SnapshotLoader(uint8_t snapshot_button_pin1, uint8_t snapshot_button_pin2, MackieShowbox& showbox);
+    SnapshotLoader(uint8_t snapshot_button_pin1, uint8_t snapshot_button_pin2, MackieShowbox* showbox);
 
     // Initialization method
     void begin();
@@ -30,7 +30,7 @@ private:
 
     OneButton snapshotButton1;
     OneButton snapshotButton2;
-    MackieShowbox& showbox;
+    MackieShowbox* showbox;
     Print* Debug = &Serial;
 };
 

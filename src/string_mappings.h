@@ -1,17 +1,20 @@
-// debug.h
-#ifndef DEBUG_H
-#define DEBUG_H
+// string_mappings.h
+#ifndef STRING_MAPPINGS_H
+#define STRING_MAPPINGS_H
 
 #include <map>
 #include <string>
 #include <Arduino.h>
 #include "constants.h"
+#include "MackieShowbox/MackieShowbox.h"
 
 extern std::unordered_map<packet_type, std::string> packet_type_to_string;
 extern std::unordered_map<entity_data_type, std::string> entity_data_type_to_string;
 extern std::unordered_map<entity_id, std::string> entity_id_to_string;
+extern std::unordered_map<std::string, entity_id> string_to_entity_id;
 extern std::unordered_map<uint8_t, std::string> looper_state_to_string;
 extern std::map<float, std::string> master_gain_to_string;
+//void printRawPacket(const char* message, uint8_t* raw_packet);
 
 /*
 void printRawPacket(const char* message, uint8_t* raw_packet) {
@@ -23,7 +26,6 @@ void printRawPacket(const char* message, uint8_t* raw_packet) {
     Serial.println();
 }*/
 //Header:
-void printRawPacket(const char* message, uint8_t* raw_packet);
 
 // template <typename T>
 // void printRawPacket(const char* message, T *packet) {
@@ -55,4 +57,4 @@ namespace master_gain {
     constexpr float POSITION_1 = -120.0;
 }
 
-#endif // DEBUG_H
+#endif // STRING_MAPPINGS_H

@@ -2,7 +2,7 @@
 
 #include "MackieShowbox.h"
 #ifdef SHOWBOX_DEBUG
-#include "debug.h"
+#include "string_mappings.h"
 #endif
 
 MackieShowbox::MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, uint8_t mixerTx)
@@ -59,7 +59,7 @@ void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
         uint8_t floatBytes[4];
         memcpy(floatBytes, &value, sizeof(float));
 
-        uint8_t packet[15] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, floatBytes[0], floatBytes[1], floatBytes[2], floatBytes[3], 0xEF, 0xBE };
+        uint8_t packet[15] = { 0xBE, 0xEF, 0x08, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, floatBytes[0], floatBytes[1], floatBytes[2], floatBytes[3], 0xEF, 0xBE };
 
         interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
         interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
@@ -162,7 +162,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     } else if (packetType == HEARTBEAT) {
         #ifdef SHOWBOX_DEBUG
         // Debug->print("Heartbeat");
-        Debug->print(".");
+        //Debug->print(".");
         #endif
     } else if (packetType == ACK) {
         uint8_t ackCmd = raw_packet[5];
@@ -177,11 +177,11 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         #endif
     } else if (packetType == DATA_REQUEST) {
         #ifdef SHOWBOX_DEBUG
-        // Debug->print("Data Request");
+        Debug->println("Data Request");
         #endif
     } else if (packetType == LOOPER_BUTTON) {
         #ifdef SHOWBOX_DEBUG
-        // Debug->print("Data Request");
+        Debug->println("Looper Button");
         #endif
     } else if (packetType == BATTERY_LEVEL) {
         float value;
@@ -204,7 +204,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     } else {
         #ifdef SHOWBOX_DEBUG
         Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
-        printRawPacket("[Raw]: ", raw_packet);
+        //printRawPacket("[Raw]: ", raw_packet);
         #endif
     }
     #ifdef SHOWBOX_DEBUG
@@ -222,4 +222,13 @@ void MackieShowbox::tick() {
 // Set the debug serial
 void MackieShowbox::setDebugSerial(Print* serial) {
     Debug = serial;
+}
+
+void MackieShowbox::printRawPacket(const char* message, uint8_t* raw_packet) {
+    Debug->printf("%s", message);
+    uint8_t size = raw_packet[2] + 7;
+    for (int i = 0; i < size; i++) {
+        Debug->printf("%02X ", raw_packet[i]);
+    }
+    Debug->println();
 }

@@ -29,8 +29,8 @@ private:
     OneButton button;
     MackieShowbox* showbox;
     entity_id entity;
-    float value1 = Showbox::InputVolume::POSITION_1;
-    float value2 = Showbox::InputVolume::POSITION_16;
+    float value1 = Showbox::InputGain::POSITION_9;
+    float value2 = Showbox::InputGain::POSITION_14;
 
     Print* Debug = &Serial;
 };

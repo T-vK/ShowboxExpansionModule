@@ -1,7 +1,7 @@
 #include "SnapshotLoader.h"
 
 // Constructor
-SnapshotLoader::SnapshotLoader(uint8_t snapshot_button_pin1, uint8_t snapshot_button_pin2, MackieShowbox& showbox)
+SnapshotLoader::SnapshotLoader(uint8_t snapshot_button_pin1, uint8_t snapshot_button_pin2, MackieShowbox* showbox)
     : snapshotButton1(snapshot_button_pin1, true), snapshotButton2(snapshot_button_pin2, true), showbox(showbox) {}
 
 // Initialization
@@ -30,14 +30,14 @@ void SnapshotLoader::snapshotTwoCallback(void *instance) {
 
 // Instance methods
 void SnapshotLoader::handleSnapshotOne() {
-    showbox.snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_1);
+    showbox->snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_1);
     //#ifdef SHOWBOX_DEBUG
     Debug->println("Recall snapshot SNAPSHOT_1");
     //#endif
 }
 
 void SnapshotLoader::handleSnapshotTwo() {
-    showbox.snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_2);
+    showbox->snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_2);
     //#ifdef SHOWBOX_DEBUG
     Debug->println("Recall snapshot SNAPSHOT_2");
     //#endif
