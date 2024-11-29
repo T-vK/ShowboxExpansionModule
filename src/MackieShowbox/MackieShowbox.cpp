@@ -37,7 +37,6 @@ void MackieShowbox::begin() {
 }
 
 void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
-    entityValues[entityId].boolValue = value;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
         interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
@@ -46,7 +45,6 @@ void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
     entityValues[entityId].boolValue = value;
 }
 void MackieShowbox::setEntityValue(entity_id entityId, uint8_t value, bool emit) {
-    entityValues[entityId].uint8Value = value;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
         interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
@@ -178,6 +176,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     } else if (packetType == DATA_REQUEST) {
         #ifdef SHOWBOX_DEBUG
         Debug->println("Data Request");
+        printRawPacket("[Raw]: ", raw_packet);
         #endif
     } else if (packetType == LOOPER_BUTTON) {
         #ifdef SHOWBOX_DEBUG
@@ -201,10 +200,46 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             Debug->printf("%s [Decoded] Type: %s | SD Card: Unknown\n", directionString.c_str(), packetTypeString.c_str());
         } 
         #endif
+    } else if (packetType == ALL_ENTITIES) {
+        Debug->printf("%s [Decoded] Type: %s - Data:\n", directionString.c_str(), packetTypeString.c_str());
+        //printRawPacket("[Raw]: ", raw_packet);
+
+        uint8_t* bodyStart = &raw_packet[9]; // Start of the body (it actually starts at 6 with 3 unknown bytes)
+        size_t offset = 0; // Offset from the start of the body
+
+        // iterate over enum entity_id
+
+        for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+            entity_id entityId = static_cast<entity_id>(i);
+            entity_data_type dataType = entity_type_mapping[entityId];
+            Debug->printf("            %s: ", entity_id_to_string[entityId].c_str());
+            if (dataType == BOOL) {
+                // Read 1 byte as a boolean
+                bool value = bodyStart[offset];
+                Debug->printf("%s", value ? "true" : "false");
+                setEntityValue(entityId, value, false);
+                offset += 1; // Advance by 1 byte
+            } else if (dataType == UINT8) {
+                // Read 1 byte as uint8_t
+                uint8_t value = bodyStart[offset];
+                Debug->printf("%d", value);
+                setEntityValue(entityId, value, false);
+                offset += 1; // Advance by 1 byte
+            } else if (dataType == FLOAT) {
+                // Read 4 bytes as a float
+                float value;
+                memcpy(&value, &bodyStart[offset], sizeof(float));
+                Debug->printf("%f", value);
+                setEntityValue(entityId, value, false);
+                offset += 4; // Advance by 4 bytes
+            }
+            Debug->println();
+            //Debug->printf(" (%s)\n", entity_data_type_to_string[dataType].c_str());
+        }
     } else {
         #ifdef SHOWBOX_DEBUG
         Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
-        //printRawPacket("[Raw]: ", raw_packet);
+        printRawPacket("[Raw]: ", raw_packet);
         #endif
     }
     #ifdef SHOWBOX_DEBUG

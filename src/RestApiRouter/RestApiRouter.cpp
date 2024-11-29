@@ -10,63 +10,10 @@ void RestApiRouter::setShowbox(MackieShowbox* showbox) {
     _showbox = showbox;
 }
 
-String RestApiRouter::getBodyParam(AsyncWebServerRequest* request, const String& paramName) {
-    // Check for POST or PUT request
-    if (request->method() == HTTP_PUT || request->method() == HTTP_POST) {
-        // Try to access the request body directly
-        String body = request->getParam("plain")->value();
-        if (body.length() > 0) {
-            // If the body has data, try parsing the body
-            return parseFormData(body, paramName);
-        }
-    }
-    return ""; // Return empty if not found
-}
-
-// Helper function to parse form-like data (e.g. value=true)
-String RestApiRouter::parseFormData(const String& body, const String& paramName) {
-    String paramPrefix = paramName + "=";
-    int startPos = body.indexOf(paramPrefix);
-    if (startPos != -1) {
-        startPos += paramPrefix.length();
-        int endPos = body.indexOf("&", startPos);
-        if (endPos == -1) {
-            endPos = body.length();
-        }
-        return body.substring(startPos, endPos);  // Extract the value of the parameter
-    }
-    return ""; // If parameter not found
-}
-
-
 void RestApiRouter::setup() {
-    // Entity GET routes
+    // Entity routes
     _server->on("^/api/v1/showbox/entities/([a-zA-Z0-9_]+)$", HTTP_GET, [this](AsyncWebServerRequest* request) {
         Debug->print("GET /api/v1/showbox/entities/");
-        String entityName = request->pathArg(0);
-        Debug->println(entityName);
-        // Get entity ID from entity name
-        entity_id entityId = string_to_entity_id[entityName.c_str()];
-        // Get entity type from entity ID
-        entity_data_type entityType = entity_type_mapping[entityId];
-        // Get entity value from showbox
-        if (entityType == BOOL) {
-            bool value = _showbox->getBoolEntityValue(entityId);
-            request->send(200, "text/plain", value ? "true" : "false");
-        } else if (entityType == UINT8) {
-            uint8_t value = _showbox->getUint8EntityValue(entityId);
-            request->send(200, "text/plain", String(value));
-        } else if (entityType == FLOAT) {
-            float value = _showbox->getFloatEntityValue(entityId);
-            request->send(200, "text/plain", String(value));
-        } else {
-            request->send(404, "text/plain", "Entity not found.");
-        }
-    });
-
-    // Entity Update routes
-    _server->on("^/api/v1/showbox/entities/([a-zA-Z0-9_]+)$", HTTP_PUT, [this](AsyncWebServerRequest* request) {
-        Debug->print("PUT /api/v1/showbox/entities/");
         String entityName = request->pathArg(0);
         std::string entityNameStr = entityName.c_str();
         Debug->println(entityName);
@@ -74,48 +21,63 @@ void RestApiRouter::setup() {
         entity_id entityId = string_to_entity_id[entityNameStr];
         Debug->print("Entity ID: ");
         Debug->println(entityId);
+
+        // Validate entity ID
+        if (entityId == 0 && entityName != "FRONT_LED") {
+            Debug->println("Entity not found.");
+            request->send(404, "text/plain", "Entity not found.");
+            return;
+        }
+
         // Get entity type from entity ID
         entity_data_type entityType = entity_type_mapping[entityId];
         Debug->print("Entity Type: ");
         Debug->println(entityType);
 
-        // Get entity value from request body
-        String stringValue = getBodyParam(request, "value");
+        if(request->hasParam("value")) {
+            // Get entity value from request body
+            const AsyncWebParameter* p = request->getParam("value");
+            String stringValue = p->value();
+            Debug->print("Value: ");
+            Debug->println(stringValue);
 
-        if (stringValue == "") {
-            request->send(400, "text/plain", "Missing value parameter.");
-            return;
+            if (entityType == BOOL) {
+                bool value = stringValue == "true";
+                _showbox->setEntityValue(entityId, value);
+            } else if (entityType == UINT8) {
+                uint8_t value = stringValue.toInt();
+                _showbox->setEntityValue(entityId, value);
+            } else if (entityType == FLOAT) {
+                float value = stringValue.toFloat();
+                _showbox->setEntityValue(entityId, value);
+            }
+        } else {
+            Debug->println("No value provided.");
         }
 
+        // Return current/new values
         if (entityType == BOOL) {
-            Debug->println("Setting bool value...");
-            bool value = stringValue == "true";
-            _showbox->setEntityValue(entityId, value);
-            bool newValue = _showbox->getBoolEntityValue(entityId);
-            request->send(200, "text/plain", newValue ? "true" : "false");
+            bool value = _showbox->getBoolEntityValue(entityId);
+            Debug->print("New Value: ");
+            Debug->println(value);
+            request->send(200, "text/plain", value ? "true" : "false");
         } else if (entityType == UINT8) {
-            uint8_t value = stringValue.toInt();
-            _showbox->setEntityValue(entityId, value);
-            uint8_t newValue = _showbox->getUint8EntityValue(entityId);
-            request->send(200, "text/plain", String(newValue));
+            uint8_t value = _showbox->getUint8EntityValue(entityId);
+            Debug->print("New Value: ");
+            Debug->println(value);
+            request->send(200, "text/plain", String(value));
         } else if (entityType == FLOAT) {
-            float value = stringValue.toFloat();
-            _showbox->setEntityValue(entityId, value);
-            float newValue = _showbox->getFloatEntityValue(entityId);
-            request->send(200, "text/plain", String(newValue));
-        } else {
-            request->send(404, "text/plain", "Entity not found.");
+            float value = _showbox->getFloatEntityValue(entityId);
+            Debug->print("New Value: ");
+            Debug->println(value);
+            request->send(200, "text/plain", String(value));
         }
     });
 
     // Looper route
-    _server->on("/api/v1/showbox/action/looper_button", HTTP_POST, [this](AsyncWebServerRequest* request) {
-        Debug->println("POST /api/v1/showbox/action/looper_button");
-        String actionName = getBodyParam(request, "action");
-        if (actionName == "") {
-            request->send(400, "text/plain", "Missing action parameter.");
-            return;
-        }
+    _server->on("/api/v1/showbox/action/looper_button", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        Debug->println("GET /api/v1/showbox/action/looper_button");
+        String actionName = request->getParam("action")->value();
         if (actionName == "DOWN") {
             _showbox->sendLooperButtonAction(looper_button_action::DOWN);
         } else if (actionName == "UP") {
@@ -132,28 +94,19 @@ void RestApiRouter::setup() {
     });
 
     // SD Card route
-    _server->on("/api/v1/showbox/action/sdcard", HTTP_POST, [this](AsyncWebServerRequest* request) {
-        Debug->println("POST /api/v1/showbox/action/sdcard");
+    _server->on("/api/v1/showbox/action/sdcard", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        Debug->println("GET /api/v1/showbox/action/sdcard");
         _showbox->toggleSdCardRecord();
         request->send(200, "text/plain", "SD Card action sent.");
     });
 
     // Snapshot route
-    _server->on("/api/v1/showbox/action/snapshot", HTTP_POST, [this](AsyncWebServerRequest* request) {
-        Debug->println("POST /api/v1/showbox/action/snapshot");
-        String actionName = getBodyParam(request, "action");
-        if (actionName == "") {
-            request->send(400, "text/plain", "Missing action parameter.");
-            return;
-        }
-        String slotName = getBodyParam(request, "slot");
-        if (slotName == "") {
-            request->send(400, "text/plain", "Missing slot parameter.");
-            return;
-        }
+    _server->on("/api/v1/showbox/action/snapshot", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        Debug->println("GET /api/v1/showbox/action/snapshot");
+        String actionName = request->getParam("action")->value();
         snapshot_action action = static_cast<snapshot_action>(actionName.toInt());
+        String slotName = request->getParam("slot")->value();
         snapshot_slot slot = static_cast<snapshot_slot>(slotName.toInt());
-
         if (actionName == "RECALL") {
             _showbox->snapshotAction(snapshot_action::RECALL, slot);
         } else if (actionName == "SAVE") {
@@ -166,11 +119,11 @@ void RestApiRouter::setup() {
     });
 
     // Tuner route
-    _server->on("/api/v1/showbox/action/tuner", HTTP_POST, [this](AsyncWebServerRequest* request) {
-        Debug->println("POST /api/v1/showbox/action/tuner");
-        String actionName = getBodyParam(request, "action");
-        String chanName = getBodyParam(request, "channel");
+    _server->on("/api/v1/showbox/action/tuner", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        Debug->println("GET /api/v1/showbox/action/tuner");
+        String actionName = request->getParam("action")->value();
         tuner_action action = static_cast<tuner_action>(actionName.toInt());
+        String chanName = request->getParam("chan")->value();
         tuner_chan chan = static_cast<tuner_chan>(chanName.toInt());
         if (actionName == "TURN_ON") {
             _showbox->tunerAction(tuner_action::TURN_ON, chan);
@@ -203,6 +156,75 @@ void RestApiRouter::setup() {
         } else {
             request->send(500, "text/plain", "Unknown state.");
         }
+    });
+
+    // Remote UI
+    _server->on("/remote-ui", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        // dynamically generate an html/JS page that will generate a page that will allow the user to view/controll all the entities of the showbox
+        // this will be a single page application that will use the REST API to get and set the values of the entities
+        // the page will be generated right here:
+
+        String page = "<!DOCTYPE html><html><head><title>Showbox Remote UI</title></head><body><script>\n";
+        page += "async function main() {\n";
+            page += "const entities = [";
+                for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+                    entity_id entityId = static_cast<entity_id>(i);
+                    std::string entityName = entity_id_to_string[entityId];
+                    page += "'" + String(entityName.c_str()) + "',";
+                }
+            page += "];\n";
+            page += "const entityTypes = {";
+                for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+                    entity_id entityId = static_cast<entity_id>(i);
+                    entity_data_type dataType = entity_type_mapping[entityId];
+                    std::string entityName = entity_id_to_string[entityId];
+                    std::string type = entity_data_type_to_string[dataType];
+                    page += "'" + String(entityName.c_str()) + "': '" + String(type.c_str()) + "',";
+                }
+            page += "};\n";
+            // generate interactive controls for every entity that can get/set entity values through the api (get example /api/v1/showbox/entities/FRONT_LED - set example /api/v1/showbox/entities/FRONT_LED?value=true)
+            // request all entities and their values, generate the controls based on the type of the entity, add event listeners to the controls to send the values to the api
+            page += "for (const entity of entities) {\n";
+                page += "const entityType = entityTypes[entity];\n";
+                page += "const container = document.createElement('div');\n";
+                page += "container.innerHTML = entity + ': ';\n";
+                page += "document.body.appendChild(container);\n";
+                page += "const input = document.createElement('input');\n";
+                page += "input.id = entity;\n";
+                page += "if (entityType === 'BOOL') {\n";
+                    page += "input.type = 'checkbox';\n";
+                    page += "input.addEventListener('change', async (event) => {\n";
+                        page += "const value = event.target.checked;\n";
+                        page += "await fetch('/api/v1/showbox/entities/' + entity + '?value=' + value);\n";
+                    page += "});\n";
+                    page += "container.appendChild(input);\n";
+                    page += "const value = await fetch('/api/v1/showbox/entities/' + entity).then(response => response.text());\n";
+                    page += "input.checked = value === 'true';\n";
+                page += "} else if (entityType === 'UINT8') {\n";
+                    page += "input.type = 'number';\n";
+                    page += "input.addEventListener('change', async (event) => {\n";
+                        page += "const value = event.target.value;\n";
+                        page += "await fetch('/api/v1/showbox/entities/' + entity + '?value=' + value);\n";
+                    page += "});\n";
+                    page += "container.appendChild(input);\n";
+                    page += "const value = await fetch('/api/v1/showbox/entities/' + entity).then(response => response.text());\n";
+                    page += "input.value = value;\n";
+                page += "} else if (entityType === 'FLOAT') {\n";
+                    page += "input.type = 'number';\n";
+                    page += "input.step = '0.01';\n";
+                    page += "input.addEventListener('change', async (event) => {\n";
+                        page += "const value = event.target.value;\n";
+                        page += "await fetch('/api/v1/showbox/entities/' + entity + '?value=' + value);\n";
+                    page += "});\n";
+                    page += "container.appendChild(input);\n";
+                    page += "const value = await fetch('/api/v1/showbox/entities/' + entity).then(response => response.text());\n";
+                    page += "input.value = value;\n";
+                page += "}\n";
+            page += "}\n";
+        page += "}\n";
+        page += "main().catch(console.error);\n";
+        page += "</script></body></html>";
+        request->send(200, "text/html", page);
     });
 }
 

@@ -15,8 +15,6 @@ public:
     void setDebugSerial(Print* serial);
 
 private:
-    String getBodyParam(AsyncWebServerRequest* request, const String& paramName);
-    String parseFormData(const String& body, const String& paramName);
     AsyncWebServer* _server;
     MackieShowbox* _showbox;
     Print *Debug = &Serial;

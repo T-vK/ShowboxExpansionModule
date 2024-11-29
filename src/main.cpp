@@ -9,7 +9,7 @@
 #include "SnapshotLoader/SnapshotLoader.h"
 #include "BoosterPedal/BoosterPedal.h"
 #include "MainMutePedal/MainMutePedal.h"
-//#include "RestApiRouter/RestApiRouter.h"
+#include "RestApiRouter/RestApiRouter.h"
 #include <ESPAsyncWebServer.h>
 
 // Pins for double footswitch to control the looper
@@ -29,12 +29,11 @@ constexpr uint8_t SNAPSHOT_BUTTON_PIN2 = TRS4_RING; // Snapshot button 2 GPIO pi
 Print *Debug = &Serial;
 UltimateBaseFirmware ubfw("ShowboxExpansionModule Firmware");
 MackieShowbox showbox(SHOWBOX_BASE_RX, SHOWBOX_BASE_TX, SHOWBOX_MIXER_RX, SHOWBOX_MIXER_TX);
-//RestApiRouter restApiRouter;
 TwoButtonLooper looper(RECORD_BUTTON_PIN, STOP_BUTTON_PIN, &showbox);
 MainMutePedal mutePedal(MUTE_PEDAL_PIN, &showbox);
 BoosterPedal boosterPedal(BOOSTER_PEDAL_PIN, &showbox, entity_id::INPUT4_GAIN);
 SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, &showbox);
-// Create new AsyncWebServer instance on port 80
+RestApiRouter restApiRouter;
 AsyncWebServer webServer(80);
 
 void setup() {
@@ -58,12 +57,12 @@ void setup() {
     showbox.begin();
     Debug->println("[  OK  ] Showbox initialized.");
 
-    // Debug->println("[ INFO ] Initializing API Router...");
-    // restApiRouter.setDebugSerial(Debug);
-    // restApiRouter.setWebServer(&webServer);
-    // restApiRouter.setShowbox(&showbox);
-    // restApiRouter.setup();
-    // Debug->println("[  OK  ] API Router initialized.");
+    Debug->println("[ INFO ] Initializing API Router...");
+    restApiRouter.setDebugSerial(Debug);
+    restApiRouter.setWebServer(&webServer);
+    restApiRouter.setShowbox(&showbox);
+    restApiRouter.setup();
+    Debug->println("[  OK  ] API Router initialized.");
 
     Debug->println("[ INFO ] Initializing Looper...");
     looper.setDebugSerial(Debug);
@@ -103,10 +102,8 @@ void loop() {
     mutePedal.tick();
     boosterPedal.tick();
     
-    if (millis() - lastPrint > 5000) {
+    if (millis() - lastPrint > 2000) {
         lastPrint = millis();
-        #ifdef SHOWBOX_DEBUG
-            Debug->println("[ INFO ] Heartbeat from main execution loop");
-        #endif
+        Debug->println("[ INFO ] Heartbeat from main execution loop");
     }
 }
