@@ -61,7 +61,7 @@ jobs:
       - name: Get environments from platformio.ini
         id: get_envs
         run: |
-          environments=$(grep -oP '^\s*\[env:\K[^\]]+' platformio.ini | tr '\n' ' ')
+          environments=$(grep -oP '^\s*\[env:(?!.*-ota\])\K[^\]]+' platformio.ini | tr '\n' ' ')
           echo "Environments: $environments"
           echo "envs=$environments" >> $GITHUB_ENV
 

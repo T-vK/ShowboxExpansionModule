@@ -47,7 +47,7 @@ void setup() {
     } else {
         ubfw.setVersion(SXM_VERSION);
     }
-    ubfw.setHostName("showbox.local");
+    ubfw.setHostName("showbox");
     ubfw.setCustomServer(&webServer);
     ubfw.begin();
     Debug = &ubfw.Debug;

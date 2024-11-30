@@ -58,6 +58,9 @@ const char* UltimateBaseFirmware::getHostName() {
 
 // Begin method to initialize components
 void UltimateBaseFirmware::begin() {
+    if (!_customDebugSerial) {
+        Debug.setBuffer2(true);
+    }
     initializeDeviceInfo();
     String info = generateInfoString();
     Debug.println(info);
@@ -85,6 +88,11 @@ void UltimateBaseFirmware::loop() {
         ArduinoOTA.handle();
         if (!_customDebugSerial) {
             _remoteDebug.handle();
+            if (_remoteDebug.isConnected()) {
+                Debug.setBuffer2(false);
+            } else {
+                Debug.setBuffer2(true);
+            }
         }
     }
 }
@@ -204,11 +212,12 @@ void UltimateBaseFirmware::initializeWifi() {
     WiFi.mode(WIFI_STA);  // Explicitly set WiFi to station mode (STA)
     WiFi.hostname(_hostName);
     //WiFi.hostname()
+    _wifiManager->setHttpPort(8080);  // Set captive portal port to 8080
     _wifiManager->setConfigPortalBlocking(false);  // Non-blocking captive portal
-    _wifiManager->setConfigPortalTimeout(60);      // Portal times out after 60 seconds
+    _wifiManager->setConfigPortalTimeout(0); // Disable portal timeout
 
     // Attempt to auto-connect to saved WiFi credentials, or start the captive portal
-    if (_wifiManager->autoConnect("AutoConnectAP")) {
+    if (_wifiManager->autoConnect("ShowboxExpansionModuleAP", "showbox")) {
         Debug.println("Connected to WiFi!");
     } else {
         Debug.println("Failed to connect to WiFi. Captive portal running.");
@@ -305,5 +314,5 @@ void UltimateBaseFirmware::initializeMdns() {
     MDNS.begin(_hostName);
     MDNS.addService("telnet", "tcp", 23); // RemoteDebug Telnet
     MDNS.addService("http", "tcp", 80); // Web Server
-    MDNS.enableArduino(); // OTA Serial
+    MDNS.enableArduino(3232); // OTA Serial
 }
