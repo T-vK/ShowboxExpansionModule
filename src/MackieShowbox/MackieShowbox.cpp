@@ -32,7 +32,7 @@ void MackieShowbox::begin() {
     
 
     #ifdef SHOWBOX_DEBUG
-    Debug->println("\nMackieShowbox Interceptor ready\n");
+    //Debug->println("\nMackieShowbox Interceptor ready\n");
     #endif
 }
 
@@ -175,7 +175,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         #endif
     } else if (packetType == DATA_REQUEST) {
         #ifdef SHOWBOX_DEBUG
-        Debug->println("Data Request");
+        Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
         printRawPacket("[Raw]: ", raw_packet);
         #endif
     } else if (packetType == LOOPER_BUTTON) {

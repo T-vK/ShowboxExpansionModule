@@ -68,6 +68,7 @@ private:
     unsigned long _wifiCheckInterval = 100;
     bool _firstWiFiConnect = false;
     RemoteDebug _remoteDebug;
+    unsigned long _remoteDebugLastConnect = 0;
 
     void initializeDebugSerial();
     void initializeDeviceInfo();

@@ -6,18 +6,18 @@ DynamicMultiPrint::DynamicMultiPrint()
       _bufferSize1(0), _bufferSize2(0) {}
 
 void DynamicMultiPrint::setPrint1(Print* print) {
-    if (_print1 == nullptr && _bufferSize1 > 0) {
-        // Flush any buffered data if the new print object is set
-        flushBuffer(print, _bufferData1, _bufferSize1);
-    }
+    // if (_print1 == nullptr && _bufferSize1 > 0) {
+    //     // Flush any buffered data if the new print object is set
+    //     flushBuffer(print, _bufferData1, _bufferSize1);
+    // }
     _print1 = print;
 }
 
 void DynamicMultiPrint::setPrint2(Print* print) {
-    if (_print2 == nullptr && _bufferSize2 > 0) {
-        // Flush any buffered data if the new print object is set
-        flushBuffer(print, _bufferData2, _bufferSize2);
-    }
+    // if (_print2 == nullptr && _bufferSize2 > 0) {
+    //     // Flush any buffered data if the new print object is set
+    //     flushBuffer(print, _bufferData2, _bufferSize2);
+    // }
     _print2 = print;
 }
 

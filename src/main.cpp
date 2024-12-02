@@ -10,6 +10,7 @@
 #include "BoosterPedal/BoosterPedal.h"
 #include "MainMutePedal/MainMutePedal.h"
 #include "RestApiRouter/RestApiRouter.h"
+#include "ShowboxMidiAdapter/ShowboxMidiAdapter.h"
 #include <ESPAsyncWebServer.h>
 
 // Pins for double footswitch to control the looper
@@ -35,15 +36,16 @@ BoosterPedal boosterPedal(BOOSTER_PEDAL_PIN, &showbox, entity_id::INPUT4_GAIN);
 SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, &showbox);
 RestApiRouter restApiRouter;
 AsyncWebServer webServer(80);
+ShowboxMidiAdapter showboxMidiAdapter(&showbox);
 
 void setup() {
     #ifdef SHOWBOX_DEBUG
         Serial.begin(921600);
     #endif
-    delay(2000);
+    //delay(2000);
 
     if (strcmp(SXM_VERSION, "") == 0) {
-        ubfw.setVersion(CURRENT_TIME);
+        ubfw.setVersion("0.0.0");
     } else {
         ubfw.setVersion(SXM_VERSION);
     }
@@ -90,6 +92,11 @@ void setup() {
     Debug->println("[ INFO ] Starting Web Server...");
     webServer.begin();
     Debug->println("[  OK  ] Web Server started.");
+
+    Debug->println("[ INFO ] Initializing Showbox MIDI Adapter...");
+    showboxMidiAdapter.setDebugSerial(Debug);
+    showboxMidiAdapter.begin(MIDI_RX, MIDI_TX);
+    Debug->println("[  OK  ] Showbox MIDI Adapter initialized.");
 }
 
 unsigned long lastPrint = 0;
@@ -101,6 +108,7 @@ void loop() {
     snapshotLoader.tick();
     mutePedal.tick();
     boosterPedal.tick();
+    showboxMidiAdapter.tick();
     
     if (millis() - lastPrint > 2000) {
         lastPrint = millis();

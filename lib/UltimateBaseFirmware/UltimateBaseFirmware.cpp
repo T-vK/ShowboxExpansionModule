@@ -88,11 +88,16 @@ void UltimateBaseFirmware::loop() {
         ArduinoOTA.handle();
         if (!_customDebugSerial) {
             _remoteDebug.handle();
+            // set buffer false (Debug.setBuffer2(true);) when connected for at least 5 seconds
             if (_remoteDebug.isConnected()) {
-                Debug.setBuffer2(false);
-            } else {
-                Debug.setBuffer2(true);
-            }
+                //if (_remoteDebugLastConnect == 0) {
+                //    _remoteDebugLastConnect = millis();
+                //} else if (millis() - _remoteDebugLastConnect > 5000) {
+                    Debug.setBuffer2(false);
+                //}
+            } /*else {
+                _remoteDebugLastConnect = 0;
+            }*/
         }
     }
 }
@@ -206,12 +211,11 @@ void UltimateBaseFirmware::initializeDeviceInfo() {
 // Initialize WiFi in both STA and AP modes, with saved credentials via ImprovWiFi
 void UltimateBaseFirmware::initializeWifi() {
     if (_wifiManager == nullptr) {
-        _wifiManager = new WiFiManager();  // Create a default WiFiManager instance if not set
+        _wifiManager = new WiFiManager(Debug);  // Create a default WiFiManager instance if not set
     }
 
     WiFi.mode(WIFI_STA);  // Explicitly set WiFi to station mode (STA)
     WiFi.hostname(_hostName);
-    //WiFi.hostname()
     _wifiManager->setHttpPort(8080);  // Set captive portal port to 8080
     _wifiManager->setConfigPortalBlocking(false);  // Non-blocking captive portal
     _wifiManager->setConfigPortalTimeout(0); // Disable portal timeout
@@ -231,7 +235,7 @@ String UltimateBaseFirmware::generateInfoString() {
     info += "Chip Family: " + String(_chipFamily) + "\n";
     info += "Device Name: " + String(_deviceName) + "\n";
     info += "Host Name: " + String(_hostName) + "\n";
-    info += "Device URL: http://" + String(_hostName) + "/\n";
+    info += "Device URL: http://" + String(_hostName) + ".local/\n";
     return info;
 }
 
