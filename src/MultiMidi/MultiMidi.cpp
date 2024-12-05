@@ -1,5 +1,7 @@
 #include "MultiMidi.h"
 
+MultiMidi* MultiMidi::instance = nullptr;
+
 // Constructor
 MultiMidi::MultiMidi()
     : bleServer(nullptr),
@@ -16,7 +18,9 @@ MultiMidi::MultiMidi()
       bluetoothName("BleMidi"),
       rxPin(-1),
       txPin(-1),
-      appleMidiPort(5004) {}
+      appleMidiPort(5004) {
+        instance = this;
+      }
 
 // Destructor
 MultiMidi::~MultiMidi() {
@@ -66,9 +70,24 @@ void MultiMidi::setDebugSerial(Print *serial) {
     Debug = serial;
 }
 
+// Set MIDI ActionwriteData
+// void MultiMidi::setMidiAction(MidiCallbackAction midiAction) {
+//     action = &midiAction;
+// }
+
 // Begin MIDI
-void MultiMidi::begin(MidiCallbackAction &midiAction) {
-    action = midiAction;
+void MultiMidi::begin() {
+    // if (action == nullptr) { 
+        // action = new MidiCallbackAction();
+        // action->setCallbackOnControlChange(MultiMidi::onControlChange);
+        // action->setCallbackOnNoteOn(MultiMidi::onNoteOn);
+        // action->setCallbackOnNoteOff(MultiMidi::onNoteOff);
+        // action->setCallbackOnPitchBend(MultiMidi::onPitchBend);
+    // }
+    action.setCallbackOnControlChange(MultiMidi::onControlChange);
+    action.setCallbackOnNoteOn(MultiMidi::onNoteOn);
+    action.setCallbackOnNoteOff(MultiMidi::onNoteOff);
+    action.setCallbackOnPitchBend(MultiMidi::onPitchBend);
 
     // Initialize BLE MIDI if enabled
     if (bleMidiEnabled && !bleServer) {
@@ -99,12 +118,12 @@ void MultiMidi::begin(MidiCallbackAction &midiAction) {
         serialStreamOut = new MidiStreamOut(*HardwareMidiSerial);
         Debug->println("Hardware Serial MIDI initialized.");
     }
-
+    
     Debug->println("MultiMidi setup complete.");
 }
 
 // Process incoming MIDI messages for all active interfaces
-void MultiMidi::loop() {
+void MultiMidi::tick() {
     if (serialStreamIn) {
         serialStreamIn->loop();
     }
@@ -133,4 +152,21 @@ void MultiMidi::writeData(MidiMessage *msg, int len){
     if (appleMidiServer) {
         appleMidiServer->write(msg, len);
     }
+}
+
+// Callback methods
+void MultiMidi::onNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
+    instance->Debug->printf("MIDI Note On: %d, %d, %d\n", channel, note, velocity);
+}
+
+void MultiMidi::onNoteOff(uint8_t channel, uint8_t note, uint8_t velocity) {
+    instance->Debug->printf("MIDI Note Off: %d, %d, %d\n", channel, note, velocity);
+}
+
+void MultiMidi::onControlChange(uint8_t channel, uint8_t controller, uint8_t value) {
+    instance->Debug->printf("MIDI Control Change: %d, %d, %d\n", channel, controller, value);
+}
+
+void MultiMidi::onPitchBend(uint8_t channel, uint8_t value) {
+    instance->Debug->printf("MIDI Pitch Bend: %d, %d\n", channel, value);
 }

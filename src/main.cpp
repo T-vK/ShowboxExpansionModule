@@ -10,7 +10,8 @@
 #include "BoosterPedal/BoosterPedal.h"
 #include "MainMutePedal/MainMutePedal.h"
 #include "RestApiRouter/RestApiRouter.h"
-#include "ShowboxMidiAdapter/ShowboxMidiAdapter.h"
+#include "MultiMidi/MultiMidi.h"
+#include "MackieControlUniversalAdapter/MackieControlUniversalAdapter.h"
 #include <ESPAsyncWebServer.h>
 
 // Pins for double footswitch to control the looper
@@ -36,7 +37,8 @@ BoosterPedal boosterPedal(BOOSTER_PEDAL_PIN, &showbox, entity_id::INPUT4_GAIN);
 SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, &showbox);
 RestApiRouter restApiRouter;
 AsyncWebServer webServer(80);
-ShowboxMidiAdapter showboxMidiAdapter(&showbox);
+MultiMidi multiMidi;
+MackieControlUniversalAdapter mcuAdapter(&showbox);
 
 void setup() {
     #ifdef SHOWBOX_DEBUG
@@ -93,25 +95,36 @@ void setup() {
     webServer.begin();
     Debug->println("[  OK  ] Web Server started.");
 
+    Debug->println("[ INFO ] Initializing MultiMidi...");
+    multiMidi.setDebugSerial(Debug);
+    multiMidi.enableHardwareMidi(MIDI_RX, MIDI_TX);
+    multiMidi.enableAppleMidi(5004);
+    multiMidi.enableBleMidi("ShowboxMidi");
+    multiMidi.begin();
+    Debug->println("[  OK  ] MultiMidi initialized.");
+
     Debug->println("[ INFO ] Initializing Showbox MIDI Adapter...");
-    showboxMidiAdapter.setDebugSerial(Debug);
-    showboxMidiAdapter.begin(MIDI_RX, MIDI_TX);
+    mcuAdapter.setDebugSerial(Debug);
+    mcuAdapter.setMidi(&multiMidi);
+    mcuAdapter.begin();
     Debug->println("[  OK  ] Showbox MIDI Adapter initialized.");
 }
 
 unsigned long lastPrint = 0;
 
 void loop() {
-    ubfw.loop();
+    ubfw.tick();
     showbox.tick();
     looper.tick();
     snapshotLoader.tick();
     mutePedal.tick();
     boosterPedal.tick();
-    showboxMidiAdapter.tick();
+    multiMidi.tick();
     
     if (millis() - lastPrint > 2000) {
         lastPrint = millis();
         Debug->println("[ INFO ] Heartbeat from main execution loop");
+        //multiMidi.noteOn(0, 60, 127);
+        //multiMidi.noteOff(0, 60, 127);
     }
 }

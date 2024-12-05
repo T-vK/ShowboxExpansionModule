@@ -75,7 +75,7 @@ void UltimateBaseFirmware::begin() {
 }
 
 // Main loop for periodic tasks (e.g., OTA updates, Improv WiFi, Remote Debug)
-void UltimateBaseFirmware::loop() {
+void UltimateBaseFirmware::tick() {
     if (_improvSerial) {
         _improvSerial->handleSerial();
     }

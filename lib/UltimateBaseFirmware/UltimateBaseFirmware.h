@@ -41,7 +41,7 @@ public:
 
     // Main lifecycle methods
     void begin();
-    void loop();
+    void tick();
 
     // Utility methods
     String generateInfoString();

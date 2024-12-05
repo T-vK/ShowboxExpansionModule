@@ -21,21 +21,20 @@ I am providing a reference design that includes all the supported features, a 3D
 - [x] Class to programmatically do anything the Breakaway Mixer can do.
 - [x] Example on how to add footswitches to control anything you want
 - [ ] Add more examples
-- [ ] Split UARTInterceptor and ShowboxExpansionModule into two libraries
 - [ ] GitHub Actions for PlatformIO publishing
 - [x] GitHub Actions to provide binary builds
-- [ ] Add web interface to allow controlling the Showbox from the browser (over WiFi and Ethernet)
+- [x] Add web interface to allow controlling the Showbox from the browser (over WiFi and Ethernet)
 - [x] ESP Web Tools - Web flasher to allow flashing the micro controller from the browser
 - [x] ImprovWifi - Configure Wifi settings from the browser
 - [x] Add support for up to 4 dual foot switches (TRS jack)
 - [x] Add support for up to 4 expression pedals (TRS jack)
-- [ ] Add support for OTA updates
+- [x] Add support for OTA updates
 - [ ] Add support for MIDI
 - [ ] Add support for MIDI over Bluetooth
 - [ ] Add support for MIDI over WiFi
 - [ ] Add support for MIDI over USB
 - [ ] Add support for MIDI over Ethernet
-- [ ] Add support for Mackie Control Protocol (which is technically just specially MIDI commands)
+- [ ] Add support for Mackie Control Protocol (which is technically just specific MIDI commands)
 - [ ] Add support for using the breakaway mixer as a DAW controller (Would anyone even want this??)
 - [ ] Add support for Bluetooth HID (to allow using it as a Bluetooth page turner as well)
 - [ ] Add support for USB HID (to allow using it as a USB page turner as well)
