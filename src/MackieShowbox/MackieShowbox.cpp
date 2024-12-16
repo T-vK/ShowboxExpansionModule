@@ -27,7 +27,11 @@ void MackieShowbox::begin() {
     interceptor.setPacketFinderStartEndSig(startSig, sizeof(startSig), endSig, sizeof(endSig));
 
     interceptor.setPacketHandler([this](uint8_t* packet, size_t& length, UARTInterceptor::Direction direction) {
-        return this->handlePacket(packet, length, direction);
+        UARTInterceptor::PacketHandlerResult result = this->handlePacket(packet, length, direction);
+        if (postHandlePacketCallback != nullptr) {
+            postHandlePacketCallback(packet, length, direction, result);
+        }
+        return result;
     });
     
 
@@ -267,3 +271,340 @@ void MackieShowbox::printRawPacket(const char* message, uint8_t* raw_packet) {
     }
     Debug->println();
 }
+
+// High Level Setters
+
+void MackieShowbox::setFrontLed(bool state) {
+    setEntityValue(FRONT_LED, state);
+}
+
+void MackieShowbox::setFeedbackElim(uint8_t state) {
+    setEntityValue(FEEDBACK_ELIM, state);
+}
+
+void MackieShowbox::setAmpPaMode(uint8_t mode) {
+    setEntityValue(AMP_PA_MODE, mode);
+}
+
+void MackieShowbox::setLocationMode(uint8_t mode) {
+    setEntityValue(LOCATION_MODE, mode);
+}
+
+void MackieShowbox::setSelectedChan(uint8_t chan) {
+    setEntityValue(SELECTED_CHAN, chan);
+}
+
+void MackieShowbox::setInputGain(uint8_t input, float gain) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have gain
+    }
+    uint8_t inputOffset = INPUT1_GAIN + 17 * input;
+    uint8_t inputGainOffset = 0;
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputGainOffset);
+    setEntityValue(entityId, gain);
+}
+
+void MackieShowbox::setInputVolume(uint8_t input, float volume) {
+    uint8_t inputOffset = INPUT1_VOLUME + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_VOLUME;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    setEntityValue(entityId, volume);
+}
+
+void MackieShowbox::setInputMute(uint8_t input, bool mute) {
+    uint8_t inputOffset = INPUT1_MUTE + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_MUTE;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    setEntityValue(entityId, mute);
+}
+
+void MackieShowbox::setInputEffectMute(uint8_t input, effect_channel effect, bool mute) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have effects
+    }
+    uint8_t inputOffset = INPUT1_EFFECT_1_MUTE + 17 * input;
+    uint8_t inputEffectOffset = effect*2; // 0 or 2
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
+    setEntityValue(entityId, mute);
+}
+
+void MackieShowbox::setInputEffectAmount(uint8_t input, effect_channel effect, float amount) {
+    uint8_t inputOffset = INPUT1_EFFECT_1_AMOUNT + 17 * input;
+    uint8_t inputEffectOffset = effect*2; // 0 or 2
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
+    setEntityValue(entityId, amount);
+}
+
+void MackieShowbox::setInputEqEnable(uint8_t input, bool enable) {
+    uint8_t inputOffset = INPUT1_EQ_ENABLE + 17 * input;
+    if (input == 4) {
+        inputOffset += 4; // Skip input effects on stereo channels because they are not available
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    setEntityValue(entityId, enable);
+}
+
+void MackieShowbox::setInputEqGain(uint8_t input, eq_band band, float gain) {
+    uint8_t inputOffset = INPUT1_EQ_LOW_GAIN + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_EQ_LOW_GAIN;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset + band);
+    setEntityValue(entityId, gain);
+}
+
+void MackieShowbox::setInputCompressorEnable(uint8_t input, bool enable) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have compressor
+    }
+    uint8_t inputOffset = INPUT1_COMPRESSOR_ENABLE + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    setEntityValue(entityId, enable);
+}
+
+void MackieShowbox::setInputCompressorAmount(uint8_t input, float amount) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have compressor
+    }
+    uint8_t inputOffset = INPUT1_COMPRESSOR_AMOUNT + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    setEntityValue(entityId, amount);
+}
+
+void MackieShowbox::setInputExtFxMute(uint8_t input, bool mute) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have effects
+    }
+    uint8_t inputOffset = INPUT1_EXT_FX_MUTE + 17 * input;
+    uint8_t inputExtFxMuteOffset = 15;
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputExtFxMuteOffset);
+    setEntityValue(entityId, mute);
+}
+
+void MackieShowbox::setInputExtFxSends(uint8_t input, float sends) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have effects
+    }
+    uint8_t inputOffset = INPUT1_EXT_FX_SENDS + 17 * input;
+    uint8_t inputExtFxSendsOffset = 17;
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputExtFxSendsOffset);
+    setEntityValue(entityId, sends);
+}
+
+void MackieShowbox::setInputEffectType(uint8_t input, effect_channel effect, uint8_t type) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have effects
+    }
+    uint8_t entityId;
+    if (effect == effect_channel::EFFECT1) {
+        entityId = 81+input;
+    } else if (effect == effect_channel::EFFECT2) {
+        if (input == 0 || input == 2) {
+            entityId = 85;
+        } else if (input == 1 || input == 3) {
+            entityId = 86;
+        }
+    }
+    setEntityValue(static_cast<entity_id>(entityId), type);
+}
+
+void MackieShowbox::setMainHeadphoneGain(float gain) {
+    setEntityValue(MAIN_HEADPHONE_GAIN, gain);
+}
+
+void MackieShowbox::setMainMasterGain(float gain) {
+    setEntityValue(MAIN_MASTER_GAIN, gain);
+}
+
+void MackieShowbox::setMainMute(bool mute) {
+    setEntityValue(MAIN_MUTE, mute);
+}
+
+void MackieShowbox::setLooperLevel(uint8_t level) {
+    setEntityValue(LOOPER_LEVEL, level);
+}
+
+void MackieShowbox::setFxBypassState(bool state) {
+    setEntityValue(FX_BYPASS, state);
+}
+
+// High Level Getters
+
+bool MackieShowbox::getFrontLed() {
+    return getBoolEntityValue(FRONT_LED);
+}
+
+uint8_t MackieShowbox::getFeedbackElim() {
+    return getUint8EntityValue(FEEDBACK_ELIM);
+}
+
+bool MackieShowbox::getAmpPaMode() {
+    return getBoolEntityValue(AMP_PA_MODE);
+}
+
+bool MackieShowbox::getLocationMode() {
+    return getBoolEntityValue(LOCATION_MODE);
+}
+
+uint8_t MackieShowbox::getSelectedChan() {
+    return getUint8EntityValue(SELECTED_CHAN);
+}
+
+float MackieShowbox::getInputGain(uint8_t input) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have gain
+    }
+    uint8_t inputOffset = INPUT1_GAIN + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Gain Entity ID: %d\n", entityId);
+    return getFloatEntityValue(entityId);
+}
+
+float MackieShowbox::getInputVolume(uint8_t input) {
+    uint8_t inputOffset = INPUT1_VOLUME + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_VOLUME;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Volume Entity ID: %d\n", entityId);
+    return getFloatEntityValue(entityId);
+}
+
+bool MackieShowbox::getInputMute(uint8_t input) {
+    uint8_t inputOffset = INPUT1_MUTE + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_MUTE;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Muting Entity ID: %d\n", entityId);
+    return getBoolEntityValue(entityId);
+}
+
+bool MackieShowbox::getInputEffectMute(uint8_t input, effect_channel effect) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have effects
+    }
+    uint8_t inputOffset = INPUT1_EFFECT_1_MUTE + 17 * input;
+    uint8_t inputEffectOffset = effect * 2; // 0 or 2
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
+    Debug->printf("Effect Mute Entity ID: %d\n", entityId);
+    return getBoolEntityValue(entityId);
+}
+
+float MackieShowbox::getInputEffectAmount(uint8_t input, effect_channel effect) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have effects
+    }
+    uint8_t inputOffset = INPUT1_EFFECT_1_AMOUNT + 17 * input;
+    uint8_t inputEffectOffset = effect * 2; // 0 or 2
+    entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
+    Debug->printf("Effect Amount Entity ID: %d\n", entityId);
+    return getFloatEntityValue(entityId);
+}
+
+bool MackieShowbox::getInputEqEnable(uint8_t input) {
+    uint8_t inputOffset = INPUT1_EQ_ENABLE + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_EQ_ENABLE;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("EQ Enable Entity ID: %d\n", entityId);
+    return getBoolEntityValue(entityId);
+}
+
+float MackieShowbox::getInputEqGain(uint8_t input, eq_band band) {
+    uint8_t inputOffset = INPUT1_EQ_LOW_GAIN + 17 * input;
+    if (input == 4) {
+        inputOffset = STEREO_INPUT1_EQ_LOW_GAIN;
+    }
+    entity_id entityId = static_cast<entity_id>(inputOffset + band);
+    Debug->printf("EQ Gain Entity ID: %d\n", entityId);
+    return getFloatEntityValue(entityId);
+}
+
+bool MackieShowbox::getInputCompressorEnable(uint8_t input) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have compressor
+    }
+    uint8_t inputOffset = INPUT1_COMPRESSOR_ENABLE + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Compressor Enable Entity ID: %d\n", entityId);
+    return getBoolEntityValue(entityId);
+}
+
+float MackieShowbox::getInputCompressorAmount(uint8_t input) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have compressor
+    }
+    uint8_t inputOffset = INPUT1_COMPRESSOR_AMOUNT + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Compressor Amount Entity ID: %d\n", entityId);
+    return getFloatEntityValue(entityId);
+}
+
+bool MackieShowbox::getInputExtFxMute(uint8_t input) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have external effects
+    }
+    uint8_t inputOffset = INPUT1_EXT_FX_MUTE + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Ext FX Mute Entity ID: %d\n", entityId);
+    return getBoolEntityValue(entityId);
+}
+
+float MackieShowbox::getInputExtFxSends(uint8_t input) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have external effects
+    }
+    uint8_t inputOffset = INPUT1_EXT_FX_SENDS + 17 * input;
+    entity_id entityId = static_cast<entity_id>(inputOffset);
+    Debug->printf("Ext FX Sends Entity ID: %d\n", entityId);
+    return getFloatEntityValue(entityId);
+}
+
+uint8_t MackieShowbox::getInputEffectType(uint8_t input, effect_channel effect) {
+    if (input >= 4) {
+        return 0; // The Stereo channel does not have effects
+    }
+    uint8_t entityId;
+    if (effect == effect_channel::EFFECT1) {
+        entityId = 81 + input;
+    } else if (effect == effect_channel::EFFECT2) {
+        if (input == 0 || input == 2) {
+            entityId = 85;
+        } else if (input == 1 || input == 3) {
+            entityId = 86;
+        }
+    }
+    Debug->printf("Effect Type Entity ID: %d\n", entityId);
+    return getUint8EntityValue(static_cast<entity_id>(entityId));
+}
+
+float MackieShowbox::getMainHeadphoneGain() {
+    return getFloatEntityValue(MAIN_HEADPHONE_GAIN);
+}
+
+float MackieShowbox::getMainMasterGain() {
+    return getFloatEntityValue(MAIN_MASTER_GAIN);
+}
+
+bool MackieShowbox::getMainMute() {
+    return getBoolEntityValue(MAIN_MUTE);
+}
+
+uint8_t MackieShowbox::getLooperLevel() {
+    return getUint8EntityValue(LOOPER_LEVEL);
+}
+
+looper_state MackieShowbox::getLooperState() {
+    return static_cast<looper_state>(getUint8EntityValue(LOOPER_STATE));
+}
+
+bool MackieShowbox::getFxBypassState() {
+    return getBoolEntityValue(FX_BYPASS);
+}
+

@@ -11,7 +11,7 @@
 #include "MainMutePedal/MainMutePedal.h"
 #include "RestApiRouter/RestApiRouter.h"
 #include "MultiMidi/MultiMidi.h"
-#include "MackieControlUniversalAdapter/MackieControlUniversalAdapter.h"
+#include "XtouchCompactAdapter/XtouchCompactAdapter.h"
 #include <ESPAsyncWebServer.h>
 
 // Pins for double footswitch to control the looper
@@ -38,7 +38,7 @@ SnapshotLoader snapshotLoader(SNAPSHOT_BUTTON_PIN1, SNAPSHOT_BUTTON_PIN2, &showb
 RestApiRouter restApiRouter;
 AsyncWebServer webServer(80);
 MultiMidi multiMidi;
-MackieControlUniversalAdapter mcuAdapter(&showbox);
+XtouchCompactAdapter xtouchAdapter(&showbox);
 
 void setup() {
     #ifdef SHOWBOX_DEBUG
@@ -55,6 +55,20 @@ void setup() {
     ubfw.setCustomServer(&webServer);
     ubfw.begin();
     Debug = &ubfw.Debug;
+
+    Debug->println("[ INFO ] Initializing MultiMidi...");
+    multiMidi.setDebugSerial(Debug);
+    multiMidi.enableHardwareMidi(MIDI_RX, MIDI_TX);
+    multiMidi.enableAppleMidi(5004);
+    multiMidi.enableBleMidi("ShowboxMidi");
+    multiMidi.begin();
+    Debug->println("[  OK  ] MultiMidi initialized.");
+
+    Debug->println("[ INFO ] Initializing Showbox MIDI Adapter...");
+    xtouchAdapter.setDebugSerial(Debug);
+    xtouchAdapter.setMidi(&multiMidi);
+    xtouchAdapter.begin();
+    Debug->println("[  OK  ] Showbox MIDI Adapter initialized.");
 
     Debug->println("[ INFO ] Initializing Showbox...");
     showbox.setDebugSerial(Debug);
@@ -94,20 +108,6 @@ void setup() {
     Debug->println("[ INFO ] Starting Web Server...");
     webServer.begin();
     Debug->println("[  OK  ] Web Server started.");
-
-    Debug->println("[ INFO ] Initializing MultiMidi...");
-    multiMidi.setDebugSerial(Debug);
-    multiMidi.enableHardwareMidi(MIDI_RX, MIDI_TX);
-    multiMidi.enableAppleMidi(5004);
-    multiMidi.enableBleMidi("ShowboxMidi");
-    multiMidi.begin();
-    Debug->println("[  OK  ] MultiMidi initialized.");
-
-    Debug->println("[ INFO ] Initializing Showbox MIDI Adapter...");
-    mcuAdapter.setDebugSerial(Debug);
-    mcuAdapter.setMidi(&multiMidi);
-    mcuAdapter.begin();
-    Debug->println("[  OK  ] Showbox MIDI Adapter initialized.");
 }
 
 unsigned long lastPrint = 0;
@@ -120,11 +120,42 @@ void loop() {
     mutePedal.tick();
     boosterPedal.tick();
     multiMidi.tick();
+    xtouchAdapter.tick();
     
-    if (millis() - lastPrint > 2000) {
+    if (millis() - lastPrint > 3000) {
         lastPrint = millis();
         Debug->println("[ INFO ] Heartbeat from main execution loop");
         //multiMidi.noteOn(0, 60, 127);
         //multiMidi.noteOff(0, 60, 127);
+
+        // for (uint8_t i = 1; i < 10; i++) {
+        //     Debug->printf("Setting fader %d to 0\n", i);
+        //     multiMidi.controlChange(i, 0);
+        // }
+
+        // Set encoder behavior
+        /*for (uint8_t i = 0; i < 16; i++) {
+            uint8_t value = (i == 9 || i == 10 || i == 13) ? 4 : 2;
+            Debug->printf("Setting encoder %d to behavior %d\n", i, value);
+            xtouchAdapter.setLedRing(i, value);
+        }
+
+        // Turn off button leds
+        for (uint8_t i = 0; i < 39; i++) {
+            Debug->printf("Turning off button %d led\n", i);
+            xtouchAdapter.setButtonLed(i, false);
+        }
+
+        // Turn off encoder leds
+        for (uint8_t i = 0; i < 16; i++) {
+            Debug->printf("Turning off encoder %d led\n", i);
+            xtouchAdapter.setLedRing(i, 0);
+        }
+
+        // Move all faders to the bottom
+        for (uint8_t i = 0; i < 9; i++) {
+            Debug->printf("Setting fader %d to 0\n", i);
+            xtouchAdapter.setFader(i, 0);
+        }*/
     }
 }
