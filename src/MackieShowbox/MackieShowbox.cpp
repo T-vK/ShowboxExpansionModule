@@ -252,28 +252,20 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             if (9 + offset + valueSize > length) {
                 break;
             }
-            Debug->printf("            %s: ", entity_id_to_string[entityId].c_str());
             if (dataType == BOOL) {
-                // Read 1 byte as a boolean
                 bool value = bodyStart[offset];
-                Debug->printf("%s", value ? "true" : "false");
                 setEntityValue(entityId, value, false);
-                offset += 1; // Advance by 1 byte
+                offset += 1;
             } else if (dataType == UINT8) {
-                // Read 1 byte as uint8_t
                 uint8_t value = bodyStart[offset];
-                Debug->printf("%d", value);
                 setEntityValue(entityId, value, false);
-                offset += 1; // Advance by 1 byte
+                offset += 1;
             } else if (dataType == FLOAT) {
-                // Read 4 bytes as a float
                 float value;
                 memcpy(&value, &bodyStart[offset], sizeof(float));
-                Debug->printf("%f", value);
                 setEntityValue(entityId, value, false);
-                offset += 4; // Advance by 4 bytes
+                offset += 4;
             }
-            Debug->println();
             //Debug->printf(" (%s)\n", entity_data_type_to_string[dataType].c_str());
         }
     } else {
@@ -499,7 +491,6 @@ float MackieShowbox::getInputGain(uint8_t input) {
     }
     uint8_t inputOffset = INPUT1_GAIN + 17 * input;
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Gain Entity ID: %d\n", entityId);
     return getFloatEntityValue(entityId);
 }
 
@@ -509,7 +500,6 @@ float MackieShowbox::getInputVolume(uint8_t input) {
         inputOffset = STEREO_INPUT1_VOLUME;
     }
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Volume Entity ID: %d\n", entityId);
     return getFloatEntityValue(entityId);
 }
 
@@ -519,7 +509,6 @@ bool MackieShowbox::getInputMute(uint8_t input) {
         inputOffset = STEREO_INPUT1_MUTE;
     }
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Muting Entity ID: %d\n", entityId);
     return getBoolEntityValue(entityId);
 }
 
@@ -530,7 +519,6 @@ bool MackieShowbox::getInputEffectMute(uint8_t input, effect_channel effect) {
     uint8_t inputOffset = INPUT1_EFFECT_1_MUTE + 17 * input;
     uint8_t inputEffectOffset = effect * 2; // 0 or 2
     entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
-    Debug->printf("Effect Mute Entity ID: %d\n", entityId);
     return getBoolEntityValue(entityId);
 }
 
@@ -541,7 +529,6 @@ float MackieShowbox::getInputEffectAmount(uint8_t input, effect_channel effect) 
     uint8_t inputOffset = INPUT1_EFFECT_1_AMOUNT + 17 * input;
     uint8_t inputEffectOffset = effect * 2; // 0 or 2
     entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
-    Debug->printf("Effect Amount Entity ID: %d\n", entityId);
     return getFloatEntityValue(entityId);
 }
 
@@ -551,7 +538,6 @@ bool MackieShowbox::getInputEqEnable(uint8_t input) {
         inputOffset = STEREO_INPUT1_EQ_ENABLE;
     }
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("EQ Enable Entity ID: %d\n", entityId);
     return getBoolEntityValue(entityId);
 }
 
@@ -561,7 +547,6 @@ float MackieShowbox::getInputEqGain(uint8_t input, eq_band band) {
         inputOffset = STEREO_INPUT1_EQ_LOW_GAIN;
     }
     entity_id entityId = static_cast<entity_id>(inputOffset + band);
-    Debug->printf("EQ Gain Entity ID: %d\n", entityId);
     return getFloatEntityValue(entityId);
 }
 
@@ -571,7 +556,6 @@ bool MackieShowbox::getInputCompressorEnable(uint8_t input) {
     }
     uint8_t inputOffset = INPUT1_COMPRESSOR_ENABLE + 17 * input;
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Compressor Enable Entity ID: %d\n", entityId);
     return getBoolEntityValue(entityId);
 }
 
@@ -581,7 +565,6 @@ float MackieShowbox::getInputCompressorAmount(uint8_t input) {
     }
     uint8_t inputOffset = INPUT1_COMPRESSOR_AMOUNT + 17 * input;
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Compressor Amount Entity ID: %d\n", entityId);
     return getFloatEntityValue(entityId);
 }
 
@@ -591,7 +574,6 @@ bool MackieShowbox::getInputExtFxMute(uint8_t input) {
     }
     uint8_t inputOffset = INPUT1_EXT_FX_MUTE + 17 * input;
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Ext FX Mute Entity ID: %d\n", entityId);
     return getBoolEntityValue(entityId);
 }
 
@@ -601,7 +583,6 @@ float MackieShowbox::getInputExtFxSends(uint8_t input) {
     }
     uint8_t inputOffset = INPUT1_EXT_FX_SENDS + 17 * input;
     entity_id entityId = static_cast<entity_id>(inputOffset);
-    Debug->printf("Ext FX Sends Entity ID: %d\n", entityId);
     return getFloatEntityValue(entityId);
 }
 
@@ -617,7 +598,6 @@ uint8_t MackieShowbox::getInputEffectType(uint8_t input, effect_channel effect) 
     } else {
         return 0;
     }
-    Debug->printf("Effect Type Entity ID: %d\n", entityId);
     return getUint8EntityValue(static_cast<entity_id>(entityId));
 }
 

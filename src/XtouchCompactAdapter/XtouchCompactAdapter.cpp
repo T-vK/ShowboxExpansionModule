@@ -443,8 +443,36 @@ void XtouchCompactAdapter::setMidi(MultiMidi* multiMidi) {
 // Setters for the X Touch Compact controls
 
 // Encoder setters
+void XtouchCompactAdapter::rememberOutboundCc(uint8_t cc, uint8_t value) {
+    if (cc >= 128) {
+        return;
+    }
+    lastSentCc[cc] = value;
+    lastSentCcValid[cc] = true;
+    // Motorized faders and encoders report the move we just sent. Ignore that echo.
+    ccEchoUntil[cc] = millis() + 600;
+}
+
+bool XtouchCompactAdapter::isCcEcho(uint8_t cc, uint8_t value) const {
+    if (cc >= 128 || !lastSentCcValid[cc] || ccEchoUntil[cc] == 0) {
+        return false;
+    }
+    if ((int32_t)(ccEchoUntil[cc] - millis()) <= 0) {
+        return false;
+    }
+    int delta = (int)value - (int)lastSentCc[cc];
+    if (delta < 0) {
+        delta = -delta;
+    }
+    return delta <= 2;
+}
+
 void XtouchCompactAdapter::setEncoder(uint8_t encoder, uint8_t value) { // 0-127
     uint8_t cc = 10 + encoder;
+    if (cc < 128 && lastSentCcValid[cc] && lastSentCc[cc] == value) {
+        return;
+    }
+    rememberOutboundCc(cc, value);
     Debug->printf("Setting encoder %d to %d\n", encoder, value);
     midi->controlChange(cc, value);
 }
@@ -635,8 +663,13 @@ void XtouchCompactAdapter::setPlayButtonLed(bool state) {
 |------------------------------|------------|-----------------------------|-------------------------------------------------------------------------------------------|
 */
 void XtouchCompactAdapter::setFader(uint8_t fader, uint8_t value) { // index 0-8
+    uint8_t cc = fader + 1;
+    if (cc < 128 && lastSentCcValid[cc] && lastSentCc[cc] == value) {
+        return;
+    }
+    rememberOutboundCc(cc, value);
     Debug->printf("Setting fader %d to %d\n", fader, value);
-    midi->controlChange(fader+1, value); // Doesn't need global channel, but can be used alternatively, doesn't make a difference
+    midi->controlChange(cc, value); // Doesn't need global channel, but can be used alternatively, doesn't make a difference
 }
 
 void XtouchCompactAdapter::setFaderPercent(uint8_t fader, float value) {
@@ -869,10 +902,13 @@ void XtouchCompactAdapter::onNoteOn(uint8_t channel, uint8_t note, uint8_t veloc
 }
 
 void XtouchCompactAdapter::onControlChange(uint8_t channel, uint8_t controller, uint8_t value) {
-    instance->Debug->printf("X-Touch Control Change Event - Channel: %d - Controller: %d - Value: %d\n", channel, controller, value);
     if (channel != instance->midiChannel) {
         return;
     }
+    if (instance->isCcEcho(controller, value)) {
+        return;
+    }
+    instance->Debug->printf("X-Touch Control Change Event - Channel: %d - Controller: %d - Value: %d\n", channel, controller, value);
     // instance->controlChange(ccNumber, ccValue, 1);
     if (controller >= 1 && controller <= 5) { // input volume faders
         float percentInputVolumeLinear = value / 127.0;

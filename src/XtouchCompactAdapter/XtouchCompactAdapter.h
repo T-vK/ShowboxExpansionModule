@@ -111,6 +111,13 @@ private:
     unsigned long midiConfigDelay = 2000;
     unsigned long beginTime = 0;
     bool delayedConfigTriggered = false;
+    // Last value written to each CC, and how long to ignore the controller echoing it back.
+    uint8_t lastSentCc[128] = {};
+    bool lastSentCcValid[128] = {};
+    unsigned long ccEchoUntil[128] = {};
+
+    void rememberOutboundCc(uint8_t cc, uint8_t value);
+    bool isCcEcho(uint8_t cc, uint8_t value) const;
 
     void configureXtouchCompact();
 
