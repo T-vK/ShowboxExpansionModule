@@ -3,8 +3,15 @@
 void UARTInterceptor::begin(int u1_rx, int u1_tx, int u2_rx, int u2_tx, uint32_t u1_baud, uint32_t u2_baud, size_t u1_max_packet_size, size_t u2_max_packet_size) {
     Serial1.begin(u1_baud, SERIAL_8N1, u1_rx, u1_tx);
     Serial2.begin(u2_baud, SERIAL_8N1, u2_rx, u2_tx);
-    buffer1.reserve(u1_max_packet_size);
-    buffer2.reserve(u2_max_packet_size);
+    buffer1MaxSize = u1_max_packet_size;
+    buffer2MaxSize = u2_max_packet_size;
+    // resize, not reserve: the finder writes through data() and needs real elements
+    buffer1.assign(u1_max_packet_size, 0);
+    buffer2.assign(u2_max_packet_size, 0);
+    buffer1Position = 0;
+    buffer2Position = 0;
+    framerState1 = FramerState();
+    framerState2 = FramerState();
 }
 
 void UARTInterceptor::setPacketHandler(PacketHandlerCallback callback) {
@@ -20,43 +27,59 @@ void UARTInterceptor::setPacketFinderStartEndSig(uint8_t* start_sig, size_t star
     endSignature.assign(end_sig, end_sig + end_sig_length);
 
     packetFinder = [this](uint8_t* packetBuffer, size_t* packetBufferPosition, uint8_t* newBytes, size_t* newBytesLength, std::function<void()> sendPacketCallback) {
-        static size_t startSigMatchIndex = 0;
-        static bool packetInProgress = false;
+        if (activeFramer == nullptr || activeMaxPacketSize == 0 || startSignature.empty() || endSignature.empty()) {
+            return;
+        }
 
-        for (size_t i = 0; i < *newBytesLength; ++i) {
-            if (!packetInProgress) {
-                // Look for start signature
-                if (newBytes[i] == startSignature[startSigMatchIndex]) {
-                    startSigMatchIndex++;
-                    if (startSigMatchIndex == startSignature.size()) {
-                        // Start signature matched completely
-                        packetInProgress = true;
-                        startSigMatchIndex = 0;
-                        // Add the start signature to the buffer
-                        for (size_t j = 0; j < startSignature.size(); ++j) {
-                            packetBuffer[*packetBufferPosition] = startSignature[j];
-                            (*packetBufferPosition)++;
+        FramerState& framer = *activeFramer;
+        size_t i = 0;
+        while (i < *newBytesLength) {
+            uint8_t byte = newBytes[i];
+            bool reprocess = false;
+
+            if (!framer.packetInProgress) {
+                if (byte == startSignature[framer.startSigMatchIndex]) {
+                    framer.startSigMatchIndex++;
+                    if (framer.startSigMatchIndex == startSignature.size()) {
+                        framer.packetInProgress = true;
+                        framer.startSigMatchIndex = 0;
+                        *packetBufferPosition = 0;
+                        if (startSignature.size() > activeMaxPacketSize) {
+                            framer.packetInProgress = false;
+                        } else {
+                            for (size_t j = 0; j < startSignature.size(); ++j) {
+                                packetBuffer[*packetBufferPosition] = startSignature[j];
+                                (*packetBufferPosition)++;
+                            }
                         }
                     }
                 } else {
-                    startSigMatchIndex = 0; // Reset match index if any byte does not match
-                }
-            } else {
-                // Collect packet bytes
-                packetBuffer[*packetBufferPosition] = newBytes[i];
-                (*packetBufferPosition)++;
-
-                // Check if end signature is matched
-                if (*packetBufferPosition >= endSignature.size()) {
-                    if (memcmp(&packetBuffer[*packetBufferPosition - endSignature.size()], endSignature.data(), endSignature.size()) == 0) {
-                        // End signature matched
-                        size_t packetLength = *packetBufferPosition;
-                        sendPacketCallback();
-                        
-                        *packetBufferPosition = 0; // Reset buffer position for the next packet
-                        packetInProgress = false;
+                    // The rejected byte may itself be the first byte of a new start signature (e.g. BE BE EF).
+                    framer.startSigMatchIndex = 0;
+                    if (startSignature.size() > 1 && byte == startSignature[0]) {
+                        framer.startSigMatchIndex = 1;
                     }
                 }
+            } else if (*packetBufferPosition >= activeMaxPacketSize) {
+                // No end signature before the buffer filled. Drop the partial packet and resync on this byte.
+                *packetBufferPosition = 0;
+                framer.packetInProgress = false;
+                framer.startSigMatchIndex = 0;
+                reprocess = true;
+            } else {
+                packetBuffer[*packetBufferPosition] = byte;
+                (*packetBufferPosition)++;
+
+                if (*packetBufferPosition >= endSignature.size() &&
+                    memcmp(&packetBuffer[*packetBufferPosition - endSignature.size()], endSignature.data(), endSignature.size()) == 0) {
+                    sendPacketCallback();
+                    *packetBufferPosition = 0;
+                    framer.packetInProgress = false;
+                }
+            }
+
+            if (!reprocess) {
+                i++;
             }
         }
     };
@@ -77,17 +100,19 @@ void UARTInterceptor::tick() {
 
 void UARTInterceptor::_processSerial(HardwareSerial& serial, std::vector<uint8_t>& buffer, size_t& bufferPosition, Direction direction) {
     if (serial.available()) {
-        // Determine the number of bytes available
         size_t availableBytes = serial.available();
-        
-        // Allocate buffer dynamically based on available bytes
         std::vector<uint8_t> newBytes(availableBytes);
         size_t newBytesLength = serial.readBytes(newBytes.data(), availableBytes);
-        
-        // Call packetFinder with the dynamically allocated buffer
+
+        activeFramer = (direction == DEVICE1_TO_DEVICE2) ? &framerState1 : &framerState2;
+        activeMaxPacketSize = (direction == DEVICE1_TO_DEVICE2) ? buffer1MaxSize : buffer2MaxSize;
+
         packetFinder(buffer.data(), &bufferPosition, newBytes.data(), &newBytesLength, [&]() {
+            if (!packetHandler) {
+                return;
+            }
             PacketHandlerResult result = packetHandler(buffer.data(), bufferPosition, direction);
-            
+
             if (result == PACKET_NOT_MODIFIED || result == PACKET_MODIFIED) {
                 _sendPacketFromBuffer(direction);
             }

@@ -52,7 +52,7 @@ public:
     void setMainHeadphoneGain(float gain);
     void setMainMasterGain(float gain);
     void setMainMute(bool mute);
-    void setLooperLevel(uint8_t level);
+    void setLooperLevel(float level);
     void setFxBypassState(bool state);
 
     // High level entity getters
@@ -79,7 +79,7 @@ public:
     float getMainMasterGain();
     bool getMainMute();
     bool getMainClipOl();
-    uint8_t getLooperLevel();
+    float getLooperLevel();
     looper_state getLooperState();
     bool getFxBypassState();
     uint8_t getTunerState();
@@ -90,7 +90,7 @@ public:
 
     void setDebugSerial(Print* serial);
 
-    void printRawPacket(const char* message, uint8_t* raw_packet);
+    void printRawPacket(const char* message, uint8_t* raw_packet, size_t length);
 
     // post handle packet hook
     //void postHandlePacketHook(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, UARTInterceptor::PacketHandlerResult result);
@@ -98,7 +98,7 @@ public:
     /* Example usage:
     showbox->postHandlePacketCallback = [](uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, UARTInterceptor::PacketHandlerResult result) {
         if (result == UARTInterceptor::PacketHandlerResult::PACKET_MODIFIED) {
-            showbox->printRawPacket("Modified Packet: ", raw_packet);
+            showbox->printRawPacket("Modified Packet: ", raw_packet, length);
         }
     };
     */

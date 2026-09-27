@@ -1,5 +1,19 @@
 #include "RestApiRouter.h"
 
+static bool requireParam(AsyncWebServerRequest* request, const char* name, String& out) {
+    if (!request->hasParam(name)) {
+        request->send(400, "text/plain", String("Missing parameter: ") + name);
+        return false;
+    }
+    const AsyncWebParameter* param = request->getParam(name);
+    if (param == nullptr) {
+        request->send(400, "text/plain", String("Missing parameter: ") + name);
+        return false;
+    }
+    out = param->value();
+    return true;
+}
+
 RestApiRouter::RestApiRouter() {}
 
 void RestApiRouter::setWebServer(AsyncWebServer* server) {
@@ -17,32 +31,47 @@ void RestApiRouter::setup() {
         String entityName = request->pathArg(0);
         std::string entityNameStr = entityName.c_str();
         Debug->println(entityName);
-        // Get entity ID from entity name
-        entity_id entityId = string_to_entity_id[entityNameStr];
-        Debug->print("Entity ID: ");
-        Debug->println(entityId);
-
-        // Validate entity ID
-        if (entityId == 0 && entityName != "FRONT_LED") {
+        auto entityIt = string_to_entity_id.find(entityNameStr);
+        if (entityIt == string_to_entity_id.end()) {
             Debug->println("Entity not found.");
             request->send(404, "text/plain", "Entity not found.");
             return;
         }
+        entity_id entityId = entityIt->second;
+        Debug->print("Entity ID: ");
+        Debug->println(entityId);
 
-        // Get entity type from entity ID
-        entity_data_type entityType = entity_type_mapping[entityId];
+        auto entityTypeIt = entity_type_mapping.find(entityId);
+        if (entityTypeIt == entity_type_mapping.end()) {
+            request->send(404, "text/plain", "Entity not found.");
+            return;
+        }
+        entity_data_type entityType = entityTypeIt->second;
         Debug->print("Entity Type: ");
         Debug->println(entityType);
 
-        if(request->hasParam("value")) {
-            // Get entity value from request body
+        if (request->hasParam("value")) {
             const AsyncWebParameter* p = request->getParam("value");
+            if (p == nullptr) {
+                request->send(400, "text/plain", "Missing parameter: value");
+                return;
+            }
             String stringValue = p->value();
             Debug->print("Value: ");
             Debug->println(stringValue);
 
             if (entityType == BOOL) {
-                bool value = stringValue == "true";
+                String normalized = stringValue;
+                normalized.toLowerCase();
+                bool value;
+                if (normalized == "true" || normalized == "1") {
+                    value = true;
+                } else if (normalized == "false" || normalized == "0") {
+                    value = false;
+                } else {
+                    request->send(400, "text/plain", "Invalid boolean value.");
+                    return;
+                }
                 _showbox->setEntityValue(entityId, value);
             } else if (entityType == UINT8) {
                 uint8_t value = stringValue.toInt();
@@ -77,7 +106,10 @@ void RestApiRouter::setup() {
     // Looper route
     _server->on("/api/v1/showbox/action/looper_button", HTTP_GET, [this](AsyncWebServerRequest* request) {
         Debug->println("GET /api/v1/showbox/action/looper_button");
-        String actionName = request->getParam("action")->value();
+        String actionName;
+        if (!requireParam(request, "action", actionName)) {
+            return;
+        }
         if (actionName == "DOWN") {
             _showbox->sendLooperButtonAction(looper_button_action::DOWN);
         } else if (actionName == "UP") {
@@ -103,9 +135,11 @@ void RestApiRouter::setup() {
     // Snapshot route
     _server->on("/api/v1/showbox/action/snapshot", HTTP_GET, [this](AsyncWebServerRequest* request) {
         Debug->println("GET /api/v1/showbox/action/snapshot");
-        String actionName = request->getParam("action")->value();
-        snapshot_action action = static_cast<snapshot_action>(actionName.toInt());
-        String slotName = request->getParam("slot")->value();
+        String actionName;
+        String slotName;
+        if (!requireParam(request, "action", actionName) || !requireParam(request, "slot", slotName)) {
+            return;
+        }
         snapshot_slot slot = static_cast<snapshot_slot>(slotName.toInt());
         if (actionName == "RECALL") {
             _showbox->snapshotAction(snapshot_action::RECALL, slot);
@@ -121,9 +155,11 @@ void RestApiRouter::setup() {
     // Tuner route
     _server->on("/api/v1/showbox/action/tuner", HTTP_GET, [this](AsyncWebServerRequest* request) {
         Debug->println("GET /api/v1/showbox/action/tuner");
-        String actionName = request->getParam("action")->value();
-        tuner_action action = static_cast<tuner_action>(actionName.toInt());
-        String chanName = request->getParam("chan")->value();
+        String actionName;
+        String chanName;
+        if (!requireParam(request, "action", actionName) || !requireParam(request, "chan", chanName)) {
+            return;
+        }
         tuner_chan chan = static_cast<tuner_chan>(chanName.toInt());
         if (actionName == "TURN_ON") {
             _showbox->tunerAction(tuner_action::TURN_ON, chan);

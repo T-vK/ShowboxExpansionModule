@@ -39,7 +39,7 @@ public:
     void setChannelLedRingPercent(uint8_t channel, float value);
 
     // Button Control setters
-    void setButton(uint8_t button, bool state);
+    void setButton(uint8_t button, uint8_t state);
 
     void setChannelButton(uint8_t row, uint8_t channel, bool state);
 
@@ -51,7 +51,7 @@ public:
 
     void setLoopButton(bool state);
 
-    void setRecordButton(bool state);
+    void setRecordButton(uint8_t state);
 
     void setStopButton(bool state);
 
@@ -102,7 +102,7 @@ public:
     bool fx1Lock = false;
     bool fx2Lock = false;
     bool snapshotLock = false;
-    uint8_t selectedSnapshot = -1;
+    int8_t selectedSnapshot = -1;
 private:
     MackieShowbox* showbox;
     Print* Debug = &Serial;

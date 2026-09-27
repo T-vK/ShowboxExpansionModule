@@ -35,6 +35,7 @@ MultiMidi::~MultiMidi() {
 // Enable BLE MIDI
 void MultiMidi::enableBleMidi(const char *name) {
     bluetoothName = name; // todo: separate ble midi and ble serial names
+    bleMidiEnabled = true;
     Debug->println("Bluetooth MIDI enabled.");
 }
 

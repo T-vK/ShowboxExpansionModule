@@ -36,14 +36,26 @@ private:
     HardwareSerial Serial1 = HardwareSerial(1);
     HardwareSerial Serial2 = HardwareSerial(2);
 
+    struct FramerState {
+        size_t startSigMatchIndex = 0;
+        bool packetInProgress = false;
+    };
+
     std::vector<uint8_t> buffer1;
     std::vector<uint8_t> buffer2;
     size_t buffer1Position = 0;
     size_t buffer2Position = 0;
+    size_t buffer1MaxSize = 0;
+    size_t buffer2MaxSize = 0;
     std::vector<uint8_t> startSignature;
     std::vector<uint8_t> endSignature;
     PacketHandlerCallback packetHandler;
     PacketFinderCallback packetFinder;
+    // Framing state is per direction. A single static pair would mix bytes from both UARTs.
+    FramerState framerState1;
+    FramerState framerState2;
+    FramerState* activeFramer = nullptr;
+    size_t activeMaxPacketSize = 0;
 
     void _processSerial(HardwareSerial& serial, std::vector<uint8_t>& buffer, size_t& bufferPosition, Direction direction);
     void _sendPacketFromBuffer(Direction direction);

@@ -102,8 +102,11 @@ void XtouchCompactAdapter::begin() {
     // }
 
     showbox->postHandlePacketCallback = [](uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, UARTInterceptor::PacketHandlerResult result) {
+        if (raw_packet == nullptr || length < 4) {
+            return;
+        }
         packet_type packetType = static_cast<packet_type>(raw_packet[3]);
-        if (packetType == ENTITY) {
+        if (packetType == ENTITY && length >= 6) {
             entity_id entityId = static_cast<entity_id>(raw_packet[5]);
             onShowboxEntityChange(entityId);
         } else if (packetType == ALL_ENTITIES) {
@@ -111,19 +114,21 @@ void XtouchCompactAdapter::begin() {
                 entity_id entityId = static_cast<entity_id>(i);
                 onShowboxEntityChange(entityId);
             }            
-        } else if (packetType == SD_CARD_EVENT) {
-            sd_card_state sdCardState = static_cast<sd_card_state>(raw_packet[5]);
+        } else if (packetType == SD_CARD_EVENT && length >= 5) {
+            sd_card_state sdCardState = static_cast<sd_card_state>(raw_packet[4]);
             if (sdCardState == sd_card_state::NOT_DETECTED) {
-                instance->setRecordButton(false);
+                instance->setRecordButton(0);
             } else if (sdCardState == sd_card_state::DETECTED) {
-                instance->setRecordButton(true);
-            } else  if(sdCardState == sd_card_state::RECORDING) {
+                instance->setRecordButton(1);
+            } else if (sdCardState == sd_card_state::RECORDING) {
                 instance->setRecordButton(2); // blinking
             }
-        } else if (packetType == TUNER_TOGGLE) { // BE EF 01 18 01 00 EF BE - Head Head BodyLength TunerToggle TurnOn TunerChan Checksum
-            bool tunerState = static_cast<bool>(raw_packet[4]);
-            uint8_t tunerInput = static_cast<bool>(raw_packet[5]);
-            instance->setChannelButton(1, tunerInput, tunerState);
+        } else if (packetType == TUNER_TOGGLE && length >= 6) { // BE EF 01 18 <state> <chan> EF BE
+            bool tunerState = raw_packet[4] != 0;
+            uint8_t tunerInput = raw_packet[5];
+            if (tunerInput <= 3) {
+                instance->setChannelButton(1, tunerInput, tunerState);
+            }
         }
     };
 
@@ -342,9 +347,9 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
             uint8_t eqMidEncoder = 10;
             uint8_t eqLowEncoder = 12;
             if (enable) {
-                uint8_t eqLowGain = instance->showbox->getInputEqGain(input, EQ_LOW_BAND); // input eq gain goes from -15.0 to 15.0
-                uint8_t eqMidGain = instance->showbox->getInputEqGain(input, EQ_MID_BAND); // input eq gain goes from -15.0 to 15.0
-                uint8_t eqHighGain = instance->showbox->getInputEqGain(input, EQ_HIGH_BAND); // input eq gain goes from -15.0 to 15.0
+                float eqLowGain = instance->showbox->getInputEqGain(input, EQ_LOW_BAND); // input eq gain goes from -15.0 to 15.0
+                float eqMidGain = instance->showbox->getInputEqGain(input, EQ_MID_BAND); // input eq gain goes from -15.0 to 15.0
+                float eqHighGain = instance->showbox->getInputEqGain(input, EQ_HIGH_BAND); // input eq gain goes from -15.0 to 15.0
                 float eqLowGainPercent = (eqLowGain + 15.0) / 30.0;
                 float eqMidGainPercent = (eqMidGain + 15.0) / 30.0;
                 float eqHighGainPercent = (eqHighGain + 15.0) / 30.0;
@@ -491,13 +496,11 @@ void XtouchCompactAdapter::setChannelLedRingPercent(uint8_t channel, float value
 
 // Button Control
 
-void XtouchCompactAdapter::setButton(uint8_t button, bool state) {
-    uint8_t note = button+16;
-    if (state) {
-        midi->noteOn(note, 127);
-    } else {
-        midi->noteOff(note, 0);
-    }
+void XtouchCompactAdapter::setButton(uint8_t button, uint8_t state) {
+    // X-Touch LED protocol: velocity 0 off, 1 on, 2 blink. 3–127 are ignored.
+    uint8_t note = button + 16;
+    uint8_t velocity = state > 2 ? 1 : state;
+    midi->noteOn(note, velocity, globalChannel);
 }
 
 void XtouchCompactAdapter::setChannelButton(uint8_t row, uint8_t channel, bool state) {
@@ -521,8 +524,8 @@ void XtouchCompactAdapter::setLoopButton(bool state) {
     setButton(51-16, state);
 }
 
-void XtouchCompactAdapter::setRecordButton(bool state) {
-    setButton(52-16, state);
+void XtouchCompactAdapter::setRecordButton(uint8_t state) {
+    setButton(52 - 16, state);
 }
 
 void XtouchCompactAdapter::setStopButton(bool state) {
@@ -737,22 +740,24 @@ void XtouchCompactAdapter::onNoteOff(uint8_t channel, uint8_t note, uint8_t velo
         instance->Debug->printf("Toggle front LED\n");
         bool state = instance->showbox->getFrontLed();
         instance->showbox->setFrontLed(!state);
-        instance->setChannelButton(2, 5, !state);
+        instance->setChannelButton(1, 5, !state);
     } else if (note == 30) { // AMP_PA_MODE
         instance->Debug->printf("Toggle PA mode\n");
         bool state = instance->showbox->getAmpPaMode();
         instance->showbox->setAmpPaMode(!state);
-        instance->setChannelButton(2, 6, !state);
+        // Entity updates light the inverse of the new mode, which is the old value.
+        instance->setChannelButton(1, 6, state);
     } else if (note == 37) { // Feedback elimination
         instance->Debug->printf("Toggle feedback elimination\n");
         bool state = instance->showbox->getFeedbackElim();
         instance->showbox->setFeedbackElim(!state);
-        instance->setChannelButton(3, 5, !state);
+        instance->setChannelButton(2, 5, !state);
     } else if (note == 38) { //  Outdoor mode (location mdoe)
         instance->Debug->printf("Toggle outdoor mode\n");
         bool state = instance->showbox->getLocationMode();
         instance->showbox->setLocationMode(!state);
-        instance->setChannelButton(3, 6, !state);
+        // Entity updates light the inverse of the new mode, which is the old value.
+        instance->setChannelButton(2, 6, state);
     } else if (note == 23) { // Snapshot lock
         instance->snapshotLock = !instance->snapshotLock;
         instance->setChannelButton(0, 7, instance->snapshotLock);
@@ -786,20 +791,20 @@ void XtouchCompactAdapter::onNoteOff(uint8_t channel, uint8_t note, uint8_t velo
         instance->Debug->printf("Looper record: current state %d\n", state);
         if (state == looper_state::DELETE) { // looper is empty, start recording first layer
             instance->Debug->printf("Start recording first layer\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
         } else if (state == looper_state::RECORD_INITIAL_LOOP) { // first layer is getting recorded, don't do anything
             return;
         } else if (state == looper_state::STOP_PLAYING) { // playback is paused, start playing and record overdub
             instance->Debug->printf("Start playing and record overdub\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
         } else if (state == looper_state::PLAY) { // looper is playing, record overdub
             instance->Debug->printf("Record overdub\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
         } else if (state == looper_state::RECORD_OVERDUB) { // looper is recording overdub, don't do anything
             return;
         }
@@ -813,16 +818,16 @@ void XtouchCompactAdapter::onNoteOff(uint8_t channel, uint8_t note, uint8_t velo
             return;
         } else if (state == looper_state::RECORD_INITIAL_LOOP) { // first layer is getting recorded, stop recording and stop playing
             instance->Debug->printf("Stop recording and stop playing\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOUBLE_PRESS);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOUBLE_PRESS);
         } else if (state == looper_state::STOP_PLAYING) { // playback is paused, clear looper
             instance->Debug->printf("Clear looper\n");
-            instance->showbox->setLooperLevel(looper_button_action::LONG_PRESS);
+            instance->showbox->sendLooperButtonAction(looper_button_action::LONG_PRESS);
         } else if (state == looper_state::PLAY) { // looper is playing, stop playing
             instance->Debug->printf("Stop playing\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOUBLE_PRESS);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOUBLE_PRESS);
         } else if (state == looper_state::RECORD_OVERDUB) { // looper is recording overdub, stop recording/playing
             instance->Debug->printf("Stop recording/playing\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOUBLE_PRESS);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOUBLE_PRESS);
             return;
         }
     } else if (note == 54) { // looper play
@@ -832,18 +837,18 @@ void XtouchCompactAdapter::onNoteOff(uint8_t channel, uint8_t note, uint8_t velo
             return;
         } else if (state == looper_state::RECORD_INITIAL_LOOP) { // first layer is getting recorded, stop recording and play
             instance->Debug->printf("Stop recording and play\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
         } else if (state == looper_state::STOP_PLAYING) { // playback is paused, start playing
             instance->Debug->printf("Start playing\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
         } else if (state == looper_state::PLAY) { // looper is playing, dont do anything
             return;
         } else if (state == looper_state::RECORD_OVERDUB) { // looper is recording overdub, stop recording and start playing
             instance->Debug->printf("Stop recording and start playing\n");
-            instance->showbox->setLooperLevel(looper_button_action::DOWN);
-            instance->showbox->setLooperLevel(looper_button_action::UP);
+            instance->showbox->sendLooperButtonAction(looper_button_action::DOWN);
+            instance->showbox->sendLooperButtonAction(looper_button_action::UP);
         }
     } else if (note == 21) {
         instance->fx1Lock = !instance->fx1Lock;
@@ -897,7 +902,7 @@ void XtouchCompactAdapter::onControlChange(uint8_t channel, uint8_t controller, 
         } else {
             instance->Debug->printf("FX1 Lock Mode is locked\n");
             uint8_t currentEffect = instance->showbox->getInputEffectType(instance->selectedChannel, effect_channel::EFFECT1);
-            uint8_t currentEffectPercent = currentEffect / 14.0;
+            float currentEffectPercent = currentEffect / 14.0;
             instance->setChannelEncoderPercent(5, currentEffectPercent);
         }
     } else if (controller == 16) { // cycle through available effects for FX2 (0-17)
@@ -909,7 +914,7 @@ void XtouchCompactAdapter::onControlChange(uint8_t channel, uint8_t controller, 
         } else {
             instance->Debug->printf("FX2 Select Mode is locked\n");
             uint8_t currentEffect = instance->showbox->getInputEffectType(instance->selectedChannel, effect_channel::EFFECT2);
-            uint8_t currentEffectPercent = currentEffect / 17.0;
+            float currentEffectPercent = currentEffect / 17.0;
             instance->setChannelEncoderPercent(6, currentEffectPercent);
         }
     } else if (controller == 17) { // snapshot slot selection (0-4)

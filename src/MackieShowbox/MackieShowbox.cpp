@@ -93,12 +93,12 @@ void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
  */
 
 void MackieShowbox::toggleSdCardRecord() {
-    uint8_t packet[8] = { 0xBE, 0xEF, 0x00, SD_CARD_EVENT, 0x02, 0xEF, 0xBE };
+    uint8_t packet[] = { 0xBE, 0xEF, 0x00, SD_CARD_EVENT, sd_card_action::TOGGLE_RECORD, 0xEF, 0xBE };
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
 void MackieShowbox::snapshotAction(snapshot_action action, snapshot_slot slot) {
-    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, SNAPSHOT, action, action, 0xEF, 0xBE };
+    uint8_t packet[] = { 0xBE, 0xEF, 0x01, SNAPSHOT, static_cast<uint8_t>(action), static_cast<uint8_t>(slot), 0xEF, 0xBE };
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
@@ -120,6 +120,10 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     // printRawPacket("[Raw]: ", raw_packet);
     #endif
 
+    if (raw_packet == nullptr || length < 4) {
+        return UARTInterceptor::PACKET_NOT_MODIFIED;
+    }
+
     packet_type packetType = static_cast<packet_type>(raw_packet[3]);
 
     #ifdef SHOWBOX_DEBUG
@@ -128,8 +132,19 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     #endif
 
     if (packetType == ENTITY) {
+        if (length < 6) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
         entity_id entityId = static_cast<entity_id>(raw_packet[5]);
-        entity_data_type entityType = entity_type_mapping[entityId];
+        auto entityTypeIt = entity_type_mapping.find(entityId);
+        if (entityTypeIt == entity_type_mapping.end()) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
+        entity_data_type entityType = entityTypeIt->second;
+        size_t valueSize = entityType == FLOAT ? sizeof(float) : 1;
+        if (length < 9 + valueSize) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
         #ifdef SHOWBOX_DEBUG
         String entityString = entity_id_to_string[entityId].c_str();
         Debug->printf("%s [Decoded] Type: %s | Entity: %s | { Set %s to ", directionString.c_str(), packetTypeString.c_str(), entityString.c_str(), entityString.c_str());
@@ -167,6 +182,9 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         //Debug->print(".");
         #endif
     } else if (packetType == ACK) {
+        if (length < 6) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
         uint8_t ackCmd = raw_packet[5];
         if (ackCmd != HEARTBEAT && ackCmd != UNKNOWN_00 && ackCmd != UNKNOWN_FE) {
             #ifdef SHOWBOX_DEBUG
@@ -180,21 +198,28 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     } else if (packetType == DATA_REQUEST) {
         #ifdef SHOWBOX_DEBUG
         Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
-        printRawPacket("[Raw]: ", raw_packet);
+        printRawPacket("[Raw]: ", raw_packet, length);
         #endif
     } else if (packetType == LOOPER_BUTTON) {
         #ifdef SHOWBOX_DEBUG
         Debug->println("Looper Button");
         #endif
     } else if (packetType == BATTERY_LEVEL) {
-        float value;
-        memcpy(&value, &raw_packet[9], sizeof(float));
-        batteryLevel = value;
-        #ifdef SHOWBOX_DEBUG
-        Debug->printf("%s [Decoded] Type: %s | Battery Level: %f\n", directionString.c_str(), packetTypeString.c_str(), value);
-        #endif
+        // Value form is BE EF 08 16 .. <float at offset 9> EF BE. The short form has no float.
+        if (length >= 13) {
+            float value;
+            memcpy(&value, &raw_packet[9], sizeof(float));
+            batteryLevel = value;
+            #ifdef SHOWBOX_DEBUG
+            Debug->printf("%s [Decoded] Type: %s | Battery Level: %f\n", directionString.c_str(), packetTypeString.c_str(), value);
+            #endif
+        }
     } else if (packetType == SD_CARD_EVENT) {
-        sdCardState = static_cast<sd_card_state>(raw_packet[5]);
+        // BE EF 00 1E <state> EF BE — the state byte is at index 4, not the end signature.
+        if (length < 5) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
+        sdCardState = static_cast<sd_card_state>(raw_packet[4]);
         #ifdef SHOWBOX_DEBUG
         if (sdCardState == sd_card_state::NOT_DETECTED) {
             Debug->printf("%s [Decoded] Type: %s | SD Card: Not Detected\n", directionString.c_str(), packetTypeString.c_str());
@@ -205,6 +230,9 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         } 
         #endif
     } else if (packetType == ALL_ENTITIES) {
+        if (length < 9) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
         Debug->printf("%s [Decoded] Type: %s - Data:\n", directionString.c_str(), packetTypeString.c_str());
         //printRawPacket("[Raw]: ", raw_packet);
 
@@ -215,7 +243,15 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
 
         for (uint8_t i = 0; i <= FX_BYPASS; i++) {
             entity_id entityId = static_cast<entity_id>(i);
-            entity_data_type dataType = entity_type_mapping[entityId];
+            auto dataTypeIt = entity_type_mapping.find(entityId);
+            if (dataTypeIt == entity_type_mapping.end()) {
+                break;
+            }
+            entity_data_type dataType = dataTypeIt->second;
+            size_t valueSize = dataType == FLOAT ? sizeof(float) : 1;
+            if (9 + offset + valueSize > length) {
+                break;
+            }
             Debug->printf("            %s: ", entity_id_to_string[entityId].c_str());
             if (dataType == BOOL) {
                 // Read 1 byte as a boolean
@@ -243,7 +279,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     } else {
         #ifdef SHOWBOX_DEBUG
         Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
-        printRawPacket("[Raw]: ", raw_packet);
+        printRawPacket("[Raw]: ", raw_packet, length);
         #endif
     }
     #ifdef SHOWBOX_DEBUG
@@ -263,10 +299,14 @@ void MackieShowbox::setDebugSerial(Print* serial) {
     Debug = serial;
 }
 
-void MackieShowbox::printRawPacket(const char* message, uint8_t* raw_packet) {
+void MackieShowbox::printRawPacket(const char* message, uint8_t* raw_packet, size_t length) {
+    if (raw_packet == nullptr || length < 3) {
+        return;
+    }
     Debug->printf("%s", message);
-    uint8_t size = raw_packet[2] + 7;
-    for (int i = 0; i < size; i++) {
+    size_t declared = static_cast<size_t>(raw_packet[2]) + 7;
+    size_t size = declared < length ? declared : length;
+    for (size_t i = 0; i < size; i++) {
         Debug->printf("%02X ", raw_packet[i]);
     }
     Debug->println();
@@ -333,6 +373,9 @@ void MackieShowbox::setInputEffectMute(uint8_t input, effect_channel effect, boo
 }
 
 void MackieShowbox::setInputEffectAmount(uint8_t input, effect_channel effect, float amount) {
+    if (input >= 4) {
+        return; // The Stereo channel does not have effects
+    }
     uint8_t inputOffset = INPUT1_EFFECT_1_AMOUNT + 17 * input;
     uint8_t inputEffectOffset = effect*2; // 0 or 2
     entity_id entityId = static_cast<entity_id>(inputOffset + inputEffectOffset);
@@ -342,7 +385,7 @@ void MackieShowbox::setInputEffectAmount(uint8_t input, effect_channel effect, f
 void MackieShowbox::setInputEqEnable(uint8_t input, bool enable) {
     uint8_t inputOffset = INPUT1_EQ_ENABLE + 17 * input;
     if (input == 4) {
-        inputOffset += 4; // Skip input effects on stereo channels because they are not available
+        inputOffset = STEREO_INPUT1_EQ_ENABLE;
     }
     entity_id entityId = static_cast<entity_id>(inputOffset);
     setEntityValue(entityId, enable);
@@ -380,8 +423,7 @@ void MackieShowbox::setInputExtFxMute(uint8_t input, bool mute) {
         return; // The Stereo channel does not have effects
     }
     uint8_t inputOffset = INPUT1_EXT_FX_MUTE + 17 * input;
-    uint8_t inputExtFxMuteOffset = 15;
-    entity_id entityId = static_cast<entity_id>(inputOffset + inputExtFxMuteOffset);
+    entity_id entityId = static_cast<entity_id>(inputOffset);
     setEntityValue(entityId, mute);
 }
 
@@ -390,8 +432,7 @@ void MackieShowbox::setInputExtFxSends(uint8_t input, float sends) {
         return; // The Stereo channel does not have effects
     }
     uint8_t inputOffset = INPUT1_EXT_FX_SENDS + 17 * input;
-    uint8_t inputExtFxSendsOffset = 17;
-    entity_id entityId = static_cast<entity_id>(inputOffset + inputExtFxSendsOffset);
+    entity_id entityId = static_cast<entity_id>(inputOffset);
     setEntityValue(entityId, sends);
 }
 
@@ -401,13 +442,11 @@ void MackieShowbox::setInputEffectType(uint8_t input, effect_channel effect, uin
     }
     uint8_t entityId;
     if (effect == effect_channel::EFFECT1) {
-        entityId = 81+input;
+        entityId = 81 + input;
     } else if (effect == effect_channel::EFFECT2) {
-        if (input == 0 || input == 2) {
-            entityId = 85;
-        } else if (input == 1 || input == 3) {
-            entityId = 86;
-        }
+        entityId = (input == 0 || input == 2) ? 85 : 86;
+    } else {
+        return;
     }
     setEntityValue(static_cast<entity_id>(entityId), type);
 }
@@ -424,7 +463,7 @@ void MackieShowbox::setMainMute(bool mute) {
     setEntityValue(MAIN_MUTE, mute);
 }
 
-void MackieShowbox::setLooperLevel(uint8_t level) {
+void MackieShowbox::setLooperLevel(float level) {
     setEntityValue(LOOPER_LEVEL, level);
 }
 
@@ -574,11 +613,9 @@ uint8_t MackieShowbox::getInputEffectType(uint8_t input, effect_channel effect) 
     if (effect == effect_channel::EFFECT1) {
         entityId = 81 + input;
     } else if (effect == effect_channel::EFFECT2) {
-        if (input == 0 || input == 2) {
-            entityId = 85;
-        } else if (input == 1 || input == 3) {
-            entityId = 86;
-        }
+        entityId = (input == 0 || input == 2) ? 85 : 86;
+    } else {
+        return 0;
     }
     Debug->printf("Effect Type Entity ID: %d\n", entityId);
     return getUint8EntityValue(static_cast<entity_id>(entityId));
@@ -596,8 +633,8 @@ bool MackieShowbox::getMainMute() {
     return getBoolEntityValue(MAIN_MUTE);
 }
 
-uint8_t MackieShowbox::getLooperLevel() {
-    return getUint8EntityValue(LOOPER_LEVEL);
+float MackieShowbox::getLooperLevel() {
+    return getFloatEntityValue(LOOPER_LEVEL);
 }
 
 looper_state MackieShowbox::getLooperState() {
