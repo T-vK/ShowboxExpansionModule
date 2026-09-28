@@ -2,6 +2,7 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include <stdint.h>
 #include <unordered_map>
 
 enum packet_type : uint8_t {

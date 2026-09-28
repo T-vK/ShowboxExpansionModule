@@ -1,4 +1,5 @@
 #include "RestApiRouter.h"
+#include "Connections/MidiPage.h"
 
 static bool requireParam(AsyncWebServerRequest* request, const char* name, String& out) {
     if (!request->hasParam(name)) {
@@ -22,6 +23,41 @@ void RestApiRouter::setWebServer(AsyncWebServer* server) {
 
 void RestApiRouter::setShowbox(MackieShowbox* showbox) {
     _showbox = showbox;
+}
+
+void RestApiRouter::setConnections(Connections* connections) {
+    _connections = connections;
+}
+
+static bool readSwitch(AsyncWebServerRequest* request, const char* name, bool& present, bool& enabled) {
+    present = request->hasParam(name);
+    if (!present) {
+        return true;
+    }
+    String raw = request->getParam(name)->value();
+    raw.toLowerCase();
+    if (raw == "1" || raw == "true" || raw == "on") {
+        enabled = true;
+        return true;
+    }
+    if (raw == "0" || raw == "false" || raw == "off") {
+        enabled = false;
+        return true;
+    }
+    return false;
+}
+
+static int readTri(AsyncWebServerRequest* request, const char* name, bool& ok) {
+    bool present = false;
+    bool enabled = false;
+    ok = readSwitch(request, name, present, enabled);
+    if (!ok) {
+        return -2;
+    }
+    if (!present) {
+        return -1;
+    }
+    return enabled ? 1 : 0;
 }
 
 void RestApiRouter::setup() {
@@ -194,13 +230,228 @@ void RestApiRouter::setup() {
         }
     });
 
+    _server->on("/midi", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->send(200, "text/html", MIDI_PAGE);
+    });
+
+    _server->on("^/api/v1/midi$", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/settings", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        const char* names[] = {
+            "din", "wifi", "bleAdvertise", "bleCentral", "bleMidiHost", "bleMidiPeripheral", "bleClassic",
+            "autoConnect", "bleHid", "usb", "usbDevice", "usbHost", "usbMidiHost", "usbMidiPeripheral",
+            "usbMidi2Host", "usbMidi2Peripheral", "ethernet", "ethernetMidi", "ethernetMidi2",
+            "wifiMidi2", "usbHid"
+        };
+        bool any = false;
+        for (const char* name : names) {
+            bool present = false;
+            bool enabled = false;
+            if (!readSwitch(request, name, present, enabled)) {
+                request->send(400, "text/plain", String("Bad value for ") + name);
+                return;
+            }
+            if (!present) {
+                continue;
+            }
+            any = true;
+            String error;
+            if (!_connections->setOption(name, enabled, error)) {
+                request->send(400, "text/plain", error);
+                return;
+            }
+        }
+        if (!any) {
+            request->send(400, "text/plain", "No setting in the request.");
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/scan", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        _connections->requestScan();
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/devices", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/connect", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        String address;
+        if (!requireParam(request, "address", address)) {
+            return;
+        }
+        String name = request->hasParam("name") ? request->getParam("name")->value() : "";
+        bool midiOk = true;
+        bool hidOk = true;
+        int midi = readTri(request, "midi", midiOk);
+        int hid = readTri(request, "hid", hidOk);
+        if (!midiOk || !hidOk || midi == -2 || hid == -2) {
+            request->send(400, "text/plain", "Bad MIDI or HID value.");
+            return;
+        }
+        bool pairPresent = false;
+        bool pairOn = false;
+        if (!readSwitch(request, "pair", pairPresent, pairOn)) {
+            request->send(400, "text/plain", "Bad pair value.");
+            return;
+        }
+        String error;
+        bool ok = pairPresent && pairOn
+            ? _connections->pair(address, name, error)
+            : _connections->connect(address, name, midi, hid, error);
+        if (!ok) {
+            request->send(400, "text/plain", error);
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/disconnect", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        String address;
+        if (!requireParam(request, "address", address)) {
+            return;
+        }
+        String error;
+        if (!_connections->disconnectAddress(address, error)) {
+            request->send(400, "text/plain", error);
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/forget", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        String address;
+        if (!requireParam(request, "address", address)) {
+            return;
+        }
+        String error;
+        _connections->forget(address, error);
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/auto", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        String address;
+        if (!requireParam(request, "address", address)) {
+            return;
+        }
+        bool present = false;
+        bool enabled = false;
+        if (!readSwitch(request, "enabled", present, enabled) || !present) {
+            request->send(400, "text/plain", "Missing enabled.");
+            return;
+        }
+        String error;
+        if (!_connections->setPeerAuto(address, enabled, error)) {
+            request->send(400, "text/plain", error);
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/midi/ble/role", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        String address;
+        if (!requireParam(request, "address", address)) {
+            return;
+        }
+        bool midiOk = true;
+        bool serialOk = true;
+        bool hidOk = true;
+        int midi = readTri(request, "midi", midiOk);
+        int serial = readTri(request, "serial", serialOk);
+        int hid = readTri(request, "hid", hidOk);
+        if (!midiOk || !serialOk || !hidOk || midi == -2 || serial == -2 || hid == -2) {
+            request->send(400, "text/plain", "Bad role value.");
+            return;
+        }
+        String error;
+        if (!_connections->setPeerRoles(address, midi, serial, hid, error)) {
+            request->send(400, "text/plain", error);
+            return;
+        }
+        request->send(200, "application/json", _connections->statusJson());
+    });
+
+    _server->on("/api/v1/hid/keyboard", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        String text;
+        if (!requireParam(request, "text", text)) {
+            return;
+        }
+        String error;
+        if (!_connections->queueKeys(text, error)) {
+            request->send(409, "text/plain", error);
+            return;
+        }
+        request->send(200, "text/plain", "ok");
+    });
+
+    _server->on("/api/v1/hid/mouse", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_connections == nullptr) {
+            request->send(503, "text/plain", "MIDI is not available.");
+            return;
+        }
+        int x = request->hasParam("x") ? request->getParam("x")->value().toInt() : 0;
+        int y = request->hasParam("y") ? request->getParam("y")->value().toInt() : 0;
+        int buttons = request->hasParam("buttons") ? request->getParam("buttons")->value().toInt() : 0;
+        String error;
+        if (!_connections->queueMouse(x, y, buttons, error)) {
+            request->send(409, "text/plain", error);
+            return;
+        }
+        request->send(200, "text/plain", "ok");
+    });
+
     // Remote UI
     _server->on("/remote-ui", HTTP_GET, [this](AsyncWebServerRequest* request) {
         // dynamically generate an html/JS page that will generate a page that will allow the user to view/controll all the entities of the showbox
         // this will be a single page application that will use the REST API to get and set the values of the entities
         // the page will be generated right here:
 
-        String page = "<!DOCTYPE html><html><head><title>Showbox Remote UI</title></head><body><script>\n";
+        String page = "<!DOCTYPE html><html><head><title>Showbox Remote UI</title></head><body>";
+        page += "<p><a href=\"/midi\">Connections</a></p><script>\n";
         page += "async function main() {\n";
             page += "const entities = [";
                 for (uint8_t i = 0; i <= FX_BYPASS; i++) {
