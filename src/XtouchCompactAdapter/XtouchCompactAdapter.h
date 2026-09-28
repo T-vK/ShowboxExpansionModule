@@ -103,6 +103,12 @@ public:
     bool fx2Lock = false;
     bool snapshotLock = false;
     int8_t selectedSnapshot = -1;
+
+    // Installed on MultiMidi in begin(). Public so another listener can wrap them.
+    static void onNoteOn(uint8_t channel, uint8_t note, uint8_t velocity);
+    static void onNoteOff(uint8_t channel, uint8_t note, uint8_t velocity);
+    static void onControlChange(uint8_t channel, uint8_t controller, uint8_t value);
+    static void onPitchBend(uint8_t channel, uint8_t value);
 private:
     MackieShowbox* showbox;
     Print* Debug = &Serial;
@@ -127,12 +133,7 @@ private:
     // Utility functions
     float mapNonlinearToLinear(float nonlinearValue);
     float mapLinearToNonlinear(float linearValue);
-    
-    // Midi callbacks
-    static void onNoteOn(uint8_t channel, uint8_t note, uint8_t velocity);
-    static void onNoteOff(uint8_t channel, uint8_t note, uint8_t velocity);
-    static void onControlChange(uint8_t channel, uint8_t controller, uint8_t value);
-    static void onPitchBend(uint8_t channel, uint8_t value);    
+
     static XtouchCompactAdapter* instance;
 };
 

@@ -3,6 +3,7 @@
 
 #include <ESPAsyncWebServer.h>
 #include "MackieShowbox/MackieShowbox.h"
+#include "Connections/Connections.h"
 #include "string_mappings.h"
 #include "constants.h"
 
@@ -12,11 +13,13 @@ public:
     void setup();
     void setWebServer(AsyncWebServer* server);
     void setShowbox(MackieShowbox* showbox);
+    void setConnections(Connections* connections);
     void setDebugSerial(Print* serial);
 
 private:
     AsyncWebServer* _server;
     MackieShowbox* _showbox;
+    Connections* _connections = nullptr;
     Print *Debug = &Serial;
 };
 
