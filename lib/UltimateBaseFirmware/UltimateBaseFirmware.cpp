@@ -1,10 +1,13 @@
 #include "UltimateBaseFirmware.h"
+#include <WiFi.h>
+#include <esp_wifi.h>
 
 UltimateBaseFirmware::UltimateBaseFirmware(const char* name)
     : _name(name), _version(nullptr), 
       _server(nullptr), _wifiManager(nullptr),
       _serial(Serial), _improvSerial(nullptr), Debug() {
         Debug.setPrint1(&Serial);
+        _wifiLog.attach(&Debug);
       }
 
 // Setter methods for customization
@@ -36,7 +39,16 @@ void UltimateBaseFirmware::setCustomImprovSerial(ImprovWiFi* improvSerial) {
 void UltimateBaseFirmware::setCustomDebugSerial(Print& debug) {
     Debug.setPrint1(&debug);
     Debug.setPrint2(nullptr);
+    Debug.setPrint2Live(false);
+    Debug.setBuffer2(false);
     _customDebugSerial = true;
+}
+
+void UltimateBaseFirmware::setWifiLogHistory(bool enable) {
+    _wifiLogHistory = enable;
+    if (!_customDebugSerial) {
+        Debug.setBuffer2(enable);
+    }
 }
 
 void UltimateBaseFirmware::setDeviceName(const char* deviceName) {
@@ -59,7 +71,7 @@ const char* UltimateBaseFirmware::getHostName() {
 // Begin method to initialize components
 void UltimateBaseFirmware::begin() {
     if (!_customDebugSerial) {
-        Debug.setBuffer2(true);
+        Debug.setBuffer2(_wifiLogHistory);
     }
     initializeDeviceInfo();
     String info = generateInfoString();
@@ -71,7 +83,7 @@ void UltimateBaseFirmware::begin() {
 
     Debug.println("[ INFO ] Initializing WifiManager...");
     initializeWifi();
-    Debug.println("[  OK  ] WifiManager initialized.");
+    Debug.println(_wifiRadioEnabled ? "[  OK  ] WifiManager initialized." : "[ INFO ] Wi-Fi radio is off.");
 }
 
 // Main loop for periodic tasks (e.g., OTA updates, Improv WiFi, Remote Debug)
@@ -84,26 +96,57 @@ void UltimateBaseFirmware::tick() {
     }
     //ElegantOTA.loop();
     checkWiFi();
-    if (_firstWiFiConnect) {
+    if (_lanServicesUp) {
         ArduinoOTA.handle();
         if (!_customDebugSerial) {
             _remoteDebug.handle();
-            // set buffer false (Debug.setBuffer2(true);) when connected for at least 5 seconds
-            if (_remoteDebug.isConnected()) {
-                //if (_remoteDebugLastConnect == 0) {
-                //    _remoteDebugLastConnect = millis();
-                //} else if (millis() - _remoteDebugLastConnect > 5000) {
-                    Debug.setBuffer2(false);
-                //}
-            } /*else {
-                _remoteDebugLastConnect = 0;
-            }*/
+            bool connected = _remoteDebug.isConnected();
+            Debug.setPrint2Live(connected);
+            if (connected && !_remoteDebugWasConnected) {
+                size_t buffered = Debug.wifiBuffered();
+                uint32_t dropped = Debug.wifiDropped();
+                if (buffered > 0) {
+                    _remoteDebug.printf("\n--- Wi-Fi serial history: %u bytes", static_cast<unsigned>(buffered));
+                    if (dropped > 0) {
+                        _remoteDebug.printf(" (%u oldest dropped)", static_cast<unsigned>(dropped));
+                    }
+                    _remoteDebug.print(" ---\n");
+                } else {
+                    _remoteDebug.print("\n--- Wi-Fi serial connected ---\n");
+                }
+            }
+            if (connected) {
+                Debug.drainPrint2(8192);
+            }
+            _remoteDebugWasConnected = connected;
         }
+    }
+}
+
+void UltimateBaseFirmware::flushWifiLog() {
+    if (_customDebugSerial || !_lanServicesUp) {
+        return;
+    }
+    if (!_remoteDebug.isConnected()) {
+        return;
+    }
+    Debug.setPrint2Live(true);
+    for (int i = 0; i < 8; i++) {
+        if (Debug.drainPrint2(2048) == 0) {
+            break;
+        }
+    }
+    WiFiClient* client = _remoteDebug.getTelnetClient();
+    if (client != nullptr && client->connected()) {
+        client->flush();
     }
 }
 
 // Check WiFi connection
 void UltimateBaseFirmware::checkWiFi() {
+    if (!_wifiRadioEnabled) {
+        return;
+    }
     if (millis() - _lastWifiCheck > _wifiCheckInterval) {
         wl_status_t status = WiFi.status();
         if (status != _lastWiFiStatus) {
@@ -122,9 +165,11 @@ void UltimateBaseFirmware::checkWiFi() {
     }
 }
 
-// Callback for first WiFi connection
-void UltimateBaseFirmware::onFirstWiFiConnect() {
-    _wifiCheckInterval = 5000;
+void UltimateBaseFirmware::startLanServices() {
+    if (_lanServicesUp) {
+        return;
+    }
+    _lanServicesUp = true;
     if (!_customDebugSerial) {
         Debug.println("[ INFO ] Initializing Debug Serial...");
         initializeDebugSerial();
@@ -138,8 +183,8 @@ void UltimateBaseFirmware::onFirstWiFiConnect() {
     Debug.println("[  OK  ] Initializing OTA...");
     initializeOTA();
     Debug.println("[ INFO ] OTA initialized.");
-    
-    if (!_customServer) {
+
+    if (_server != nullptr) {
         Debug.println("[ INFO ] Starting Web Server...");
         _server->begin();
         Debug.println("[  OK  ] Web Server started.");
@@ -148,6 +193,12 @@ void UltimateBaseFirmware::onFirstWiFiConnect() {
     Debug.println("[ INFO ] Initializing MDNS...");
     initializeMdns();
     Debug.println("[  OK  ] MDNS initialized.");
+}
+
+// Callback for first WiFi connection
+void UltimateBaseFirmware::onFirstWiFiConnect() {
+    _wifiCheckInterval = 5000;
+    startLanServices();
 }
 
 // Callback for WiFi connected
@@ -164,6 +215,7 @@ void UltimateBaseFirmware::onWiFiDisconnected() {
 void UltimateBaseFirmware::initializeDebugSerial() {
     _remoteDebug.setResetCmdEnabled(true);
     _remoteDebug.setSerialEnabled(false);
+    _remoteDebug.showRaw(true);
     _remoteDebug.begin(_hostName);
     Debug.setPrint1(&_serial);
     Debug.setPrint2(&_remoteDebug);
@@ -208,8 +260,62 @@ void UltimateBaseFirmware::initializeDeviceInfo() {
     }
 }
 
+void UltimateBaseFirmware::setWifiRadioEnabled(bool enabled) {
+    _wifiRadioEnabled = enabled;
+}
+
+void UltimateBaseFirmware::enableWifiRadio() {
+    _wifiRadioEnabled = true;
+    if (_wifiManager == nullptr) {
+        initializeWifi();
+        return;
+    }
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.reconnect();
+}
+
+void UltimateBaseFirmware::disableWifiRadio() {
+    stopSetupPortal();
+    _wifiRadioEnabled = false;
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+    esp_wifi_stop();
+    Debug.println("[ INFO ] Wi-Fi radio is off.");
+}
+
+bool UltimateBaseFirmware::startSetupPortal(uint32_t timeoutMs) {
+    if (!_wifiRadioEnabled) {
+        return false;
+    }
+    if (_wifiManager == nullptr) {
+        initializeWifi();
+    }
+    if (_wifiManager == nullptr) {
+        return false;
+    }
+    _wifiManager->setConfigPortalTimeout((timeoutMs + 999) / 1000);
+    _wifiManager->startConfigPortal("ShowboxExpansionModuleAP", "showbox");
+    return _wifiManager->getConfigPortalActive();
+}
+
+void UltimateBaseFirmware::stopSetupPortal() {
+    if (_wifiManager != nullptr) {
+        _wifiManager->stopConfigPortal();
+    }
+}
+
+bool UltimateBaseFirmware::setupPortalOpen() const {
+    return _wifiManager != nullptr && _wifiManager->getConfigPortalActive();
+}
+
 // Initialize WiFi in both STA and AP modes, with saved credentials via ImprovWiFi
 void UltimateBaseFirmware::initializeWifi() {
+    if (!_wifiRadioEnabled) {
+        WiFi.mode(WIFI_OFF);
+        Debug.println("[ INFO ] Wi-Fi radio is off.");
+        return;
+    }
     if (_wifiManager == nullptr) {
         _wifiManager = new WiFiManager(Debug);  // Create a default WiFiManager instance if not set
     }
@@ -315,8 +421,6 @@ void UltimateBaseFirmware::initializeImprovSerial() {
 
 // Initialize MDNS
 void UltimateBaseFirmware::initializeMdns() {
-    MDNS.begin(_hostName);
-    MDNS.addService("telnet", "tcp", 23); // RemoteDebug Telnet
-    MDNS.addService("http", "tcp", 80); // Web Server
-    MDNS.enableArduino(3232); // OTA Serial
+    // mDNS is started from keepMdns() after the HTTP routes are up. Doing it
+    // here races Wi-Fi and then Bluetooth, which drops UDP 5353.
 }

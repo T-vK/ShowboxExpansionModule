@@ -8,10 +8,12 @@ struct MidiMessage;
 class MidiAction;
 }
 
-// RTP-MIDI / AppleMIDI on the W5500. Wi-Fi AppleMIDI keeps its own sockets.
+// Ethernet MIDI status. RTP-MIDI / AppleMIDI uses the shared lwIP sockets
+// once the W5500 is on the ESP32 IP stack.
 class EthernetMidi {
 public:
     void setDebug(Print* serial);
+    void setPins(uint8_t sclk, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t reset);
     void setEnabled(bool enabled);
     bool enabled() const { return enabledFlag; }
     const char* status() const { return statusText; }
@@ -19,39 +21,12 @@ public:
     void write(midi::MidiMessage* msg, int len);
 
 private:
-    void startChip();
-    void pollLink();
-    void pollDhcp();
-    void openMidiSockets();
-    void handleSession(const uint8_t* data, int length, const uint8_t ip[4], uint16_t port, bool dataPort);
-    void handleMidi(const uint8_t* data, int length, midi::MidiAction* action);
     void setStatus(const char* text);
-    bool sendTo(int sock, const uint8_t dest[4], uint16_t port, const uint8_t* data, int len);
-    int recvFrom(int sock, uint8_t from[4], uint16_t* port, uint8_t* data, int maxLen);
 
     Print* Debug = nullptr;
+    bool pinsSet = false;
     bool enabledFlag = false;
-    bool chipUp = false;
     bool linkUp = false;
     bool haveIp = false;
-    bool socketsOpen = false;
-    bool session = false;
-    uint8_t mac[6] = {};
-    uint8_t ip[4] = {};
-    uint8_t gateway[4] = {};
-    uint8_t mask[4] = {};
-    uint8_t peerIp[4] = {};
-    uint16_t controlPort = 0;
-    uint16_t dataPort = 0;
-    uint32_t ourSsrc = 0x53584D31;
-    uint16_t sequence = 0;
-    uint32_t dhcpXid = 0;
-    uint8_t dhcpServer[4] = {};
-    uint8_t offeredIp[4] = {};
-    uint32_t leaseMs = 0;
-    uint32_t dhcpDeadline = 0;
-    uint32_t renewAt = 0;
-    int dhcpState = 0;
-    uint32_t chipTriedAt = 0;
     char statusText[96] = "Off";
 };

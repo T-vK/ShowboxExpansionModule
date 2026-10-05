@@ -1,6 +1,12 @@
 #define SHOWBOX_DEBUG
 
 #include "MackieShowbox.h"
+#include "DebugLog.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <esp_heap_caps.h>
+#include <cstdio>
+#include <cstring>
 #ifdef SHOWBOX_DEBUG
 #include "string_mappings.h"
 #endif
@@ -20,24 +26,85 @@ MackieShowbox::MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, ui
 }
 
 void MackieShowbox::begin() {
-    interceptor.begin(baseRx, baseTx, mixerRx, mixerTx, 115200, 115200, 256, 256);
-
     uint8_t startSig[] = {0xBE, 0xEF};
     uint8_t endSig[] = {0xEF, 0xBE};
     interceptor.setPacketFinderStartEndSig(startSig, sizeof(startSig), endSig, sizeof(endSig));
 
     interceptor.setPacketHandler([this](uint8_t* packet, size_t& length, UARTInterceptor::Direction direction) {
-        UARTInterceptor::PacketHandlerResult result = this->handlePacket(packet, length, direction);
-        if (postHandlePacketCallback != nullptr) {
-            postHandlePacketCallback(packet, length, direction, result);
+        // Keep this path tiny. BLE MIDI and debug prints used to run here and
+        // stall the pump until the mixer/base dropped the link.
+        lastPacketMs = millis();
+        const bool fromMixer = direction == TO_BASE;
+        const bool framed = length >= 6
+            && packet[0] == 0xBE && packet[1] == 0xEF
+            && packet[length - 2] == 0xEF && packet[length - 1] == 0xBE;
+        if (framed) {
+            if (fromMixer) {
+                goodMix = goodMix + 1;
+            } else {
+                goodBase = goodBase + 1;
+            }
+        } else {
+            if (fromMixer) {
+                badMix = badMix + 1;
+            } else {
+                badBase = badBase + 1;
+            }
         }
-        return result;
+        if (length >= 4) {
+            packet_type t = static_cast<packet_type>(packet[3]);
+            if (t == HEARTBEAT) {
+                lastHeartbeatMs = lastPacketMs;
+                if (fromMixer) {
+                    hbMix = hbMix + 1;
+                } else {
+                    hbBase = hbBase + 1;
+                }
+            } else if (t == ALL_ENTITIES) {
+                if (fromMixer) {
+                    initMix = initMix + 1;
+                } else {
+                    initBase = initBase + 1;
+                    ignoreTouchUntil = millis() + 400;
+                }
+            } else if (t == ENTITY && fromMixer) {
+                entMix = entMix + 1;
+                rememberMixerEntity(packet, length);
+            } else if (t == DATA_REQUEST && fromMixer) {
+                reqMix = reqMix + 1;
+            }
+        }
+        enqueueParse(packet, length, direction);
+        return UARTInterceptor::PACKET_NOT_MODIFIED;
     });
-    
 
-    #ifdef SHOWBOX_DEBUG
-    //Debug->println("\nMackieShowbox Interceptor ready\n");
-    #endif
+    // 255 payload + 7 header/trailer. 256 used to drop the longest dumps.
+    interceptor.begin(baseRx, baseTx, mixerRx, mixerTx, 115200, 115200, 288, 288);
+    uartStarted = true;
+    debugLog("uart begin heap=%u largest=%u pend=%u ring=%u hold=%u fifo1=%u fifo2=%u int1=%08x int2=%08x",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+        (unsigned)interceptor.pendingCap(),
+        (unsigned)interceptor.ringCap(),
+        (unsigned)interceptor.holdCap(),
+        (unsigned)interceptor.hwRxFifo(UART_NUM_1),
+        (unsigned)interceptor.hwRxFifo(UART_NUM_2),
+        (unsigned)interceptor.hwIntSt(UART_NUM_1),
+        (unsigned)interceptor.hwIntSt(UART_NUM_2));
+    if (xTaskCreatePinnedToCore(MackieShowbox::uartTask, "showbox-uart", 8192, this, 20, &uartTaskHandle, 1) != pdPASS) {
+        uartTaskRunning = false;
+        uartTaskHandle = nullptr;
+        debugLog("uartTask create FAILED heap=%u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        if (Debug != nullptr) {
+            Debug->println("Showbox UART task failed; pass-through stays on the main loop");
+        }
+    } else {
+        uartTaskRunning = true;
+        debugLog("uartTask ok handle=%p", (void*)uartTaskHandle);
+        if (Debug != nullptr) {
+            Debug->println("Showbox UART pass-through is on core 1");
+        }
+    }
 }
 
 void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
@@ -115,21 +182,225 @@ sd_card_state MackieShowbox::getSdCardState() {
     return sdCardState;
 }
 
-UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction) {
-    #ifdef SHOWBOX_DEBUG
-    // printRawPacket("[Raw]: ", raw_packet);
-    #endif
+uint32_t MackieShowbox::linkAgeMs() const {
+    uint32_t baseAge = interceptor.rxAgeMs(TO_MIXER);
+    uint32_t mixerAge = interceptor.rxAgeMs(TO_BASE);
+    if (baseAge == 0xFFFFFFFFu) {
+        return mixerAge;
+    }
+    if (mixerAge == 0xFFFFFFFFu) {
+        return baseAge;
+    }
+    return baseAge > mixerAge ? baseAge : mixerAge;
+}
 
+uint32_t MackieShowbox::heartbeatAgeMs() const {
+    if (lastHeartbeatMs == 0) {
+        return 0xFFFFFFFFu;
+    }
+    return millis() - lastHeartbeatMs;
+}
+
+uint32_t MackieShowbox::baseAgeMs() const {
+    return interceptor.rxAgeMs(TO_MIXER);
+}
+
+uint32_t MackieShowbox::mixerAgeMs() const {
+    return interceptor.rxAgeMs(TO_BASE);
+}
+
+uint32_t MackieShowbox::baseTxAgeMs() const {
+    return interceptor.txAgeMs(TO_BASE);
+}
+
+uint32_t MackieShowbox::mixerTxAgeMs() const {
+    return interceptor.txAgeMs(TO_MIXER);
+}
+
+uint32_t MackieShowbox::rxFromBase() const {
+    return interceptor.rxFrom1();
+}
+
+uint32_t MackieShowbox::rxFromMixer() const {
+    return interceptor.rxFrom2();
+}
+
+uint32_t MackieShowbox::droppedFromBase() const {
+    return interceptor.droppedFrom1();
+}
+
+uint32_t MackieShowbox::droppedFromMixer() const {
+    return interceptor.droppedFrom2();
+}
+
+uint32_t MackieShowbox::overflowFromBase() const {
+    return interceptor.overflowFrom1();
+}
+
+uint32_t MackieShowbox::overflowFromMixer() const {
+    return interceptor.overflowFrom2();
+}
+
+uint32_t MackieShowbox::frameErrFromBase() const {
+    return interceptor.frameErrFrom1();
+}
+
+uint32_t MackieShowbox::frameErrFromMixer() const {
+    return interceptor.frameErrFrom2();
+}
+
+uint32_t MackieShowbox::maxGapFromBase() const {
+    return interceptor.maxGapFrom1();
+}
+
+uint32_t MackieShowbox::maxGapFromMixer() const {
+    return interceptor.maxGapFrom2();
+}
+
+uint32_t MackieShowbox::hwRxFifoBase() const {
+    return interceptor.hwRxFifo(UART_NUM_1);
+}
+
+uint32_t MackieShowbox::hwRxFifoMixer() const {
+    return interceptor.hwRxFifo(UART_NUM_2);
+}
+
+uint32_t MackieShowbox::hwIntStBase() const {
+    return interceptor.hwIntSt(UART_NUM_1);
+}
+
+uint32_t MackieShowbox::hwIntStMixer() const {
+    return interceptor.hwIntSt(UART_NUM_2);
+}
+
+bool MackieShowbox::linkOk(uint32_t staleMs) const {
+    return interceptor.bothSidesLive(staleMs);
+}
+
+bool MackieShowbox::uartHot(uint32_t windowMs) const {
+    return interceptor.rxAgeMs(TO_MIXER) < windowMs || interceptor.rxAgeMs(TO_BASE) < windowMs;
+}
+
+size_t MackieShowbox::pendingToMixer() const {
+    return interceptor.pendingTo2();
+}
+
+size_t MackieShowbox::pendingToBase() const {
+    return interceptor.pendingTo1();
+}
+
+size_t MackieShowbox::ringFromBase() const {
+    return interceptor.ringUsed1();
+}
+
+size_t MackieShowbox::ringFromMixer() const {
+    return interceptor.ringUsed2();
+}
+
+size_t MackieShowbox::holdFromBase() const {
+    return interceptor.holdUsed1();
+}
+
+size_t MackieShowbox::holdFromMixer() const {
+    return interceptor.holdUsed2();
+}
+
+uint32_t MackieShowbox::cutThroughFromBase() const {
+    return interceptor.cutThroughFrom1();
+}
+
+uint32_t MackieShowbox::cutThroughFromMixer() const {
+    return interceptor.cutThroughFrom2();
+}
+
+bool MackieShowbox::txToBasePaused() const {
+    return interceptor.txToBasePaused();
+}
+
+uint32_t MackieShowbox::txPauseCount() const {
+    return interceptor.txPauseCount();
+}
+
+void MackieShowbox::waitQuiet(uint32_t maxMs) const {
+    uint32_t started = millis();
+    while (uartHot() && (int32_t)(millis() - started) < (int32_t)maxMs) {
+        vTaskDelay(1);
+    }
+}
+
+void MackieShowbox::rememberMixerEntity(const uint8_t* packet, size_t length) {
+    if (packet == nullptr || length < 10) {
+        return;
+    }
+    uint8_t id = packet[5];
+    if (id > FX_BYPASS) {
+        return;
+    }
+    if (!mixerOwnsEntity(static_cast<entity_id>(id))) {
+        return;
+    }
+    if (ignoreTouchUntil != 0 && (int32_t)(millis() - ignoreTouchUntil) < 0) {
+        return;
+    }
+    auto it = entity_type_mapping.find(static_cast<entity_id>(id));
+    if (it == entity_type_mapping.end()) {
+        return;
+    }
+    mixerTouched[id] = true;
+    if (it->second == BOOL) {
+        entityValues[static_cast<entity_id>(id)].boolValue = packet[9] != 0;
+    } else if (it->second == UINT8) {
+        entityValues[static_cast<entity_id>(id)].uint8Value = packet[9];
+    } else if (length >= 13) {
+        float value;
+        memcpy(&value, &packet[9], sizeof(float));
+        entityValues[static_cast<entity_id>(id)].floatValue = value;
+    }
+}
+
+void MackieShowbox::restoreMixerEntities() {
+    uint32_t n = 0;
+    for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+        if (!mixerTouched[i]) {
+            continue;
+        }
+        entity_id id = static_cast<entity_id>(i);
+        if (!mixerOwnsEntity(id)) {
+            mixerTouched[i] = false;
+            continue;
+        }
+        auto it = entity_type_mapping.find(id);
+        if (it == entity_type_mapping.end()) {
+            continue;
+        }
+        if (it->second == BOOL) {
+            setEntityValue(id, entityValues[id].boolValue, true);
+        } else if (it->second == UINT8) {
+            setEntityValue(id, entityValues[id].uint8Value, true);
+        } else {
+            setEntityValue(id, entityValues[id].floatValue, true);
+        }
+        n = n + 1;
+    }
+    if (n > 0) {
+        restoreCount = restoreCount + 1;
+        debugLog("CRITICAL uart restored %u mixer entities after base ALL_ENTITIES", (unsigned)n);
+    }
+}
+
+UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction) {
+    const bool fromMixer = direction == TO_BASE;
     if (raw_packet == nullptr || length < 4) {
         return UARTInterceptor::PACKET_NOT_MODIFIED;
     }
-
+    lastPacketMs = millis();
     packet_type packetType = static_cast<packet_type>(raw_packet[3]);
-
-    #ifdef SHOWBOX_DEBUG
-    String directionString = direction == TO_MIXER ? "BASE->MIXER" : "MIXER->BASE";
-    String packetTypeString = packet_type_to_string[packetType].c_str();
-    #endif
+    if (packetType == HEARTBEAT) {
+        lastHeartbeatMs = lastPacketMs;
+    }
+    if (!parseEnabled) {
+        return UARTInterceptor::PACKET_NOT_MODIFIED;
+    }
 
     if (packetType == ENTITY) {
         if (length < 6) {
@@ -145,74 +416,47 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         if (length < 9 + valueSize) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
         }
-        #ifdef SHOWBOX_DEBUG
-        String entityString = entity_id_to_string[entityId].c_str();
-        Debug->printf("%s [Decoded] Type: %s | Entity: %s | { Set %s to ", directionString.c_str(), packetTypeString.c_str(), entityString.c_str(), entityString.c_str());
-        #endif
-        if (entityType == BOOL) {
+        if (fromMixer) {
+            rememberMixerEntity(raw_packet, length);
+        }
+        const bool baseOwned = !mixerOwnsEntity(entityId);
+        if (baseOwned && fromMixer) {
+            // Mixer display/status echoes are not DSP truth (especially LOOPER_STATE).
+        } else if (entityType == BOOL) {
             bool value = raw_packet[9];
-            #ifdef SHOWBOX_DEBUG
-            Debug->printf("%s", value ? "true" : "false");
-            #endif
             setEntityValue(entityId, value, false);
+            if (entityListener != nullptr) {
+                entityListener(entityId, value ? "1" : "0");
+            }
         } else if (entityType == UINT8) {
             uint8_t value = raw_packet[9];
-            #ifdef SHOWBOX_DEBUG
-            if (entityId == LOOPER_STATE) {
-                Debug->printf("%s", looper_state_to_string[value].c_str());
-            } else {
-                Debug->printf("%d", value);
-            }
-            #endif
             setEntityValue(entityId, value, false);
+            if (entityListener != nullptr) {
+                char heard[8];
+                snprintf(heard, sizeof(heard), "%u", value);
+                entityListener(entityId, heard);
+            }
         } else if (entityType == FLOAT) {
             float value;
             memcpy(&value, &raw_packet[9], sizeof(float));
-            #ifdef SHOWBOX_DEBUG
-            Debug->printf("%f", value);
-            #endif
             setEntityValue(entityId, value, false);
+            if (entityListener != nullptr) {
+                char heard[24];
+                snprintf(heard, sizeof(heard), "%.4g", value);
+                entityListener(entityId, heard);
+            }
         }
-        #ifdef SHOWBOX_DEBUG
-        Debug->print(" }\n");
-        #endif
-    } else if (packetType == HEARTBEAT) {
-        #ifdef SHOWBOX_DEBUG
-        // Debug->print("Heartbeat");
-        //Debug->print(".");
-        #endif
     } else if (packetType == ACK) {
         if (length < 6) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
         }
-        uint8_t ackCmd = raw_packet[5];
-        if (ackCmd != HEARTBEAT && ackCmd != UNKNOWN_00 && ackCmd != UNKNOWN_FE) {
-            #ifdef SHOWBOX_DEBUG
-            String ackCmdString = packet_type_to_string[static_cast<packet_type>(ackCmd)].c_str();
-            //printRawPacket("[Raw]: ", raw_packet);
-            Debug->printf("%s Acknowoleged %s command\n", directionString.c_str(), ackCmdString.c_str());
-            #endif
-        }
-        #ifdef SHOWBOX_DEBUG
-        #endif
-    } else if (packetType == DATA_REQUEST) {
-        #ifdef SHOWBOX_DEBUG
-        Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
-        printRawPacket("[Raw]: ", raw_packet, length);
-        #endif
-    } else if (packetType == LOOPER_BUTTON) {
-        #ifdef SHOWBOX_DEBUG
-        Debug->println("Looper Button");
-        #endif
     } else if (packetType == BATTERY_LEVEL) {
         // Value form is BE EF 08 16 .. <float at offset 9> EF BE. The short form has no float.
         if (length >= 13) {
             float value;
             memcpy(&value, &raw_packet[9], sizeof(float));
             batteryLevel = value;
-            #ifdef SHOWBOX_DEBUG
-            Debug->printf("%s [Decoded] Type: %s | Battery Level: %f\n", directionString.c_str(), packetTypeString.c_str(), value);
-            #endif
+            batteryHeard = true;
         }
     } else if (packetType == SD_CARD_EVENT) {
         // BE EF 00 1E <state> EF BE — the state byte is at index 4, not the end signature.
@@ -220,20 +464,10 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             return UARTInterceptor::PACKET_NOT_MODIFIED;
         }
         sdCardState = static_cast<sd_card_state>(raw_packet[4]);
-        #ifdef SHOWBOX_DEBUG
-        if (sdCardState == sd_card_state::NOT_DETECTED) {
-            Debug->printf("%s [Decoded] Type: %s | SD Card: Not Detected\n", directionString.c_str(), packetTypeString.c_str());
-        } else if (sdCardState == sd_card_state::DETECTED) {
-            Debug->printf("%s [Decoded] Type: %s | SD Card: Detected\n", directionString.c_str(), packetTypeString.c_str());
-        } else {
-            Debug->printf("%s [Decoded] Type: %s | SD Card: Unknown\n", directionString.c_str(), packetTypeString.c_str());
-        } 
-        #endif
     } else if (packetType == ALL_ENTITIES) {
         if (length < 9) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
         }
-        Debug->printf("%s [Decoded] Type: %s - Data:\n", directionString.c_str(), packetTypeString.c_str());
         //printRawPacket("[Raw]: ", raw_packet);
 
         uint8_t* bodyStart = &raw_packet[9]; // Start of the body (it actually starts at 6 with 3 unknown bytes)
@@ -254,41 +488,307 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             }
             if (dataType == BOOL) {
                 bool value = bodyStart[offset];
-                setEntityValue(entityId, value, false);
+                if (entityId == LOOPER_STATE || !mixerTouched[entityId]) {
+                    setEntityValue(entityId, value, false);
+                }
                 offset += 1;
             } else if (dataType == UINT8) {
                 uint8_t value = bodyStart[offset];
-                setEntityValue(entityId, value, false);
+                if (entityId == LOOPER_STATE || !mixerTouched[entityId]) {
+                    setEntityValue(entityId, value, false);
+                }
                 offset += 1;
             } else if (dataType == FLOAT) {
                 float value;
                 memcpy(&value, &bodyStart[offset], sizeof(float));
-                setEntityValue(entityId, value, false);
+                if (entityId == LOOPER_STATE || !mixerTouched[entityId]) {
+                    setEntityValue(entityId, value, false);
+                }
                 offset += 4;
             }
-            //Debug->printf(" (%s)\n", entity_data_type_to_string[dataType].c_str());
         }
-    } else {
-        #ifdef SHOWBOX_DEBUG
-        Debug->printf("%s [Decoded] Type: %s - ", directionString.c_str(), packetTypeString.c_str());
-        printRawPacket("[Raw]: ", raw_packet, length);
-        #endif
+        if (!fromMixer) {
+            restoreAtMs = millis() + 120;
+        }
     }
-    #ifdef SHOWBOX_DEBUG
-    //Serial.println();
-    //printRawPacket("[Raw]: ", raw_packet);
-    //Serial.println();
-    #endif
-    return UARTInterceptor::PACKET_NOT_MODIFIED; // Packet not modified
+    if (packetLogEnabled) {
+        logPacket(raw_packet, length, direction);
+    }
+    return UARTInterceptor::PACKET_NOT_MODIFIED;
+}
+
+void MackieShowbox::enqueueParse(uint8_t* packet, size_t length, UARTInterceptor::Direction direction) {
+    if (packet == nullptr || length == 0) {
+        return;
+    }
+    portENTER_CRITICAL(&parseMux);
+    uint8_t next = static_cast<uint8_t>((parseQHead + 1) % kParseQ);
+    if (next == parseQTail) {
+        portEXIT_CRITICAL(&parseMux);
+        return;
+    }
+    ParseItem& item = parseQ[parseQHead];
+    size_t n = length < sizeof(item.data) ? length : sizeof(item.data);
+    memcpy(item.data, packet, n);
+    item.length = static_cast<uint16_t>(n);
+    item.direction = static_cast<uint8_t>(direction);
+    parseQHead = next;
+    portEXIT_CRITICAL(&parseMux);
+}
+
+void MackieShowbox::drainParse() {
+    for (;;) {
+        ParseItem item;
+        portENTER_CRITICAL(&parseMux);
+        if (parseQTail == parseQHead) {
+            portEXIT_CRITICAL(&parseMux);
+            return;
+        }
+        item = parseQ[parseQTail];
+        parseQTail = static_cast<uint8_t>((parseQTail + 1) % kParseQ);
+        portEXIT_CRITICAL(&parseMux);
+        UARTInterceptor::Direction direction = static_cast<UARTInterceptor::Direction>(item.direction);
+        UARTInterceptor::PacketHandlerResult result = handlePacket(item.data, item.length, direction);
+        if (postHandlePacketCallback != nullptr) {
+            postHandlePacketCallback(item.data, item.length, direction, result);
+        }
+    }
+}
+
+void MackieShowbox::uartTask(void* arg) {
+    MackieShowbox* self = static_cast<MackieShowbox*>(arg);
+    uint32_t spins = 0;
+    for (;;) {
+        // Keep this loop off the heap lock and debug mutex. A flash/Wi-Fi
+        // burst used to hold core 1 long enough for the 128-byte UART FIFO
+        // to overflow; the Showbox base then went silent.
+        self->interceptor.tick();
+        // Cut-through already moved live mixer↔base bytes. Yield often so
+        // HID notifies on this core still run; never spin without a delay.
+        if (self->interceptor.wirePending()) {
+            if (++spins >= 16) {
+                spins = 0;
+                vTaskDelay(1);
+            } else {
+                vTaskDelay(0);
+            }
+        } else {
+            spins = 0;
+            vTaskDelay(1);
+        }
+    }
 }
 
 void MackieShowbox::tick() {
-    interceptor.tick();
+    if (!uartTaskRunning) {
+        interceptor.tick();
+    }
+    drainParse();
+    if (restoreAtMs != 0 && (int32_t)(millis() - restoreAtMs) >= 0) {
+        restoreAtMs = 0;
+        restoreMixerEntities();
+    }
+    uint32_t dropB = interceptor.droppedFrom1();
+    uint32_t dropM = interceptor.droppedFrom2();
+    uint32_t ovfB = interceptor.overflowFrom1();
+    uint32_t ovfM = interceptor.overflowFrom2();
+    uint32_t frmB = interceptor.frameErrFrom1();
+    uint32_t frmM = interceptor.frameErrFrom2();
+    static uint32_t lastDropB = 0;
+    static uint32_t lastDropM = 0;
+    static uint32_t lastOvfB = 0;
+    static uint32_t lastOvfM = 0;
+    static uint32_t lastFrmB = 0;
+    static uint32_t lastFrmM = 0;
+    static uint32_t lastInitM = 0;
+    if (initMix != lastInitM && lastInitM != 0) {
+        debugLog("CRITICAL uart mixer re-init initM=%u->%u initB=%u hbM=%u hbB=%u",
+            (unsigned)lastInitM, (unsigned)initMix, (unsigned)initBase,
+            (unsigned)hbMix, (unsigned)hbBase);
+    }
+    lastInitM = initMix;
+    if (dropB != lastDropB || dropM != lastDropM || ovfB != lastOvfB || ovfM != lastOvfM
+        || frmB != lastFrmB || frmM != lastFrmM) {
+        debugLog("CRITICAL uart dropB=%u->%u dropM=%u->%u ovfB=%u->%u ovfM=%u->%u frmB=%u->%u frmM=%u->%u ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u cap=%u",
+            (unsigned)lastDropB, (unsigned)dropB,
+            (unsigned)lastDropM, (unsigned)dropM,
+            (unsigned)lastOvfB, (unsigned)ovfB,
+            (unsigned)lastOvfM, (unsigned)ovfM,
+            (unsigned)lastFrmB, (unsigned)frmB,
+            (unsigned)lastFrmM, (unsigned)frmM,
+            (unsigned)interceptor.ringUsed1(),
+            (unsigned)interceptor.ringUsed2(),
+            (unsigned)interceptor.holdUsed1(),
+            (unsigned)interceptor.holdUsed2(),
+            (unsigned)interceptor.pendingTo1(),
+            (unsigned)interceptor.pendingTo2(),
+            (unsigned)interceptor.pendingCap());
+        lastDropB = dropB;
+        lastDropM = dropM;
+        lastOvfB = ovfB;
+        lastOvfM = ovfM;
+        lastFrmB = frmB;
+        lastFrmM = frmM;
+    }
+    static uint32_t lastLog = 0;
+    uint32_t now = millis();
+    if (lastLog == 0 || (int32_t)(now - lastLog) >= 5000) {
+        lastLog = now;
+        debugLog("uart rxB=%u rxM=%u cutB=%u cutM=%u fifo1=%u fifo2=%u int1=%08x int2=%08x raw1=%08x raw2=%08x ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u dropB=%u dropM=%u ovfB=%u ovfM=%u frmB=%u frmM=%u initM=%u initB=%u hbM=%u hbB=%u heap=%u largest=%u",
+            (unsigned)interceptor.rxFrom1(),
+            (unsigned)interceptor.rxFrom2(),
+            (unsigned)interceptor.cutThroughFrom1(),
+            (unsigned)interceptor.cutThroughFrom2(),
+            (unsigned)interceptor.hwRxFifo(UART_NUM_1),
+            (unsigned)interceptor.hwRxFifo(UART_NUM_2),
+            (unsigned)interceptor.hwIntSt(UART_NUM_1),
+            (unsigned)interceptor.hwIntSt(UART_NUM_2),
+            (unsigned)interceptor.hwIntRaw(UART_NUM_1),
+            (unsigned)interceptor.hwIntRaw(UART_NUM_2),
+            (unsigned)interceptor.ringUsed1(),
+            (unsigned)interceptor.ringUsed2(),
+            (unsigned)interceptor.holdUsed1(),
+            (unsigned)interceptor.holdUsed2(),
+            (unsigned)interceptor.pendingTo1(),
+            (unsigned)interceptor.pendingTo2(),
+            (unsigned)dropB,
+            (unsigned)dropM,
+            (unsigned)ovfB,
+            (unsigned)ovfM,
+            (unsigned)frmB,
+            (unsigned)frmM,
+            (unsigned)initMix,
+            (unsigned)initBase,
+            (unsigned)hbMix,
+            (unsigned)hbBase,
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
 }
 
 // Set the debug serial
 void MackieShowbox::setDebugSerial(Print* serial) {
     Debug = serial;
+}
+
+void MackieShowbox::setPacketLog(Print* serial) {
+    packetLog = serial;
+}
+
+void MackieShowbox::setPacketLogging(bool enable) {
+    packetLogEnabled = enable;
+}
+
+static const char* packetTypeName(packet_type type) {
+    switch (type) {
+        case UNKNOWN_00: return "UNKNOWN_00";
+        case ACK: return "ACK";
+        case ENTITY: return "ENTITY";
+        case SNAPSHOT_MENU: return "SNAPSHOT_MENU";
+        case ALL_ENTITIES: return "ALL_ENTITIES";
+        case DATA_REQUEST: return "DATA_REQUEST";
+        case UNKNOWN_15: return "UNKNOWN_15";
+        case BATTERY_LEVEL: return "BATTERY_LEVEL";
+        case LOOPER_BUTTON: return "LOOPER_BUTTON";
+        case TUNER_TOGGLE: return "TUNER_TOGGLE";
+        case TUNER_FEEDBACK: return "TUNER_FEEDBACK";
+        case SNAPSHOT: return "SNAPSHOT";
+        case SD_CARD_EVENT: return "SD_CARD_EVENT";
+        case UNKNOWN_FE: return "UNKNOWN_FE";
+        case HEARTBEAT: return "HEARTBEAT";
+        default: return "UNKNOWN";
+    }
+}
+
+static const char* entityName(entity_id entityId) {
+#ifdef SHOWBOX_DEBUG
+    auto it = entity_id_to_string.find(entityId);
+    if (it != entity_id_to_string.end()) {
+        return it->second.c_str();
+    }
+#endif
+    return nullptr;
+}
+
+void MackieShowbox::logPacket(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction) {
+    if (packetLog == nullptr || raw_packet == nullptr || length < 4) {
+        return;
+    }
+    char line[220];
+    const char* dir = direction == TO_MIXER ? "BASE->MIXER" : "MIXER->BASE";
+    packet_type packetType = static_cast<packet_type>(raw_packet[3]);
+    int n = snprintf(line, sizeof(line), "[UART] %s %s", dir, packetTypeName(packetType));
+    if (n < 0) {
+        return;
+    }
+    size_t pos = static_cast<size_t>(n);
+    if (packetType == ENTITY && length >= 10) {
+        entity_id entityId = static_cast<entity_id>(raw_packet[5]);
+        const char* name = entityName(entityId);
+        auto entityTypeIt = entity_type_mapping.find(entityId);
+        if (name != nullptr) {
+            n = snprintf(line + pos, sizeof(line) - pos, " %s", name);
+        } else {
+            n = snprintf(line + pos, sizeof(line) - pos, " id=%u", static_cast<unsigned>(entityId));
+        }
+        if (n > 0) {
+            pos += static_cast<size_t>(n);
+        }
+        if (entityTypeIt != entity_type_mapping.end() && pos + 1 < sizeof(line)) {
+            entity_data_type entityType = entityTypeIt->second;
+            if (entityType == BOOL) {
+                n = snprintf(line + pos, sizeof(line) - pos, " %u", static_cast<unsigned>(raw_packet[9]));
+            } else if (entityType == UINT8) {
+                n = snprintf(line + pos, sizeof(line) - pos, " %u", static_cast<unsigned>(raw_packet[9]));
+            } else if (entityType == FLOAT && length >= 13) {
+                float value;
+                memcpy(&value, &raw_packet[9], sizeof(float));
+                n = snprintf(line + pos, sizeof(line) - pos, " %.3f", value);
+            } else {
+                n = 0;
+            }
+            if (n > 0) {
+                pos += static_cast<size_t>(n);
+            }
+        }
+    } else if (packetType == BATTERY_LEVEL && length >= 13) {
+        float value;
+        memcpy(&value, &raw_packet[9], sizeof(float));
+        n = snprintf(line + pos, sizeof(line) - pos, " %.1f", value);
+        if (n > 0) {
+            pos += static_cast<size_t>(n);
+        }
+    } else if (packetType == ALL_ENTITIES) {
+        n = snprintf(line + pos, sizeof(line) - pos, " %uB", static_cast<unsigned>(length));
+        if (n > 0) {
+            pos += static_cast<size_t>(n);
+        }
+    }
+    size_t hexCount = length;
+    if (hexCount > 24) {
+        hexCount = 24;
+    }
+    if (pos + 1 < sizeof(line)) {
+        line[pos++] = ' ';
+    }
+    for (size_t i = 0; i < hexCount && pos + 3 < sizeof(line); i++) {
+        n = snprintf(line + pos, sizeof(line) - pos, "%02X ", raw_packet[i]);
+        if (n <= 0) {
+            break;
+        }
+        pos += static_cast<size_t>(n);
+    }
+    if (length > hexCount && pos + 4 < sizeof(line)) {
+        n = snprintf(line + pos, sizeof(line) - pos, "...");
+        if (n > 0) {
+            pos += static_cast<size_t>(n);
+        }
+    }
+    if (pos + 1 >= sizeof(line)) {
+        pos = sizeof(line) - 2;
+    }
+    line[pos++] = '\n';
+    packetLog->write(reinterpret_cast<const uint8_t*>(line), pos);
 }
 
 void MackieShowbox::printRawPacket(const char* message, uint8_t* raw_packet, size_t length) {
@@ -457,6 +957,24 @@ void MackieShowbox::setMainMute(bool mute) {
 
 void MackieShowbox::setLooperLevel(float level) {
     setEntityValue(LOOPER_LEVEL, level);
+}
+
+void MackieShowbox::setLooperState(looper_state state) {
+    entityValues[LOOPER_STATE].uint8Value = static_cast<uint8_t>(state);
+}
+
+bool MackieShowbox::mixerOwnsEntity(entity_id id) const {
+    if (id == LOOPER_STATE || id == MAIN_CLIP_OL) {
+        return false;
+    }
+    if (id == INPUT1_CLIP_OL_PRE || id == INPUT1_CLIP_OL_POST
+        || id == INPUT2_CLIP_OL_PRE || id == INPUT2_CLIP_OL_POST
+        || id == INPUT3_CLIP_OL_PRE || id == INPUT3_CLIP_OL_POST
+        || id == INPUT4_CLIP_OL_PRE || id == INPUT4_CLIP_OL_POST
+        || id == STEREO_INPUT1_CLIP_OL_PRE || id == STEREO_INPUT1_CLIP_OL_POST) {
+        return false;
+    }
+    return true;
 }
 
 void MackieShowbox::setFxBypassState(bool state) {

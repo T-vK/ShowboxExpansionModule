@@ -1,4 +1,5 @@
 #include "SnapshotLoader.h"
+#include "Actions/ActionRules.h"
 
 // Constructor
 SnapshotLoader::SnapshotLoader(uint8_t snapshot_button_pin1, uint8_t snapshot_button_pin2, MackieShowbox* showbox)
@@ -30,6 +31,9 @@ void SnapshotLoader::snapshotTwoCallback(void *instance) {
 
 // Instance methods
 void SnapshotLoader::handleSnapshotOne() {
+    if (actionRulesClaimTrs("4t", "shortRelease")) {
+        return;
+    }
     showbox->snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_1);
     //#ifdef SHOWBOX_DEBUG
     Debug->println("Recall snapshot SNAPSHOT_1");
@@ -37,6 +41,9 @@ void SnapshotLoader::handleSnapshotOne() {
 }
 
 void SnapshotLoader::handleSnapshotTwo() {
+    if (actionRulesClaimTrs("4r", "shortRelease")) {
+        return;
+    }
     showbox->snapshotAction(snapshot_action::RECALL, snapshot_slot::SNAPSHOT_2);
     //#ifdef SHOWBOX_DEBUG
     Debug->println("Recall snapshot SNAPSHOT_2");

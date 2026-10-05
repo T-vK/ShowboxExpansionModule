@@ -1,89 +1,220 @@
 #include "DynamicMultiPrint.h"
+#include <esp_heap_caps.h>
+#include <cstring>
 
 DynamicMultiPrint::DynamicMultiPrint()
     : _print1(nullptr), _print2(nullptr),
-      _buffer1(false), _buffer2(false),
-      _bufferSize1(0), _bufferSize2(0) {}
+      _buffer1(false), _buffer2(false), _print2Live(false),
+      _wifiBuf(nullptr), _wifiCap(0), _wifiHead(0), _wifiTail(0),
+      _wifiUsed(0), _wifiDropped(0),
+      _wifiMux(portMUX_INITIALIZER_UNLOCKED) {}
+
+DynamicMultiPrint::~DynamicMultiPrint() {
+    if (_wifiBuf != nullptr) {
+        heap_caps_free(_wifiBuf);
+        _wifiBuf = nullptr;
+    }
+}
 
 void DynamicMultiPrint::setPrint1(Print* print) {
-    // if (_print1 == nullptr && _bufferSize1 > 0) {
-    //     // Flush any buffered data if the new print object is set
-    //     flushBuffer(print, _bufferData1, _bufferSize1);
-    // }
     _print1 = print;
 }
 
 void DynamicMultiPrint::setPrint2(Print* print) {
-    // if (_print2 == nullptr && _bufferSize2 > 0) {
-    //     // Flush any buffered data if the new print object is set
-    //     flushBuffer(print, _bufferData2, _bufferSize2);
-    // }
     _print2 = print;
 }
 
 void DynamicMultiPrint::setBuffer1(bool enable) {
     _buffer1 = enable;
-    if (!enable && _print1 != nullptr && _bufferSize1 > 0) {
-        // Flush the buffer if disabled and a print object is available
-        flushBuffer(_print1, _bufferData1, _bufferSize1);
-    }
 }
 
 void DynamicMultiPrint::setBuffer2(bool enable) {
     _buffer2 = enable;
-    if (!enable && _print2 != nullptr && _bufferSize2 > 0) {
-        // Flush the buffer if disabled and a print object is available
-        flushBuffer(_print2, _bufferData2, _bufferSize2);
+    if (enable) {
+        ensureWifiBuffer();
+        return;
+    }
+    if (!_print2Live) {
+        clearWifi();
+    }
+}
+
+void DynamicMultiPrint::setPrint2Live(bool live) {
+    _print2Live = live;
+    if (live) {
+        ensureWifiBuffer();
+    } else if (!_buffer2) {
+        clearWifi();
+    }
+}
+
+void DynamicMultiPrint::ensureWifiBuffer() {
+    if (_wifiBuf != nullptr && _wifiCap > 0) {
+        return;
+    }
+    uint8_t* buf = static_cast<uint8_t*>(
+        heap_caps_malloc(WIFI_LOG_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    size_t cap = WIFI_LOG_CAP;
+    if (buf == nullptr) {
+        buf = static_cast<uint8_t*>(
+            heap_caps_malloc(WIFI_LOG_FALLBACK, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        cap = WIFI_LOG_FALLBACK;
+    }
+    portENTER_CRITICAL(&_wifiMux);
+    if (_wifiBuf == nullptr) {
+        _wifiBuf = buf;
+        _wifiCap = buf == nullptr ? 0 : cap;
+        buf = nullptr;
+    }
+    portEXIT_CRITICAL(&_wifiMux);
+    if (buf != nullptr) {
+        heap_caps_free(buf);
     }
 }
 
 size_t DynamicMultiPrint::write(uint8_t c) {
-    size_t count1 = 0;
-    size_t count2 = 0;
-    // Always write to buffer if enabled
-    if (_buffer1) {
-        addToBuffer(c, _bufferData1, _bufferSize1);
-    } else if (_bufferSize1 > 0 && _print1 != nullptr) {
-        // Flush buffered data if buffer is disabled and print is set
-        flushBuffer(_print1, _bufferData1, _bufferSize1);
-    } else {
-        // Write directly to the print object if buffer is disabled
-        if (_print1 != nullptr) {
-            count1 = _print1->write(c);
-        }
-    }
-
-    if (_buffer2) {
-        addToBuffer(c, _bufferData2, _bufferSize2);
-    } else if (_bufferSize2 > 0 && _print2 != nullptr) {
-        // Flush buffered data if buffer is disabled and print is set
-        flushBuffer(_print2, _bufferData2, _bufferSize2);
-    } else {
-        // Write directly to the print object if buffer is disabled
-        if (_print2 != nullptr) {
-            count2 = _print2->write(c);
-        }
-    }
-
-    // Return the larger of the two counts
-    return (count1 > count2) ? count1 : count2;
+    return write(&c, 1);
 }
 
-void DynamicMultiPrint::addToBuffer(uint8_t c, uint8_t* buffer, size_t& bufferSize) {
-    if (bufferSize < MAX_BUFFER_SIZE) {
-        // Add byte to buffer if there is space
-        buffer[bufferSize++] = c;
-    } else {
-        // Buffer full, sacrifice oldest byte by shifting
-        memmove(buffer, buffer + 1, MAX_BUFFER_SIZE - 1);
-        buffer[MAX_BUFFER_SIZE - 1] = c;
+size_t DynamicMultiPrint::write(const uint8_t* buffer, size_t size) {
+    if (buffer == nullptr || size == 0) {
+        return 0;
     }
+    if (_print1 != nullptr) {
+        // USB Serial/JTAG blocks setup() for seconds when the host enumerates
+        // ACM0 but nobody is reading. Drop bytes rather than stall BLE/HTTP.
+        if (_print1 == static_cast<Print*>(&Serial)) {
+            int room = Serial.availableForWrite();
+            if (room > 0) {
+                size_t n = size;
+                if ((size_t)room < n) {
+                    n = (size_t)room;
+                }
+                _print1->write(buffer, n);
+            }
+        } else {
+            _print1->write(buffer, size);
+        }
+    }
+    writeWifi(buffer, size);
+    return size;
 }
 
-void DynamicMultiPrint::flushBuffer(Print* print, uint8_t* buffer, size_t& bufferSize) {
-    if (print == nullptr || bufferSize == 0) return;
+size_t DynamicMultiPrint::writeWifi(const uint8_t* buffer, size_t size) {
+    if (buffer == nullptr || size == 0 || !capturePrint2()) {
+        return 0;
+    }
+    ensureWifiBuffer();
+    portENTER_CRITICAL(&_wifiMux);
+    if (!capturePrint2()) {
+        portEXIT_CRITICAL(&_wifiMux);
+        return 0;
+    }
+    pushUnlocked(buffer, size);
+    portEXIT_CRITICAL(&_wifiMux);
+    return size;
+}
 
-    // Write all buffered data to the print object
-    print->write(buffer, bufferSize);
-    bufferSize = 0; // Clear buffer after flushing
+size_t DynamicMultiPrint::drainPrint2(size_t maxBytes) {
+    if (_print2 == nullptr || maxBytes == 0) {
+        return 0;
+    }
+    uint8_t chunk[256];
+    size_t total = 0;
+    while (total < maxBytes) {
+        size_t want = maxBytes - total;
+        if (want > sizeof(chunk)) {
+            want = sizeof(chunk);
+        }
+        size_t got = 0;
+        portENTER_CRITICAL(&_wifiMux);
+        got = popUnlocked(chunk, want);
+        portEXIT_CRITICAL(&_wifiMux);
+        if (got == 0) {
+            break;
+        }
+        _print2->write(chunk, got);
+        total += got;
+    }
+    return total;
+}
+
+size_t DynamicMultiPrint::wifiBuffered() const {
+    portENTER_CRITICAL(&_wifiMux);
+    size_t used = _wifiUsed;
+    portEXIT_CRITICAL(&_wifiMux);
+    return used;
+}
+
+uint32_t DynamicMultiPrint::wifiDropped() const {
+    portENTER_CRITICAL(&_wifiMux);
+    uint32_t dropped = _wifiDropped;
+    portEXIT_CRITICAL(&_wifiMux);
+    return dropped;
+}
+
+void DynamicMultiPrint::clearWifi() {
+    portENTER_CRITICAL(&_wifiMux);
+    clearUnlocked();
+    portEXIT_CRITICAL(&_wifiMux);
+}
+
+void DynamicMultiPrint::pushUnlocked(const uint8_t* data, size_t n) {
+    if (_wifiBuf == nullptr || _wifiCap == 0 || n == 0) {
+        return;
+    }
+    if (n >= _wifiCap) {
+        _wifiDropped += _wifiUsed + (n - _wifiCap);
+        data += n - _wifiCap;
+        n = _wifiCap;
+        memcpy(_wifiBuf, data, n);
+        _wifiHead = 0;
+        _wifiTail = 0;
+        _wifiUsed = _wifiCap;
+        return;
+    }
+    size_t room = _wifiCap - _wifiUsed;
+    if (n > room) {
+        size_t drop = n - room;
+        _wifiTail = (_wifiTail + drop) % _wifiCap;
+        _wifiUsed -= drop;
+        _wifiDropped += drop;
+    }
+    size_t first = n;
+    size_t toEnd = _wifiCap - _wifiHead;
+    if (first > toEnd) {
+        first = toEnd;
+    }
+    memcpy(_wifiBuf + _wifiHead, data, first);
+    if (n > first) {
+        memcpy(_wifiBuf, data + first, n - first);
+    }
+    _wifiHead = (_wifiHead + n) % _wifiCap;
+    _wifiUsed += n;
+}
+
+size_t DynamicMultiPrint::popUnlocked(uint8_t* out, size_t maxBytes) {
+    if (_wifiBuf == nullptr || _wifiUsed == 0 || maxBytes == 0) {
+        return 0;
+    }
+    size_t n = maxBytes < _wifiUsed ? maxBytes : _wifiUsed;
+    size_t first = n;
+    size_t toEnd = _wifiCap - _wifiTail;
+    if (first > toEnd) {
+        first = toEnd;
+    }
+    memcpy(out, _wifiBuf + _wifiTail, first);
+    if (n > first) {
+        memcpy(out + first, _wifiBuf, n - first);
+    }
+    _wifiTail = (_wifiTail + n) % _wifiCap;
+    _wifiUsed -= n;
+    return n;
+}
+
+void DynamicMultiPrint::clearUnlocked() {
+    _wifiHead = 0;
+    _wifiTail = 0;
+    _wifiUsed = 0;
+    _wifiDropped = 0;
 }

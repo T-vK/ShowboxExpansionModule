@@ -39,6 +39,8 @@ public:
     // Bluetooth Classic SPP MIDI. Returns false on ESP32-S3, which has no Classic radio.
     bool enableBleClassicMidi(const char* name = "BleMidi");
     void setHostPolicy(BleMidiHostPolicy* policy);
+    void setRadio(class BleRadio* radio);
+    void setEthernetPins(uint8_t sclk, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t reset);
 
     // Set MIDI Action
     // void setMidiAction(MidiCallbackAction midiAction);
@@ -46,6 +48,7 @@ public:
     // Begin MIDI with a given MidiCallbackAction
     void begin();
     void finishBle();
+    void allowOutgoing(bool enabled);
 
     // Saved transport switches. USB and Ethernet cannot be turned on.
     void loadSettings();
@@ -66,9 +69,18 @@ public:
     const char* hostAddress() const { return bleMidi.connectedAddress(); }
     const char* hostName() const { return bleMidi.connectedName(); }
     int copyBleScan(BleMidi::SeenDevice* out, int max) const { return bleMidi.copyDevices(out, max); }
+    int copyOutgoing(BleMidi::Outgoing* out, int max) const { return bleMidi.copyOutgoing(out, max); }
+    bool addressConnected(const char* address) const { return bleMidi.addressConnected(address); }
+    int outgoingCount() const { return bleMidi.connectedCount(); }
+    void setMaxOutgoing(int n) { bleMidi.setMaxOutgoing(n); }
+    int hostRssi() const { return bleMidi.connectedRssi(); }
+    bool hostRssiKnown() const { return bleMidi.connectedRssiKnown(); }
+    int hostBattery() const { return bleMidi.connectedBattery(); }
     void connectHost(const char* address);
     void holdHost(const char* address);
     void dropHostLink();
+    void dropHost(const char* address);
+    void releaseHost(const char* address);
     bool ethernetIsEnabled() const { return ethernetEnabled; }
     bool usbDeviceIsEnabled() const { return usbDeviceEnabled; }
     void rememberUsbDevice(bool enabled) { usbDeviceEnabled = enabled; }
@@ -80,6 +92,9 @@ public:
 
     // Write MIDI data to all active interfaces
     void writeData(MidiMessage *msg, int len);
+
+    // Bumps when a MIDI output appears (BLE pedal, BLE phone, DIN, AppleMIDI, USB).
+    uint32_t outputGeneration() const { return outGeneration; }
 
     // Set the debug output
     void setDebugSerial(Print *serial);
@@ -103,12 +118,12 @@ private:
     // bool bleSerialMidiEnabled;
     bool hardwareMidiEnabled;
     bool appleMidiEnabled;
-    bool dinEnabled = true;
+    bool dinEnabled = false;
     bool wifiEnabled = true;
     bool bleAdvertise = true;
     bool bleCentral = true;
     bool autoConnectEnabled = true;
-    bool ethernetEnabled = false;
+    bool ethernetEnabled = true;
     bool usbDeviceEnabled = false;
     bool appleMidiStarted = false;
     BleClassicMidi classic;
@@ -117,6 +132,13 @@ private:
 
     void saveSettings();
     void applyBleSettings();
+    void applyDin();
+    void tryStartAppleMidi();
+    void watchOutputLinks();
+    void sendAppleMidi(MidiMessage* msg, int len);
+
+    uint32_t outGeneration = 0;
+    uint32_t outSignature = 0;
 
     const char *bluetoothName;
     int rxPin, txPin;

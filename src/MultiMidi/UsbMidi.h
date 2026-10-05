@@ -13,7 +13,10 @@ class MidiAction;
 class UsbMidi {
 public:
     static bool start();
+    static bool enableInterface();
+    static void markStarted();
     static bool running();
+    static bool mounted();
     static void tick(midi::MidiAction* action);
     static void write(midi::MidiMessage* msg, int len);
 };

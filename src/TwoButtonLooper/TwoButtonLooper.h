@@ -7,33 +7,51 @@
 
 class TwoButtonLooper {
 public:
-    // Constructor
     TwoButtonLooper(uint8_t record_button_pin, uint8_t stop_button_pin, MackieShowbox* showbox);
-
-    // Initialization method
     void begin();
-
-    // Update method, to be called in the loop
     void tick();
-
-    // Set the debug serial
     void setDebugSerial(Print* serial);
 
 private:
-    // Static callback functions
+    enum class Mode : uint8_t {
+        Empty,
+        Recording,
+        Overdub,
+        Playing,
+        Stopped
+    };
+    enum class Job : uint8_t {
+        None,
+        Tap,
+        EndRecThenOverdub,
+        Stop,
+        Delete
+    };
+
     static void recordOverdubPlayCallback(void *instance);
     static void stopCallback(void *instance);
     static void deleteCallback(void *instance);
 
-    // Instance methods that the callbacks will call
     void handleRecordOverdubPlay();
     void handleStop();
     void handleDelete();
+    void queueJob(Job next);
+    void runJob();
+    void sendButton(looper_button_action action);
+    bool looperIsPlay() const;
 
     OneButton recordButton;
     OneButton stopButton;
     MackieShowbox* showbox;
     Print *Debug = &Serial;
+    Mode mode = Mode::Empty;
+    Job job = Job::None;
+    uint8_t jobStep = 0;
+    uint32_t jobAt = 0;
+
+    static constexpr uint32_t kTapGapMs = 80;
+    static constexpr uint32_t kOverdubMinMs = 250;
+    static constexpr uint32_t kOverdubMaxMs = 900;
 };
 
 #endif // TWO_BUTTON_LOOPER_H

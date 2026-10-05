@@ -1,16 +1,161 @@
 #include "MultiMidi.h"
 #include "UsbMidiHost.h"
+#include "MultiMidi/BleMidiDecode.h"
+#include "MultiMidi/MidiInbound.h"
+#include "DebugLog.h"
 #include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <ETH.h>
+#include <ESPmDNS.h>
+#include <AsyncUDP.h>
+#include "WiredNet/WiredNet.h"
+#include <esp_heap_caps.h>
 
 namespace {
+// WiFiUDP uses BSD sockets. Two extra sockets here used to exhaust lwIP
+// netconns so HTTP/telnet timed out while ping still worked. AsyncUDP talks
+// to a raw UDP pcb and leaves those sockets for TCP.
+struct AppleMidiPkt {
+    uint8_t ip[4];
+    uint16_t port;
+    uint16_t len;
+    uint8_t isData;
+    uint8_t data[512];
+};
+
+static constexpr int kAppleMidiQ = 8;
+AppleMidiPkt* appleQ = nullptr;
+volatile uint8_t appleQHead = 0;
+volatile uint8_t appleQTail = 0;
+portMUX_TYPE appleQMux = portMUX_INITIALIZER_UNLOCKED;
+AsyncUDP appleControl;
+AsyncUDP appleData;
+uint16_t appleControlPort = 5004;
+midi::MidiParser appleParser;
+volatile bool appleParsing = false;
+volatile uint8_t appleInData = 0;
+const char* inboundSourceName = "ext";
+
+void enqueueApplePkt(AsyncUDPPacket& packet, uint8_t isData) {
+    if (appleQ == nullptr) {
+        return;
+    }
+    size_t n = packet.length();
+    if (n == 0 || packet.data() == nullptr) {
+        return;
+    }
+    if (n > sizeof(AppleMidiPkt::data)) {
+        n = sizeof(AppleMidiPkt::data);
+    }
+    portENTER_CRITICAL(&appleQMux);
+    uint8_t next = static_cast<uint8_t>((appleQHead + 1) % kAppleMidiQ);
+    if (next == appleQTail) {
+        portEXIT_CRITICAL(&appleQMux);
+        return;
+    }
+    AppleMidiPkt& item = appleQ[appleQHead];
+    IPAddress ip = packet.remoteIP();
+    item.ip[0] = ip[0];
+    item.ip[1] = ip[1];
+    item.ip[2] = ip[2];
+    item.ip[3] = ip[3];
+    item.port = packet.remotePort();
+    item.len = static_cast<uint16_t>(n);
+    item.isData = isData;
+    memcpy(item.data, packet.data(), n);
+    appleQHead = next;
+    portEXIT_CRITICAL(&appleQMux);
+}
+
+void drainAppleMidi() {
+    if (appleQ == nullptr) {
+        return;
+    }
+    for (;;) {
+        AppleMidiPkt item;
+        portENTER_CRITICAL(&appleQMux);
+        if (appleQTail == appleQHead) {
+            portEXIT_CRITICAL(&appleQMux);
+            return;
+        }
+        item = appleQ[appleQTail];
+        appleQTail = static_cast<uint8_t>((appleQTail + 1) % kAppleMidiQ);
+        portEXIT_CRITICAL(&appleQMux);
+        appleInData = item.isData;
+        appleParsing = true;
+        applemidi_parse_udp_datagram(item.ip, item.port, item.data, item.len, item.isData);
+        appleParsing = false;
+    }
+}
+
+int32_t appleMidiSend(uint8_t* ip_addr, uint16_t port, uint8_t* tx_data, size_t tx_len) {
+    if (ip_addr == nullptr || tx_data == nullptr || tx_len == 0) {
+        return 0;
+    }
+    IPAddress dest(ip_addr[0], ip_addr[1], ip_addr[2], ip_addr[3]);
+    // Session replies must leave from the pcb that received the packet.
+    // Application MIDI (outside parse) is RTP and uses the data pcb.
+    AsyncUDP& udp = (appleParsing ? appleInData : 1) ? appleData : appleControl;
+    return static_cast<int32_t>(udp.writeTo(tx_data, tx_len, dest, port));
+}
+
+void appleMidiReceived(uint8_t /*port*/, uint32_t /*timestamp*/, uint8_t midi_status,
+    uint8_t* remaining_message, size_t len, size_t /*continued_sysex_pos*/) {
+    uint8_t message[17];
+    message[0] = midi_status;
+    size_t n = len < 16 ? len : 16;
+    if (remaining_message != nullptr && n > 0) {
+        memcpy(message + 1, remaining_message, n);
+    }
+    appleParser.parse(message, static_cast<uint8_t>(n + 1));
+}
+
+bool listenAppleMidi(uint16_t port, midi::MidiAction* midiAction) {
+    if (appleQ == nullptr) {
+        appleQ = static_cast<AppleMidiPkt*>(heap_caps_malloc(sizeof(AppleMidiPkt) * kAppleMidiQ, MALLOC_CAP_SPIRAM));
+        if (appleQ == nullptr) {
+            appleQ = static_cast<AppleMidiPkt*>(heap_caps_malloc(sizeof(AppleMidiPkt) * kAppleMidiQ, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
+        if (appleQ == nullptr) {
+            return false;
+        }
+    }
+    appleControlPort = port;
+    appleQHead = 0;
+    appleQTail = 0;
+    appleParser.begin(midiAction, -1);
+    if (!appleControl.listen(port)) {
+        return false;
+    }
+    if (!appleData.listen(static_cast<uint16_t>(port + 1))) {
+        appleControl.close();
+        return false;
+    }
+    appleControl.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 0); });
+    appleData.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 1); });
+    applemidi_init(reinterpret_cast<void*>(appleMidiReceived), reinterpret_cast<void*>(appleMidiSend));
+    MDNS.addService("_apple-midi", "_udp", port);
+    return true;
+}
+
 class ExposedMidiBleServer : public midi::MidiBleServer {
 public:
     using midi::MidiBleServer::MidiBleServer;
     BLEServer* server() const { return pServer; }
+
+    void writeMidi(midi::MidiMessage* pMsg, int len) {
+        if (pCharacteristic == nullptr || pMsg == nullptr || len <= 0) {
+            return;
+        }
+        midi::MidiMessage packet = *pMsg;
+        updateTimestamp(&packet);
+        size_t n = (len >= 2) ? sizeof(midi::MidiMessage) : sizeof(midi::MidiMessage) - 1;
+        pCharacteristic->setValue(reinterpret_cast<uint8_t*>(&packet), n);
+        pCharacteristic->notify();
+    }
 
     // Same startup as MidiBleServer::begin, without advertising. Advertising
     // starts the GATT database, so HID has to be added before that.
@@ -24,16 +169,21 @@ public:
             BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE_NR |
                 BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
         if (pMidiAction != nullptr) {
-            if (pEventHandler == nullptr) {
-                pEventHandler = new midi::MidiBleParser(pMidiAction, receivingChannel);
-            }
-            pCharacteristic->setCallbacks(pEventHandler);
+            pCharacteristic->setCallbacks(new BleMidiDecode(pMidiAction));
         }
         pCharacteristic->addDescriptor(new BLE2902());
         pCharacteristic->setBroadcastProperty(true);
         service->start();
     }
 };
+}
+
+const char* midiInboundSource() {
+    return inboundSourceName != nullptr ? inboundSourceName : "ext";
+}
+
+void midiInboundSetSource(const char* name) {
+    inboundSourceName = (name != nullptr && name[0] != '\0') ? name : "ext";
 }
 
 MultiMidi* MultiMidi::instance = nullptr;
@@ -86,8 +236,7 @@ void MultiMidi::enableHardwareMidi(int rx, int tx) {
     hardwareMidiEnabled = true;
     rxPin = rx;
     txPin = tx;
-    HardwareMidiSerial = new SoftwareSerial(rxPin, txPin);
-    Debug->printf("Hardware Serial MIDI enabled on RX: %d, TX: %d\n", rxPin, txPin);
+    Debug->printf("Hardware Serial MIDI pins RX: %d, TX: %d (starts only if DIN is on)\n", rxPin, txPin);
 }
 void MultiMidi::enableHardwareMidi(SoftwareSerial* serial) {
     hardwareMidiEnabled = true;
@@ -139,12 +288,12 @@ void MultiMidi::loadSettings() {
     if (!prefs.begin("midi", true)) {
         return;
     }
-    dinEnabled = prefs.getBool("din", true);
+    dinEnabled = prefs.getBool("din", false);
     wifiEnabled = prefs.getBool("wifi", true);
     bleAdvertise = prefs.getBool("bleadv", true);
     bleCentral = prefs.getBool("blecent", true);
     autoConnectEnabled = prefs.getBool("auto", true);
-    ethernetEnabled = prefs.getBool("eth", false);
+    ethernetEnabled = prefs.getBool("eth", true);
     usbDeviceEnabled = prefs.getBool("usbdev", false);
     String address = prefs.getString("bleaddr", "");
     strncpy(bleTargetAddress, address.c_str(), sizeof(bleTargetAddress) - 1);
@@ -169,6 +318,32 @@ void MultiMidi::saveSettings() {
     prefs.end();
 }
 
+void MultiMidi::applyDin() {
+    if (!hardwareMidiEnabled) {
+        return;
+    }
+    if (dinEnabled) {
+        if (HardwareMidiSerial == nullptr) {
+            HardwareMidiSerial = new SoftwareSerial(rxPin, txPin);
+        }
+        HardwareMidiSerial->enableRxGPIOPullUp(true);
+        if (serialStreamIn == nullptr || serialStreamOut == nullptr) {
+            HardwareMidiSerial->begin(31250);
+            serialStreamIn = new MidiStreamIn(*HardwareMidiSerial, action);
+            serialStreamOut = new MidiStreamOut(*HardwareMidiSerial);
+            Debug->println("DIN SoftwareSerial started.");
+        } else {
+            HardwareMidiSerial->enableRx(true);
+        }
+        return;
+    }
+    if (HardwareMidiSerial != nullptr) {
+        HardwareMidiSerial->enableRx(false);
+        HardwareMidiSerial->end();
+        Debug->println("DIN SoftwareSerial stopped.");
+    }
+}
+
 void MultiMidi::applyBleSettings() {
     bleMidi.setAutoConnect(autoConnectEnabled);
     bleMidi.setAdvertising(bleAdvertise);
@@ -177,6 +352,14 @@ void MultiMidi::applyBleSettings() {
 
 void MultiMidi::setHostPolicy(BleMidiHostPolicy* policy) {
     bleMidi.setPolicy(policy);
+}
+
+void MultiMidi::setRadio(BleRadio* radio) {
+    bleMidi.setRadio(radio);
+}
+
+void MultiMidi::setEthernetPins(uint8_t sclk, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t reset) {
+    ethernet.setPins(sclk, miso, mosi, cs, reset);
 }
 
 bool MultiMidi::enableBleClassicMidi(const char* name) {
@@ -198,7 +381,7 @@ void MultiMidi::setAutoConnect(bool enabled, bool persist) {
 
 void MultiMidi::connectHost(const char* address) {
     bleCentral = true;
-    saveSettings();
+    bleMidi.setCentral(true);
     bleMidi.connectAddress(address);
 }
 
@@ -206,8 +389,16 @@ void MultiMidi::holdHost(const char* address) {
     bleMidi.holdAddress(address);
 }
 
+void MultiMidi::releaseHost(const char* address) {
+    bleMidi.releaseAddress(address);
+}
+
 void MultiMidi::dropHostLink() {
     bleMidi.dropLink();
+}
+
+void MultiMidi::dropHost(const char* address) {
+    bleMidi.dropAddress(address);
 }
 
 BLEServer* MultiMidi::bleGattServer() const {
@@ -219,13 +410,14 @@ BLEServer* MultiMidi::bleGattServer() const {
 
 String MultiMidi::midiStatusJson() {
     bool wifiReady = wifiEnabled && appleMidiStarted && WiFi.status() == WL_CONNECTED;
+    bool ethReady = ethernetEnabled && appleMidiStarted && ETH.hasIP();
     String json = "{";
     json += "\"din\":{\"enabled\":" + String(jsonBool(dinEnabled)) + ",\"available\":true,\"label\":\"5-pin MIDI\"},";
     json += "\"wifi\":{\"enabled\":" + String(jsonBool(wifiEnabled)) + ",\"available\":true,\"ready\":" + String(jsonBool(wifiReady)) + ",\"label\":\"Wi-Fi Network MIDI\",\"port\":5004},";
-    json += "\"ethernet\":{\"enabled\":false,\"available\":false,\"label\":\"Ethernet MIDI\",\"reason\":\"The W5500 is not started.\"},";
+    json += "\"ethernet\":{\"enabled\":" + String(jsonBool(ethernetEnabled)) + ",\"available\":true,\"ready\":" + String(jsonBool(ethReady)) + ",\"label\":\"Ethernet MIDI\",\"note\":\"" + jsonEscape(ethernet.status()) + "\"},";
     json += "\"usbDevice\":{\"enabled\":false,\"available\":false,\"label\":\"USB device MIDI\",\"reason\":\"USB MIDI would replace the serial port used to debug and flash.\"},";
     json += "\"usbHost\":{\"enabled\":false,\"available\":false,\"label\":\"USB host MIDI\",\"reason\":\"USB host MIDI is not implemented.\"},";
-    json += "\"bleAdvertise\":{\"enabled\":" + String(jsonBool(bleMidi.advertising())) + ",\"available\":true,\"name\":\"ShowboxMod\"},";
+    json += "\"bleAdvertise\":{\"enabled\":" + String(jsonBool(bleMidi.advertising())) + ",\"available\":true,\"name\":\"" + jsonEscape(bluetoothName) + "\"},";
     json += "\"bleCentral\":{\"enabled\":" + String(jsonBool(bleMidi.central())) + ",\"available\":true,\"connected\":" + String(jsonBool(bleMidi.isConnected()));
     json += ",\"scanning\":" + String(jsonBool(bleMidi.isScanning()));
     json += ",\"peerName\":\"" + jsonEscape(bleMidi.connectedName()) + "\"";
@@ -258,6 +450,7 @@ bool MultiMidi::setMidiOption(const String& name, bool enabled, String& error) {
     }
     if (name == "din") {
         dinEnabled = enabled;
+        applyDin();
     } else if (name == "wifi") {
         wifiEnabled = enabled;
     } else if (name == "bleAdvertise") {
@@ -301,6 +494,10 @@ void MultiMidi::finishBle() {
     Debug->println("Bluetooth MIDI ready.");
 }
 
+void MultiMidi::allowOutgoing(bool enabled) {
+    bleMidi.allowOutgoing(enabled);
+}
+
 void MultiMidi::disconnectBle() {
     bleCentral = false;
     saveSettings();
@@ -310,78 +507,96 @@ void MultiMidi::disconnectBle() {
 // Begin MIDI
 void MultiMidi::begin() {
     loadSettings();
-    // if (action == nullptr) { 
-        // action = new MidiCallbackAction();
-        // action->setCallbackOnControlChange(MultiMidi::onControlChange);
-        // action->setCallbackOnNoteOn(MultiMidi::onNoteOn);
-        // action->setCallbackOnNoteOff(MultiMidi::onNoteOff);
-        // action->setCallbackOnPitchBend(MultiMidi::onPitchBend);
-    // }
+    {
+        // Older builds began SoftwareSerial at boot even with no DIN gear.
+        // That bit-bang ISR wedges mixer↔base. One-time: DIN stays off until
+        // the user turns it on.
+        Preferences prefs;
+        if (prefs.begin("midi", false)) {
+            if (!prefs.getBool("dinlazy", false)) {
+                dinEnabled = false;
+                prefs.putBool("din", false);
+                prefs.putBool("dinlazy", true);
+            }
+            prefs.end();
+        }
+    }
     action.setCallbackOnControlChange(MultiMidi::onControlChange);
     action.setCallbackOnNoteOn(MultiMidi::onNoteOn);
     action.setCallbackOnNoteOff(MultiMidi::onNoteOff);
     action.setCallbackOnPitchBend(MultiMidi::onPitchBend);
+
+    classic.begin(&action, Debug);
+    ethernet.setDebug(Debug);
+    ethernet.setEnabled(ethernetEnabled);
+
+    // Bind AppleMIDI before BLE, with AsyncUDP so HTTP keeps its TCP sockets.
+    tryStartAppleMidi();
 
     // Initialize BLE MIDI if enabled
     if (bleMidiEnabled && !bleServer) {
         bleServer = new ExposedMidiBleServer(bluetoothName, &action);
         static_cast<ExposedMidiBleServer*>(bleServer)->beginServices();
     }
-    classic.begin(&action, Debug);
-    ethernet.setDebug(Debug);
-    ethernet.setEnabled(ethernetEnabled);
 
-    // Initialize Serial Bluetooth MIDI if enabled
-    // if (bleSerialMidiEnabled && !bluetoothStreamIn && !bluetoothStreamOut) {
-    //     bluetoothStreamIn = new MidiStreamIn(SerialBT, action);
-    //     bluetoothStreamOut = new MidiStreamOut(SerialBT);
-    //     SerialBT.begin(bluetoothName);
-    //     Debug->println("Serial Bluetooth MIDI initialized.");
-    // }
-
-    // Initialize AppleMIDI if enabled
-    if (appleMidiEnabled && !appleMidiServer) {
-        appleMidiServer = new AppleMidiServer(&action);
-        if (wifiEnabled && WiFi.status() == WL_CONNECTED) {
-            appleMidiStarted = appleMidiServer->begin(appleMidiPort);
-        }
-        Debug->println(appleMidiStarted ? "AppleMIDI initialized." : "AppleMIDI waiting for Wi-Fi.");
-    }
-
-    // Initialize Hardware Serial MIDI if enabled
-    if (hardwareMidiEnabled && !serialStreamIn && !serialStreamOut) {
-        HardwareMidiSerial->begin(31250);
-        serialStreamIn = new MidiStreamIn(*HardwareMidiSerial, action);
-        serialStreamOut = new MidiStreamOut(*HardwareMidiSerial);
-        Debug->println("Hardware Serial MIDI initialized.");
-    }
+    applyDin();
     
     Debug->println("MultiMidi setup complete.");
+}
+
+void MultiMidi::tryStartAppleMidi() {
+    if (!appleMidiEnabled || appleMidiStarted) {
+        return;
+    }
+    if (!lanHasIp()) {
+        return;
+    }
+    appleMidiStarted = listenAppleMidi(appleMidiPort, &action);
+    debugLog("applemidi begin=%d port=%u heap=%u largest=%u",
+        appleMidiStarted ? 1 : 0,
+        (unsigned)appleMidiPort,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (appleMidiStarted && Debug != nullptr) {
+        Debug->println("AppleMIDI initialized.");
+    }
 }
 
 // Process incoming MIDI messages for all active interfaces
 void MultiMidi::tick() {
     if (dinEnabled && serialStreamIn) {
+        midiInboundSetSource("din");
         serialStreamIn->loop();
     }
-    if (wifiEnabled && appleMidiServer) {
-        if (!appleMidiStarted && WiFi.status() == WL_CONNECTED) {
-            appleMidiStarted = appleMidiServer->begin(appleMidiPort);
+    if (appleMidiEnabled) {
+        if (!appleMidiStarted) {
+            tryStartAppleMidi();
         }
         if (appleMidiStarted) {
-            appleMidiServer->loop();
+            midiInboundSetSource("apple");
+            drainAppleMidi();
         }
     }
     if (bleMidiEnabled) {
+        midiInboundSetSource("ble");
         bleMidi.tick();
     }
-    ethernet.tick(ethernetEnabled ? &action : nullptr);
+    if (ethernetEnabled) {
+        midiInboundSetSource("eth");
+        ethernet.tick(&action);
+    } else {
+        ethernet.tick(nullptr);
+    }
     if (UsbMidi::running()) {
+        midiInboundSetSource("usb");
         UsbMidi::tick(&action);
     }
     if (UsbMidiHost::running()) {
+        midiInboundSetSource("usbhost");
         UsbMidiHost::tick(&action);
     }
+    midiInboundSetSource("ext");
+    watchOutputLinks();
     // if (bluetoothStreamIn) {
     //     bluetoothStreamIn->loop();
     // }
@@ -390,8 +605,64 @@ void MultiMidi::tick() {
     // }
 }
 
+void MultiMidi::watchOutputLinks() {
+    uint32_t bleCentral = static_cast<uint32_t>(bleMidi.connectedCount());
+    uint32_t blePeriph = (bleServer != nullptr && bleServer->getConnectionStatus() == midi::Connected) ? 1u : 0u;
+    uint32_t apple = 0;
+    if (appleMidiStarted) {
+        for (uint8_t port = 1; port < APPLEMIDI_MAX_PEERS; port++) {
+            applemidi_peer_t* peer = applemidi_peer_get_info(port);
+            if (peer != nullptr && peer->ssrc != 0) {
+                apple++;
+            }
+        }
+    }
+    uint32_t din = (dinEnabled && serialStreamOut != nullptr) ? 1u : 0u;
+    uint32_t usbHost = UsbMidiHost::connected() ? 1u : 0u;
+    uint32_t usbDev = UsbMidi::mounted() ? 1u : 0u;
+    uint32_t sig = bleCentral
+        | (blePeriph << 4)
+        | (apple << 8)
+        | (din << 12)
+        | (usbHost << 13)
+        | (usbDev << 14);
+    if (sig == outSignature) {
+        return;
+    }
+    uint32_t old = outSignature;
+    outSignature = sig;
+    bool gained = bleCentral > (old & 0xFu)
+        || blePeriph > ((old >> 4) & 0xFu)
+        || apple > ((old >> 8) & 0xFu)
+        || din > ((old >> 12) & 0x1u)
+        || usbHost > ((old >> 13) & 0x1u)
+        || usbDev > ((old >> 14) & 0x1u);
+    if (gained) {
+        outGeneration++;
+    }
+}
+
+void MultiMidi::sendAppleMidi(MidiMessage* msg, int len) {
+    if (msg == nullptr || len <= 0 || !appleMidiStarted) {
+        return;
+    }
+    uint8_t bytes[3] = {msg->status, msg->arg1, msg->arg2};
+    size_t n = (len >= 2) ? 3 : (len >= 1 ? 2 : 1);
+    for (uint8_t port = 1; port < APPLEMIDI_MAX_PEERS; port++) {
+        applemidi_peer_t* peer = applemidi_peer_get_info(port);
+        if (peer == nullptr || peer->ssrc == 0) {
+            continue;
+        }
+        applemidi_send_message(port, bytes, n);
+        applemidi_outbuffer_flush(port);
+    }
+}
+
 // writeData override
 void MultiMidi::writeData(MidiMessage *msg, int len){
+    if (msg == nullptr || len <= 0) {
+        return;
+    }
     if (dinEnabled && serialStreamOut) {
         serialStreamOut->write(msg, len);
     }
@@ -399,11 +670,12 @@ void MultiMidi::writeData(MidiMessage *msg, int len){
     //     bluetoothStreamOut->writeData(msg, len);
     // }
     if (bleServer) {
-        bleServer->write(msg, len);
+        static_cast<ExposedMidiBleServer*>(bleServer)->writeMidi(msg, len);
     }
-    if (wifiEnabled && appleMidiStarted && appleMidiServer) {
-        appleMidiServer->write(msg, len);
+    if (bleMidiEnabled) {
+        bleMidi.write(msg, len);
     }
+    sendAppleMidi(msg, len);
     if (ethernetEnabled) {
         ethernet.write(msg, len);
     }

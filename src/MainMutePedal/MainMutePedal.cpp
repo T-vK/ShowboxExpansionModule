@@ -1,4 +1,5 @@
 #include "MainMutePedal.h"
+#include "Actions/ActionRules.h"
 #define SHOWBOX_DEBUG
 
 // Constructor
@@ -24,6 +25,9 @@ void MainMutePedal::toggleCallback(void *instance) {
 
 // Instance method
 void MainMutePedal::handleToggle() {
+    if (actionRulesClaimTrs("3t", "shortRelease")) {
+        return;
+    }
     bool current_value = showbox->getBoolEntityValue(entity);
     
     if (current_value == onValue) {

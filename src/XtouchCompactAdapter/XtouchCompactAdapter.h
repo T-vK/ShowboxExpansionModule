@@ -124,6 +124,8 @@ private:
 
     void rememberOutboundCc(uint8_t cc, uint8_t value);
     bool isCcEcho(uint8_t cc, uint8_t value) const;
+    bool surfaceConnected() const;
+    bool inboundFromSurface() const;
 
     void configureXtouchCompact();
 
