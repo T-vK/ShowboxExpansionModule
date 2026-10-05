@@ -1,25 +1,34 @@
 #include "TwoButtonLooper.h"
+#include "Actions/ActionRules.h"
 #define SHOWBOX_DEBUG 1
 
-// Constructor
 TwoButtonLooper::TwoButtonLooper(uint8_t record_button_pin, uint8_t stop_button_pin, MackieShowbox* showbox)
     : recordButton(record_button_pin, true), stopButton(stop_button_pin, true), showbox(showbox) {}
 
-// Initialization
 void TwoButtonLooper::begin() {
-    // Attach static callback functions with the instance pointer
     recordButton.attachClick(recordOverdubPlayCallback, this);
     stopButton.attachClick(stopCallback, this);
     stopButton.attachLongPressStart(deleteCallback, this);
+    uint8_t state = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
+    if (state == RECORD_INITIAL_LOOP) {
+        mode = Mode::Recording;
+    } else if (state == RECORD_OVERDUB) {
+        mode = Mode::Overdub;
+    } else if (state == PLAY) {
+        mode = Mode::Playing;
+    } else if (state == STOP_PLAYING) {
+        mode = Mode::Stopped;
+    } else {
+        mode = Mode::Empty;
+    }
 }
 
-// Update loop
 void TwoButtonLooper::tick() {
+    runJob();
     recordButton.tick();
     stopButton.tick();
 }
 
-// Static callback functions
 void TwoButtonLooper::recordOverdubPlayCallback(void *instance) {
     TwoButtonLooper *looper = static_cast<TwoButtonLooper*>(instance);
     looper->handleRecordOverdubPlay();
@@ -35,39 +44,135 @@ void TwoButtonLooper::deleteCallback(void *instance) {
     looper->handleDelete();
 }
 
-// Instance methods
-void TwoButtonLooper::handleRecordOverdubPlay() {
-    showbox->sendLooperButtonAction(looper_button_action::DOWN);
-    showbox->sendLooperButtonAction(looper_button_action::UP);
+void TwoButtonLooper::queueJob(Job next) {
+    job = next;
+    jobStep = 0;
+    jobAt = millis();
+}
 
-    //#ifdef SHOWBOX_DEBUG
-    uint8_t currentState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-    if (currentState == (uint8_t)DELETE || currentState == (uint8_t)STOP_PLAYING) {
-        Debug->println("Recording initial loop");
-    } else if (currentState == (uint8_t)RECORD_INITIAL_LOOP) {
-        Debug->println("Recording overdub");
-    } else if (currentState == (uint8_t)RECORD_OVERDUB) {
-        Debug->println("Play");
+void TwoButtonLooper::sendButton(looper_button_action action) {
+    showbox->sendLooperButtonAction(action);
+}
+
+bool TwoButtonLooper::looperIsPlay() const {
+    return showbox->getUint8EntityValue(entity_id::LOOPER_STATE) == (uint8_t)PLAY;
+}
+
+void TwoButtonLooper::runJob() {
+    if (job == Job::None) {
+        return;
     }
-    //#endif
+    if ((int32_t)(millis() - jobAt) < 0) {
+        return;
+    }
+    if (job == Job::Tap) {
+        if (jobStep == 0) {
+            sendButton(looper_button_action::DOWN);
+            jobStep = 1;
+            jobAt = millis() + kTapGapMs;
+            return;
+        }
+        sendButton(looper_button_action::UP);
+        job = Job::None;
+        return;
+    }
+    if (job == Job::EndRecThenOverdub) {
+        if (jobStep == 0) {
+            sendButton(looper_button_action::DOWN);
+            jobStep = 1;
+            jobAt = millis() + kTapGapMs;
+            return;
+        }
+        if (jobStep == 1) {
+            sendButton(looper_button_action::UP);
+            jobStep = 2;
+            jobAt = millis() + kOverdubMinMs;
+            Debug->println("Recording overdub after initial rec");
+            return;
+        }
+        if (jobStep == 2) {
+            bool ready = looperIsPlay();
+            bool timedOut = (int32_t)(millis() - jobAt) >= (int32_t)(kOverdubMaxMs - kOverdubMinMs);
+            if (!ready && !timedOut) {
+                return;
+            }
+            sendButton(looper_button_action::DOWN);
+            jobStep = 3;
+            jobAt = millis() + kTapGapMs;
+            return;
+        }
+        sendButton(looper_button_action::UP);
+        job = Job::None;
+        return;
+    }
+    if (job == Job::Stop) {
+        sendButton(looper_button_action::DOUBLE_PRESS);
+        job = Job::None;
+        Debug->println("Stop playing");
+        return;
+    }
+    if (job == Job::Delete) {
+        sendButton(looper_button_action::LONG_PRESS);
+        job = Job::None;
+        Debug->println("Set LOOPER_STATE to DELETE");
+    }
+}
+
+void TwoButtonLooper::handleRecordOverdubPlay() {
+    if (actionRulesClaimTrs("1t", "shortRelease")) {
+        return;
+    }
+    if (job != Job::None) {
+        return;
+    }
+    switch (mode) {
+        case Mode::Empty:
+            mode = Mode::Recording;
+            queueJob(Job::Tap);
+            Debug->println("Recording initial loop");
+            break;
+        case Mode::Recording:
+            mode = Mode::Overdub;
+            queueJob(Job::EndRecThenOverdub);
+            break;
+        case Mode::Overdub:
+            mode = Mode::Playing;
+            queueJob(Job::Tap);
+            Debug->println("Play");
+            break;
+        case Mode::Playing:
+            mode = Mode::Overdub;
+            queueJob(Job::Tap);
+            Debug->println("Recording overdub");
+            break;
+        case Mode::Stopped:
+            mode = Mode::Playing;
+            queueJob(Job::Tap);
+            Debug->println("Play");
+            break;
+    }
 }
 
 void TwoButtonLooper::handleStop() {
-    uint8_t currentState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-
-    if (currentState == (uint8_t)PLAY || currentState == (uint8_t)RECORD_INITIAL_LOOP || currentState == (uint8_t)RECORD_OVERDUB) {
-        showbox->sendLooperButtonAction(looper_button_action::DOUBLE_PRESS);
-        //#ifdef SHOWBOX_DEBUG
-        Debug->println("Stop playing");
-        //#endif
+    if (actionRulesClaimTrs("1r", "shortRelease")) {
+        return;
     }
+    if (job != Job::None || mode == Mode::Empty) {
+        return;
+    }
+    mode = (mode == Mode::Recording) ? Mode::Empty : Mode::Stopped;
+    queueJob(Job::Stop);
 }
 
 void TwoButtonLooper::handleDelete() {
-    showbox->sendLooperButtonAction(looper_button_action::LONG_PRESS);
-    //#ifdef SHOWBOX_DEBUG
-    Debug->println("Set LOOPER_STATE to DELETE");
-    //#endif
+    if (actionRulesClaimTrs("1r", "long")) {
+        return;
+    }
+    if (job != Job::None) {
+        return;
+    }
+    mode = Mode::Empty;
+    queueJob(Job::Delete);
 }
 
 void TwoButtonLooper::setDebugSerial(Print* serial) {

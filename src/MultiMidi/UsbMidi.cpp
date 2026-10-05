@@ -5,9 +5,11 @@
 #include "MidiParser.h"
 #include "USB.h"
 #include "esp32-hal-tinyusb.h"
+#include "tusb.h"
 
 namespace {
 bool started = false;
+bool interfaceOn = false;
 midi::MidiParser parser;
 bool parserReady = false;
 
@@ -20,27 +22,33 @@ uint16_t loadMidiDescriptor(uint8_t* dst, uint8_t* itf) {
     memcpy(dst, descriptor, sizeof(descriptor));
     return sizeof(descriptor);
 }
-
-int messageLength(uint8_t status) {
-    if (status >= 0xF8) {
-        return 1;
-    }
-    uint8_t kind = status & 0xF0;
-    if (kind == 0xC0 || kind == 0xD0) {
-        return 2;
-    }
-    return 3;
 }
+
+bool UsbMidi::enableInterface() {
+    if (interfaceOn) {
+        return true;
+    }
+    if (tinyusb_enable_interface(USB_INTERFACE_MIDI, TUD_MIDI_DESC_LEN, loadMidiDescriptor) != ESP_OK) {
+        return false;
+    }
+    interfaceOn = true;
+    return true;
+}
+
+void UsbMidi::markStarted() {
+    if (interfaceOn) {
+        started = true;
+    }
 }
 
 bool UsbMidi::start() {
     if (started) {
         return true;
     }
-    if (tinyusb_enable_interface(USB_INTERFACE_MIDI, TUD_MIDI_DESC_LEN, loadMidiDescriptor) != ESP_OK) {
+    if (!enableInterface()) {
         return false;
     }
-    USB.manufacturerName("Showbox");
+    USB.manufacturerName("ShowboxMod");
     USB.productName("ShowboxMod");
     USB.VID(0x303A);
     USB.PID(0x0002);
@@ -50,6 +58,10 @@ bool UsbMidi::start() {
 
 bool UsbMidi::running() {
     return started;
+}
+
+bool UsbMidi::mounted() {
+    return started && tud_mounted();
 }
 
 void UsbMidi::tick(midi::MidiAction* action) {
@@ -74,9 +86,7 @@ void UsbMidi::write(midi::MidiMessage* msg, int len) {
     if (!started || msg == nullptr || len <= 0) {
         return;
     }
-    for (int i = 0; i < len; i++) {
-        uint8_t bytes[3] = {msg[i].status, msg[i].arg1, msg[i].arg2};
-        int count = messageLength(msg[i].status);
-        tud_midi_n_stream_write(0, 0, bytes, count);
-    }
+    uint8_t bytes[3] = {msg->status, msg->arg1, msg->arg2};
+    int count = (len >= 2) ? 3 : 2;
+    tud_midi_n_stream_write(0, 0, bytes, count);
 }

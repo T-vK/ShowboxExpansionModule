@@ -10,6 +10,7 @@ class UsbMidiHost {
 public:
     static bool start();
     static bool running();
+    static bool connected();
     static const char* status();
     static void tick(midi::MidiAction* action);
     static void write(midi::MidiMessage* msg, int len);

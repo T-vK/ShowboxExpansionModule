@@ -1,4 +1,6 @@
 #include "XtouchCompactAdapter.h"
+#include "MultiMidi/MidiInbound.h"
+#include "MultiMidi/UsbMidiHost.h"
 
 XtouchCompactAdapter* XtouchCompactAdapter::instance = nullptr;
 
@@ -422,8 +424,11 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
 
 // Update loop
 void XtouchCompactAdapter::tick() {
-    //midi->tick();
-    if (!delayedConfigTriggered && millis() > beginTime+midiConfigDelay) {
+    if (!surfaceConnected()) {
+        delayedConfigTriggered = false;
+        return;
+    }
+    if (!delayedConfigTriggered && millis() > beginTime + midiConfigDelay) {
         configureXtouchCompact();
         delayedConfigTriggered = true;
     }
@@ -467,7 +472,18 @@ bool XtouchCompactAdapter::isCcEcho(uint8_t cc, uint8_t value) const {
     return delta <= 2;
 }
 
+bool XtouchCompactAdapter::surfaceConnected() const {
+    return UsbMidiHost::connected();
+}
+
+bool XtouchCompactAdapter::inboundFromSurface() const {
+    return surfaceConnected() && strcmp(midiInboundSource(), "usbhost") == 0;
+}
+
 void XtouchCompactAdapter::setEncoder(uint8_t encoder, uint8_t value) { // 0-127
+    if (!surfaceConnected()) {
+        return;
+    }
     uint8_t cc = 10 + encoder;
     if (cc < 128 && lastSentCcValid[cc] && lastSentCc[cc] == value) {
         return;
@@ -502,6 +518,9 @@ void XtouchCompactAdapter::setChannelEncoderPercent(uint8_t channel, float value
 |------------------------------|------------|-----------------------------|-------------------------------------------------------------------------------------------|
 */
 void XtouchCompactAdapter::setLedRing(uint8_t encoder, uint8_t value) { // 0-15
+    if (!surfaceConnected()) {
+        return;
+    }
     uint8_t cc = 26 + encoder;
     midi->controlChange(cc, value, globalChannel);
 }
@@ -525,6 +544,9 @@ void XtouchCompactAdapter::setChannelLedRingPercent(uint8_t channel, float value
 // Button Control
 
 void XtouchCompactAdapter::setButton(uint8_t button, uint8_t state) {
+    if (!surfaceConnected()) {
+        return;
+    }
     // X-Touch LED protocol: velocity 0 off, 1 on, 2 blink. 3–127 are ignored.
     uint8_t note = button + 16;
     uint8_t velocity = state > 2 ? 1 : state;
@@ -581,6 +603,9 @@ void XtouchCompactAdapter::setPlayButton(bool state) {
 */
 
 void XtouchCompactAdapter::setButtonLed(uint8_t button, uint8_t value) { // 0-38
+    if (!surfaceConnected()) {
+        return;
+    }
     midi->noteOn(button, value, globalChannel);
 }
 
@@ -663,13 +688,16 @@ void XtouchCompactAdapter::setPlayButtonLed(bool state) {
 |------------------------------|------------|-----------------------------|-------------------------------------------------------------------------------------------|
 */
 void XtouchCompactAdapter::setFader(uint8_t fader, uint8_t value) { // index 0-8
+    if (!surfaceConnected()) {
+        return;
+    }
     uint8_t cc = fader + 1;
     if (cc < 128 && lastSentCcValid[cc] && lastSentCc[cc] == value) {
         return;
     }
     rememberOutboundCc(cc, value);
     Debug->printf("Setting fader %d to %d\n", fader, value);
-    midi->controlChange(cc, value); // Doesn't need global channel, but can be used alternatively, doesn't make a difference
+    midi->controlChange(cc, value);
 }
 
 void XtouchCompactAdapter::setFaderPercent(uint8_t fader, float value) {
@@ -685,6 +713,9 @@ void XtouchCompactAdapter::setFaderPercent(uint8_t fader, float value) {
 |------------------------------|------------|-----------------------------|-------------------------------------------------------------------------------------------|
 */
 void XtouchCompactAdapter::setOperationMode(uint8_t mode) {
+    if (!surfaceConnected()) {
+        return;
+    }
     midi->controlChange(127, mode, globalChannel);
 }
 
@@ -697,6 +728,9 @@ void XtouchCompactAdapter::setOperationMode(uint8_t mode) {
 |------------------------------|------------|-----------------------------|-------------------------------------------------------------------------------------------|
 */ 
 void XtouchCompactAdapter::setPresetLayer(uint8_t layer) {
+    if (!surfaceConnected()) {
+        return;
+    }
     midi->programChange(layer, globalChannel);
 }
 
@@ -711,6 +745,9 @@ void XtouchCompactAdapter::setPresetLayer(uint8_t layer) {
 |------------------------------|------------|-----------------------------|-------------------------------------------------------------------------------------------|
 */
 void XtouchCompactAdapter::setLedRingBehavior(uint8_t encoder, uint8_t behavior) {
+    if (!surfaceConnected()) {
+        return;
+    }
     uint8_t cc = 10 + encoder;
     midi->controlChange(cc, behavior, globalChannel);
 }
@@ -718,10 +755,10 @@ void XtouchCompactAdapter::setLedRingBehavior(uint8_t encoder, uint8_t behavior)
 
 // Callback methods
 void XtouchCompactAdapter::onNoteOff(uint8_t channel, uint8_t note, uint8_t velocity) {
-    instance->Debug->printf("X-Touch Note Off Event - Channel: %d - Note: %d - Velocity: %d\n", channel, note, velocity);
-    if (channel != instance->midiChannel) {
+    if (!instance->inboundFromSurface() || channel != instance->midiChannel) {
         return;
     }
+    instance->Debug->printf("X-Touch Note Off Event - Channel: %d - Note: %d - Velocity: %d\n", channel, note, velocity);
     if (note == 8 || note == 10 || note == 12) { // enable/disable EQ
         bool eqEnabled = instance->showbox->getInputEqEnable(instance->selectedChannel);
         instance->Debug->printf("Toggle EQ for channel %d: %s\n", instance->selectedChannel, eqEnabled ? "Disable" : "Enable");
@@ -895,14 +932,14 @@ void XtouchCompactAdapter::onNoteOff(uint8_t channel, uint8_t note, uint8_t velo
 }
 
 void XtouchCompactAdapter::onNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
-    instance->Debug->printf("X-Touch Note On Event - Channel: %d - Note: %d - Velocity: %d\n", channel, note, velocity);
-    if (channel != instance->midiChannel) {
+    if (!instance->inboundFromSurface() || channel != instance->midiChannel) {
         return;
     }
+    instance->Debug->printf("X-Touch Note On Event - Channel: %d - Note: %d - Velocity: %d\n", channel, note, velocity);
 }
 
 void XtouchCompactAdapter::onControlChange(uint8_t channel, uint8_t controller, uint8_t value) {
-    if (channel != instance->midiChannel) {
+    if (!instance->inboundFromSurface() || channel != instance->midiChannel) {
         return;
     }
     if (instance->isCcEcho(controller, value)) {
@@ -1002,10 +1039,10 @@ void XtouchCompactAdapter::onControlChange(uint8_t channel, uint8_t controller, 
 }
 
 void XtouchCompactAdapter::onPitchBend(uint8_t channel, uint8_t value) {
-    instance->Debug->printf("X-Touch Pitch Bend Event - Channel: %d - Value: %d\n", channel, value);
-    if (channel != instance->midiChannel) {
+    if (!instance->inboundFromSurface() || channel != instance->midiChannel) {
         return;
     }
+    instance->Debug->printf("X-Touch Pitch Bend Event - Channel: %d - Value: %d\n", channel, value);
 }
 
 float XtouchCompactAdapter::mapNonlinearToLinear(float nonlinearValue) {

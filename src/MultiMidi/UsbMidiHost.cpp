@@ -262,6 +262,10 @@ bool UsbMidiHost::running() {
     return started;
 }
 
+bool UsbMidiHost::connected() {
+    return started && deviceReady;
+}
+
 const char* UsbMidiHost::status() {
     return statusText;
 }
@@ -292,12 +296,12 @@ void UsbMidiHost::write(midi::MidiMessage* msg, int len) {
         return;
     }
     xSemaphoreTake(outLock, portMAX_DELAY);
-    for (int i = 0; i < len && outCount + 4 <= (int)sizeof(outBytes); i++) {
-        uint8_t cin = cinFor(msg[i].status);
+    if (outCount + 4 <= (int)sizeof(outBytes)) {
+        uint8_t cin = cinFor(msg->status);
         outBytes[outCount++] = cin;
-        outBytes[outCount++] = msg[i].status;
-        outBytes[outCount++] = cinLength(cin) > 1 ? msg[i].arg1 : 0;
-        outBytes[outCount++] = cinLength(cin) > 2 ? msg[i].arg2 : 0;
+        outBytes[outCount++] = msg->status;
+        outBytes[outCount++] = cinLength(cin) > 1 ? msg->arg1 : 0;
+        outBytes[outCount++] = cinLength(cin) > 2 ? msg->arg2 : 0;
     }
     bool start = !outBusy && outCount > 0;
     int count = 0;

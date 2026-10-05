@@ -1,4 +1,5 @@
 #include "BoosterPedal.h"
+#include "Actions/ActionRules.h"
 #define SHOWBOX_DEBUG
 
 // Constructor
@@ -24,6 +25,9 @@ void BoosterPedal::toggleCallback(void *instance) {
 
 // Instance method
 void BoosterPedal::handleToggle() {
+    if (actionRulesClaimTrs("2t", "shortRelease")) {
+        return;
+    }
     float current_value = showbox->getFloatEntityValue(entity);
     
     if (current_value == value1) {

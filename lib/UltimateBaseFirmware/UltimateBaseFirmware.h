@@ -30,6 +30,11 @@ public:
     void setCustomSerial(Stream& serial);
     void setCustomImprovSerial(ImprovWiFi* improvSerial);
     void setCustomDebugSerial(Print& debug);
+    void setWifiLogHistory(bool enable);
+    bool wifiLogHistory() const { return _wifiLogHistory; }
+    bool wifiLogConnected() const { return _remoteDebugWasConnected; }
+    size_t wifiLogBytes() const { return Debug.wifiBuffered(); }
+    Print& wifiLog() { return _wifiLog; }
     void setDeviceName(const char* deviceName);
     void setDeviceUrl(const char* deviceUrl);
     void setHostName(const char* hostName);
@@ -39,9 +44,20 @@ public:
     const char* getHostName();
     AsyncWebServer* getWebServer();
 
+    void setWifiRadioEnabled(bool enabled);
+    bool wifiRadioEnabled() const { return _wifiRadioEnabled; }
+    void enableWifiRadio();
+    void disableWifiRadio();
+    bool startSetupPortal(uint32_t timeoutMs);
+    void stopSetupPortal();
+    bool setupPortalOpen() const;
+
     // Main lifecycle methods
     void begin();
     void tick();
+    void flushWifiLog();
+    void startLanServices();
+    bool lanServicesUp() const { return _lanServicesUp; }
 
     // Utility methods
     String generateInfoString();
@@ -67,8 +83,27 @@ private:
     unsigned long _lastWifiCheck = 0;
     unsigned long _wifiCheckInterval = 100;
     bool _firstWiFiConnect = false;
+    bool _lanServicesUp = false;
+    bool _wifiRadioEnabled = true;
+    class WifiLogPrint : public Print {
+    public:
+        void attach(DynamicMultiPrint* source) { _source = source; }
+        using Print::write;
+        size_t write(uint8_t c) override {
+            return _source == nullptr ? 0 : _source->writeWifi(&c, 1);
+        }
+        size_t write(const uint8_t* buffer, size_t size) override {
+            return _source == nullptr ? 0 : _source->writeWifi(buffer, size);
+        }
+    private:
+        DynamicMultiPrint* _source = nullptr;
+    };
+
     RemoteDebug _remoteDebug;
     unsigned long _remoteDebugLastConnect = 0;
+    bool _wifiLogHistory = true;
+    bool _remoteDebugWasConnected = false;
+    WifiLogPrint _wifiLog;
 
     void initializeDebugSerial();
     void initializeDeviceInfo();
