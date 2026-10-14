@@ -4,9 +4,11 @@
 
 class MackieShowbox;
 class FrontPanel;
+class MultiMidi;
 
 void lanKeepMdns();
 void lanQueueMdnsRefresh();
+void lanSetMultiMidi(MultiMidi* mm);
 void lanPreferWifiAirtime();
 void lanPreferWifiWithBle();
 void lanRefreshPhy();
