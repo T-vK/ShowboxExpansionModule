@@ -47,13 +47,18 @@ public:
 
         // Linux hid-multitouch claims the whole HOGP device if a Digitizer
         // Touch Screen collection is in the map. BLE touch uses the absolute
-        // pointer collection instead; the host must unpair when this mix
-        // changes because BlueZ caches the report map.
+        // pointer collection instead. Real mouse + real abs in one map makes
+        // Linux create no ShowboxMod evdev nodes, so BLE never advertises both.
+        // The host must unpair when this mix changes because BlueZ caches the
+        // report map.
         Mix asBleMap() const {
             Mix m = *this;
             if (m.digitizer) {
                 m.absPointer = true;
                 m.digitizer = false;
+            }
+            if (m.absPointer && m.mouse) {
+                m.mouse = false;
             }
             return m;
         }
@@ -106,7 +111,10 @@ public:
 
     bool sendText(const char* text);
     bool sendUsage(uint8_t key);
-    bool sendMouse(int8_t x, int8_t y, uint8_t buttons, int8_t wheel = 0, int8_t pan = 0);
+    bool sendKey(uint8_t usage, uint8_t modifiers, bool down, bool autoUp = false);
+    bool sendMouse(int8_t x, int8_t y, uint8_t buttons, int8_t wheel = 0, int8_t pan = 0, bool autoRelease = true);
+    bool sendConsumer(uint16_t usage, bool down, bool autoUp = false);
+    bool sendAbs(uint16_t x, uint16_t y, bool down, uint8_t buttons = 1);
     bool sendTap(uint16_t x, uint16_t y);
     bool sendSwipe(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2);
     bool sendPinch(uint16_t cx, uint16_t cy, bool inward);
@@ -131,6 +139,7 @@ private:
         uint16_t contact1X;
         uint16_t contact1Y;
         uint8_t contactCount;
+        uint16_t consumer;
     } __attribute__((packed));
 
     bool ensureBleStarted();
@@ -156,6 +165,7 @@ private:
     class BLECharacteristic* bleInputMouse = nullptr;
     class BLECharacteristic* bleInputAbs = nullptr;
     class BLECharacteristic* bleInputDig = nullptr;
+    class BLECharacteristic* bleInputConsumer = nullptr;
     bool bleStarted = false;
     bool bleOn = false;
     bool bleSecurityReady = false;

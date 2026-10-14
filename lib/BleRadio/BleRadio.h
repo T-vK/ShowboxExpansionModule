@@ -42,8 +42,30 @@ public:
     void setAdvertiseAllowed(bool allowed);
     bool advertiseAllowed() const { return adsAllowed; }
     bool advertising() const { return advertised; }
+    uint16_t advInterval() const { return kAdvItvlMin; }
+    static constexpr uint16_t kAdvItvlMin = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.
+    static constexpr uint16_t kAdvItvlMax = 0x1400;  // 3200 ms. Still found in an 8s scan.
+    // 200 ms. AIRSTEP floors here and rejects slower offers. Treating 200 ms as
+    // "too fast" sent endless LL_CONNECTION_UPDATE and killed Wi-Fi.
+    static constexpr uint16_t kWifiSafeItvl = 0xA0;
+    static constexpr uint16_t kSlowItvlMax = 0x1E0;  // 480 ms when a peer will take it.
+    // 2.5 ms. AIRSTEP will not take a slower interval than 200 ms; leaving
+    // max_ce_len uncapped lets that event occupy the whole interval and ARP dies.
+    static constexpr uint16_t kMaxCeLen = 8;
+    // While a BLE central (AIRSTEP) is up, continuous GAP ads still hold PTA
+    // even at 2560 ms. Pulse connectable ads only when a pairing window is open.
+    static constexpr uint32_t kPulseOnMs = 2500;
+    static constexpr uint32_t kPulsePeriodMs = 8000;
+    static constexpr uint16_t kPulseAdvMin = 0x280;  // 400 ms during pairing with a pedal
+    static constexpr uint16_t kPulseAdvMax = 0x320;  // 500 ms
     void apply();
     void restartWhenIdle();
+    void stopNow();
+    void setPedalShare(bool share);
+    // Start advertising again after a GAP connect without rebuilding the
+    // payload. setAdvertisementData after AIRSTEP was BLE_INIT malloc-failed
+    // and left the controller holding the radio.
+    void resumeExisting();
     void service();
     void attach(BLEServer* server);
     void setIncomingHandler(void (*handler)(void* ctx, const char* address, uint16_t connId, bool connected), void* ctx);
@@ -52,6 +74,7 @@ public:
     // Cached ACL count. Refresh from the BLE task; HTTP must not walk GAP.
     void refreshLinkCount();
     int gapLinkCount() const;
+    uint16_t minConnInterval() const { return minItvl; }
     bool hasIncoming() const;
     bool disconnectIncoming(const char* address);
     void preferIncomingName(const char* address, const char* name);
@@ -68,14 +91,18 @@ private:
     const char* gapName = "BLE";
     bool midiOn = true;
     bool hidOn = false;
-    bool adsAllowed = true;
+    bool adsAllowed = false;
     bool advertised = false;
     bool advertisedMidi = false;
     bool advertisedHid = false;
     volatile bool restartAdvertising = false;
+    bool advIntervalApplied = false;
+    bool pedalShare = false;
     uint32_t lastAdvStartMs = 0;
     uint32_t lastIncomingMs = 0;
     volatile int liveLinks = 0;
+    volatile uint16_t minItvl = 0;
+    uint32_t ceCapped = 0;
     Incoming incoming[kMaxIncoming] = {};
     int incomingCount = 0;
     char nameSkip[8][18] = {};

@@ -23,7 +23,6 @@ private:
     enum class Job : uint8_t {
         None,
         Tap,
-        EndRecThenOverdub,
         Stop,
         Delete
     };
@@ -38,7 +37,6 @@ private:
     void queueJob(Job next);
     void runJob();
     void sendButton(looper_button_action action);
-    bool looperIsPlay() const;
 
     OneButton recordButton;
     OneButton stopButton;
@@ -49,9 +47,7 @@ private:
     uint8_t jobStep = 0;
     uint32_t jobAt = 0;
 
-    static constexpr uint32_t kTapGapMs = 80;
-    static constexpr uint32_t kOverdubMinMs = 250;
-    static constexpr uint32_t kOverdubMaxMs = 900;
+    static constexpr uint32_t kTapGapMs = 20;
 };
 
 #endif // TWO_BUTTON_LOOPER_H

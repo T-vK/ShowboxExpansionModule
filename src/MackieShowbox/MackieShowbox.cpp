@@ -2,14 +2,124 @@
 
 #include "MackieShowbox.h"
 #include "DebugLog.h"
+#include "System/Diag.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_heap_caps.h>
+#include <Preferences.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #ifdef SHOWBOX_DEBUG
 #include "string_mappings.h"
 #endif
+
+namespace {
+constexpr float kAnalogHoldNorm = 0.006f;
+constexpr float kAnalogFloor = -120.0f;
+constexpr float kAnalogCeil = 10.0f;
+constexpr float kAnalogSpan = 130.0f;
+constexpr float kAnalogStep = 0.5f;
+// Hardware pots stop short of the electrical ends (~−118 / +9.5). Grab those
+// as −∞ / +10 so the UI does not flicker −118↔−∞ or sit at 195% / +9.5 dB.
+constexpr float kAnalogFloorGrab = -115.0f;
+constexpr float kAnalogCeilGrab = 9.25f;
+constexpr float kAnalogFloorLeave = -114.0f;
+constexpr float kAnalogCeilLeave = 8.75f;
+constexpr uint32_t kAnalogNotifyMs = 40;
+
+bool analogEntity(entity_id id) {
+    return id == MAIN_HEADPHONE_GAIN || id == LOOPER_LEVEL;
+}
+
+float snapAnalog(float value) {
+    if (!std::isfinite(value)) {
+        return kAnalogFloor;
+    }
+    if (value <= kAnalogFloorGrab) {
+        return kAnalogFloor;
+    }
+    if (value >= kAnalogCeilGrab) {
+        return kAnalogCeil;
+    }
+    return roundf(value / kAnalogStep) * kAnalogStep;
+}
+
+float snapAnalogHeld(float value, float previous, bool heard) {
+    float snapped = snapAnalog(value);
+    if (!heard) {
+        return snapped;
+    }
+    if (previous <= kAnalogFloor + 0.01f && value < kAnalogFloorLeave) {
+        return kAnalogFloor;
+    }
+    if (previous >= kAnalogCeil - 0.01f && value > kAnalogCeilLeave) {
+        return kAnalogCeil;
+    }
+    return snapped;
+}
+
+const float kMainMasterGain[] = {
+    Showbox::MainMasterGain::POSITION_1, Showbox::MainMasterGain::POSITION_2, Showbox::MainMasterGain::POSITION_3,
+    Showbox::MainMasterGain::POSITION_4, Showbox::MainMasterGain::POSITION_5, Showbox::MainMasterGain::POSITION_6,
+    Showbox::MainMasterGain::POSITION_7, Showbox::MainMasterGain::POSITION_8, Showbox::MainMasterGain::POSITION_9,
+    Showbox::MainMasterGain::POSITION_10, Showbox::MainMasterGain::POSITION_11, Showbox::MainMasterGain::POSITION_12,
+    Showbox::MainMasterGain::POSITION_13, Showbox::MainMasterGain::POSITION_14, Showbox::MainMasterGain::POSITION_15,
+    Showbox::MainMasterGain::POSITION_16
+};
+const float kInputGain[] = {
+    Showbox::InputGain::POSITION_1, Showbox::InputGain::POSITION_2, Showbox::InputGain::POSITION_3,
+    Showbox::InputGain::POSITION_4, Showbox::InputGain::POSITION_5, Showbox::InputGain::POSITION_6,
+    Showbox::InputGain::POSITION_7, Showbox::InputGain::POSITION_8, Showbox::InputGain::POSITION_9,
+    Showbox::InputGain::POSITION_10, Showbox::InputGain::POSITION_11, Showbox::InputGain::POSITION_12,
+    Showbox::InputGain::POSITION_13, Showbox::InputGain::POSITION_14, Showbox::InputGain::POSITION_15,
+    Showbox::InputGain::POSITION_16
+};
+const float kInputVolume[] = {
+    Showbox::InputVolume::POSITION_1, Showbox::InputVolume::POSITION_2, Showbox::InputVolume::POSITION_3,
+    Showbox::InputVolume::POSITION_4, Showbox::InputVolume::POSITION_5, Showbox::InputVolume::POSITION_6,
+    Showbox::InputVolume::POSITION_7, Showbox::InputVolume::POSITION_8, Showbox::InputVolume::POSITION_9,
+    Showbox::InputVolume::POSITION_10, Showbox::InputVolume::POSITION_11, Showbox::InputVolume::POSITION_12,
+    Showbox::InputVolume::POSITION_13, Showbox::InputVolume::POSITION_14, Showbox::InputVolume::POSITION_15,
+    Showbox::InputVolume::POSITION_16
+};
+const float kUnitAmount[] = {
+    Showbox::InputEffectAmount::POSITION_1, Showbox::InputEffectAmount::POSITION_2, Showbox::InputEffectAmount::POSITION_3,
+    Showbox::InputEffectAmount::POSITION_4, Showbox::InputEffectAmount::POSITION_5, Showbox::InputEffectAmount::POSITION_6,
+    Showbox::InputEffectAmount::POSITION_7, Showbox::InputEffectAmount::POSITION_8, Showbox::InputEffectAmount::POSITION_9,
+    Showbox::InputEffectAmount::POSITION_10, Showbox::InputEffectAmount::POSITION_11, Showbox::InputEffectAmount::POSITION_12,
+    Showbox::InputEffectAmount::POSITION_13, Showbox::InputEffectAmount::POSITION_14, Showbox::InputEffectAmount::POSITION_15,
+    Showbox::InputEffectAmount::POSITION_16
+};
+const float kEqGain[] = {
+    Showbox::InputEqGain::POSITION_1, Showbox::InputEqGain::POSITION_2, Showbox::InputEqGain::POSITION_3,
+    Showbox::InputEqGain::POSITION_4, Showbox::InputEqGain::POSITION_5, Showbox::InputEqGain::POSITION_6,
+    Showbox::InputEqGain::POSITION_7, Showbox::InputEqGain::POSITION_8, Showbox::InputEqGain::POSITION_9,
+    Showbox::InputEqGain::POSITION_10, Showbox::InputEqGain::POSITION_11, Showbox::InputEqGain::POSITION_12,
+    Showbox::InputEqGain::POSITION_13, Showbox::InputEqGain::POSITION_14, Showbox::InputEqGain::POSITION_15
+};
+const float kExtSends[] = {
+    Showbox::InputExtFxSends::POSITION_0, Showbox::InputExtFxSends::POSITION_1, Showbox::InputExtFxSends::POSITION_2,
+    Showbox::InputExtFxSends::POSITION_3, Showbox::InputExtFxSends::POSITION_4, Showbox::InputExtFxSends::POSITION_5,
+    Showbox::InputExtFxSends::POSITION_6, Showbox::InputExtFxSends::POSITION_7, Showbox::InputExtFxSends::POSITION_8,
+    Showbox::InputExtFxSends::POSITION_9, Showbox::InputExtFxSends::POSITION_10, Showbox::InputExtFxSends::POSITION_11,
+    Showbox::InputExtFxSends::POSITION_12, Showbox::InputExtFxSends::POSITION_13, Showbox::InputExtFxSends::POSITION_14,
+    Showbox::InputExtFxSends::POSITION_15
+};
+
+float nearestStep(float value, const float* steps, size_t count) {
+    float best = steps[0];
+    float bestD = fabsf(value - steps[0]);
+    for (size_t i = 1; i < count; i++) {
+        float d = fabsf(value - steps[i]);
+        if (d < bestD) {
+            bestD = d;
+            best = steps[i];
+        }
+    }
+    return best;
+}
+}
 
 MackieShowbox::MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, uint8_t mixerTx)
     : interceptor() {
@@ -26,6 +136,7 @@ MackieShowbox::MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, ui
 }
 
 void MackieShowbox::begin() {
+    loadAnalogHold();
     uint8_t startSig[] = {0xBE, 0xEF};
     uint8_t endSig[] = {0xEF, 0xBE};
     interceptor.setPacketFinderStartEndSig(startSig, sizeof(startSig), endSig, sizeof(endSig));
@@ -69,9 +180,22 @@ void MackieShowbox::begin() {
                 }
             } else if (t == ENTITY && fromMixer) {
                 entMix = entMix + 1;
+                const bool analog = length >= 6 && analogEntity(static_cast<entity_id>(packet[5]));
                 rememberMixerEntity(packet, length);
+                if (analog) {
+                    // Analog pots stream unique floats. Storing here keeps analog-hold
+                    // restore correct; skipping parseQ stops the main-loop hex/WS flood
+                    // that wedged the chip when the phones/looper knobs moved.
+                    analogSkip = analogSkip + 1;
+                    return UARTInterceptor::PACKET_NOT_MODIFIED;
+                }
             } else if (t == DATA_REQUEST && fromMixer) {
                 reqMix = reqMix + 1;
+                debugLog("uart DATA_REQUEST from mixer len=%u %02X %02X %02X %02X %02X %02X",
+                    (unsigned)length,
+                    length > 0 ? packet[0] : 0, length > 1 ? packet[1] : 0,
+                    length > 2 ? packet[2] : 0, length > 3 ? packet[3] : 0,
+                    length > 4 ? packet[4] : 0, length > 5 ? packet[5] : 0);
             }
         }
         enqueueParse(packet, length, direction);
@@ -107,33 +231,74 @@ void MackieShowbox::begin() {
     }
 }
 
+void MackieShowbox::queueEmit(entity_id entityId, const uint8_t* packet, size_t length) {
+    if (packet == nullptr || entityId > FX_BYPASS || length < 12 || length > 16) {
+        return;
+    }
+    memcpy(emitPkt[entityId], packet, length);
+    emitLen[entityId] = static_cast<uint8_t>(length);
+    emitPending[entityId] = 1;
+}
+
+void MackieShowbox::flushEmits() {
+    uint32_t now = millis();
+    int sent = 0;
+    for (uint8_t i = 0; i <= FX_BYPASS && sent < 2; i++) {
+        if (emitPending[i] == 0) {
+            continue;
+        }
+        const uint8_t n = emitLen[i];
+        if (n < 12 || n > 16) {
+            emitPending[i] = 0;
+            continue;
+        }
+        const bool slow = n >= 15;
+        if (slow && lastEmitMs[i] != 0 && (int32_t)(now - lastEmitMs[i]) < 40) {
+            continue;
+        }
+        uint8_t packet[16];
+        memcpy(packet, emitPkt[i], n);
+        emitPending[i] = 0;
+        lastEmitMs[i] = now;
+        interceptor.sendPacket(packet, n, TO_BASE);
+        interceptor.sendPacket(packet, n, TO_MIXER);
+        sent++;
+    }
+}
+
 void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
+    entityValues[entityId].boolValue = value;
+    entityValues[entityId].heard = true;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
-        interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
-        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+        queueEmit(entityId, packet, sizeof(packet));
     }
-    entityValues[entityId].boolValue = value;
 }
 void MackieShowbox::setEntityValue(entity_id entityId, uint8_t value, bool emit) {
+    entityValues[entityId].uint8Value = value;
+    entityValues[entityId].heard = true;
     if (emit) {
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
-        interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
-        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+        queueEmit(entityId, packet, sizeof(packet));
     }
-    entityValues[entityId].uint8Value = value;
 }
 void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
+    value = snapFloat(entityId, value);
+    entityValues[entityId].floatValue = value;
+    entityValues[entityId].heard = true;
     if (emit) {
+        if (entityId == MAIN_HEADPHONE_GAIN || entityId == LOOPER_LEVEL) {
+            mixerTouched[entityId] = true;
+            AnalogRest& rest = entityId == MAIN_HEADPHONE_GAIN ? phonesRest : loopRest;
+            rest.have = false;
+            rest.dir = 0;
+        }
         uint8_t floatBytes[4];
         memcpy(floatBytes, &value, sizeof(float));
-
-        uint8_t packet[15] = { 0xBE, 0xEF, 0x08, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, floatBytes[0], floatBytes[1], floatBytes[2], floatBytes[3], 0xEF, 0xBE };
-
-        interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
-        interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+        uint8_t packet[15] = { 0xBE, 0xEF, 0x08, 0x03, 0x00, entityId, 0x00, 0x00, 0x00,
+            floatBytes[0], floatBytes[1], floatBytes[2], floatBytes[3], 0xEF, 0xBE };
+        queueEmit(entityId, packet, sizeof(packet));
     }
-    entityValues[entityId].floatValue = value;
 }
 bool MackieShowbox::getBoolEntityValue(entity_id entityId) {
     return entityValues[entityId].boolValue;
@@ -145,9 +310,96 @@ float MackieShowbox::getFloatEntityValue(entity_id entityId) {
     return entityValues[entityId].floatValue;
 }
 
+bool MackieShowbox::hasEntityValue(entity_id entityId) const {
+    auto it = entityValues.find(entityId);
+    return it != entityValues.end() && it->second.heard;
+}
+
+void MackieShowbox::requestMixerDump() {
+    if (!uartStarted) {
+        return;
+    }
+    if (dumpGen == 0) {
+        // AUTOGAIN/SD use BE EF 00 <type> <arg> EF BE. The previous dump
+        // request used a different layout and only went to the mixer, so
+        // ALL_ENTITIES never arrived after the ESP32 booted mid-session.
+        uint8_t req[8];
+        size_t n = 0;
+        const uint8_t phase = static_cast<uint8_t>(dumpTries % 3);
+        if (phase == 1) {
+            req[0] = 0xBE; req[1] = 0xEF; req[2] = 0x00;
+            req[3] = DATA_REQUEST; req[4] = ALL_ENTITIES;
+            req[5] = 0xEF; req[6] = 0xBE;
+            n = 7;
+        } else if (phase == 2) {
+            req[0] = 0xBE; req[1] = 0xEF; req[2] = 0x00;
+            req[3] = DATA_REQUEST; req[4] = 0x00;
+            req[5] = 0xEF; req[6] = 0xBE;
+            n = 7;
+        } else {
+            req[0] = 0xBE; req[1] = 0xEF; req[2] = 0x01;
+            req[3] = DATA_REQUEST; req[4] = 0x00; req[5] = ALL_ENTITIES;
+            req[6] = 0xEF; req[7] = 0xBE;
+            n = 8;
+        }
+        interceptor.sendPacket(req, n, TO_MIXER);
+    }
+    if (!batteryHeard) {
+        uint8_t batt[] = { 0xBE, 0xEF, 0x00, BATTERY_LEVEL, 0x00, 0xEF, 0xBE };
+        interceptor.sendPacket(batt, sizeof(batt), TO_MIXER);
+        interceptor.sendPacket(batt, sizeof(batt), TO_BASE);
+    }
+}
+
 void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
     uint8_t packet[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, action, 0xEF, 0xBE };
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+}
+
+void MackieShowbox::tapLooper(uint8_t times) {
+    if (times < 1) {
+        times = 1;
+    }
+    if (times > 2) {
+        times = 2;
+    }
+    uint8_t buf[32];
+    size_t n = 0;
+    for (uint8_t i = 0; i < times; i++) {
+        uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
+        uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
+        memcpy(buf + n, down, 8);
+        n += 8;
+        memcpy(buf + n, up, 8);
+        n += 8;
+    }
+    interceptor.sendPacket(buf, n, TO_BASE);
+}
+
+void MackieShowbox::noteLooperOutgoing() {
+    looperOutgoing = true;
+}
+
+bool MackieShowbox::takeLooperOutgoing() {
+    bool sent = looperOutgoing;
+    looperOutgoing = false;
+    return sent;
+}
+
+void MackieShowbox::injectPacket(const uint8_t* data, size_t length, const char* dir) {
+    if (data == nullptr || length < 2 || length > 280) {
+        return;
+    }
+    uint8_t packet[280];
+    memcpy(packet, data, length);
+    bool toBase = dir == nullptr || dir[0] == '\0' || strcmp(dir, "both") == 0 || strcmp(dir, "base") == 0;
+    bool toMixer = dir == nullptr || dir[0] == '\0' || strcmp(dir, "both") == 0 || strcmp(dir, "mixer") == 0;
+    if (toBase) {
+        interceptor.sendPacket(packet, length, TO_BASE);
+    }
+    if (toMixer) {
+        interceptor.sendPacket(packet, length, TO_MIXER);
+    }
 }
 
 /**
@@ -160,18 +412,121 @@ void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
  */
 
 void MackieShowbox::toggleSdCardRecord() {
+    // The SD slot lives in the base unit. A copy to the mixer does nothing,
+    // and a copy to the base is what actually flips its record state.
     uint8_t packet[] = { 0xBE, 0xEF, 0x00, SD_CARD_EVENT, sd_card_action::TOGGLE_RECORD, 0xEF, 0xBE };
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+    // The base never confirms instantly; flip optimistically and let its
+    // 2/3 announcements correct us.
+    if (sdCardHeard && sdCardState != sd_card_state::NOT_DETECTED) {
+        sdCardState = sdCardState == sd_card_state::RECORDING
+            ? sd_card_state::READY
+            : sd_card_state::RECORDING;
+    }
+}
+
+void MackieShowbox::sendAutogain(uint8_t chan) {
+    if (chan > 3) {
+        chan = 0;
+    }
+    setSelectedChan(chan);
+    uint8_t packet[] = { 0xBE, 0xEF, 0x00, AUTOGAIN, chan, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+    interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
 }
 
 void MackieShowbox::snapshotAction(snapshot_action action, snapshot_slot slot) {
+    if (snapshotBusy()) {
+        // The mixer needs seconds per snapshot op; saving again mid-write
+        // loses the take. Queue the latest request, send it when idle.
+        snapshotQueuedAction = static_cast<uint8_t>(action);
+        snapshotQueuedSlot = static_cast<uint8_t>(slot);
+        snapshotQueued = true;
+        return;
+    }
+    sendSnapshot(action, slot);
+}
+
+void MackieShowbox::sendSnapshot(snapshot_action action, snapshot_slot slot) {
     uint8_t packet[] = { 0xBE, 0xEF, 0x01, SNAPSHOT, static_cast<uint8_t>(action), static_cast<uint8_t>(slot), 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+    armSnapshotDone(static_cast<uint8_t>(action), static_cast<uint8_t>(slot));
+    // Measured on the wire: a save followed by another command within ~2s
+    // captured the wrong state. Saves take longer than recalls.
+    snapshotBusyUntil = millis()
+        + (action == snapshot_action::SAVE ? 5000u : 3500u);
+}
+
+bool MackieShowbox::snapshotBusy() const {
+    return (int32_t)(millis() - snapshotBusyUntil) < 0;
+}
+
+void MackieShowbox::snapshotMenuBack() {
+    uint8_t packet[] = { 0xBE, 0xEF, 0x04, SNAPSHOT_MENU, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
+    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+}
+
+void MackieShowbox::armSnapshotDone(uint8_t action, uint8_t slot) {
+    snapshotPendingAction = action;
+    snapshotPendingSlot = slot;
+}
+
+bool MackieShowbox::takeSnapshotDone(uint8_t& action, uint8_t& slot) {
+    if (snapshotQueued && !snapshotBusy()) {
+        snapshotQueued = false;
+        sendSnapshot(static_cast<snapshot_action>(snapshotQueuedAction),
+            static_cast<snapshot_slot>(snapshotQueuedSlot));
+        return false;
+    }
+    if (snapshotBusyUntil == 0 || snapshotBusy()) {
+        return false;
+    }
+    action = snapshotPendingAction;
+    slot = snapshotPendingSlot;
+    snapshotBusyUntil = 0;
+    return true;
+}
+
+void MackieShowbox::sendTunerPacket(uint8_t action, uint8_t chan) {
+    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, TUNER_TOGGLE, action, chan, 0xEF, 0xBE };
+    interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
 void MackieShowbox::tunerAction(tuner_action action, tuner_chan chan) {
-    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, TUNER_TOGGLE, action, chan, 0xEF, 0xBE };
-    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+    uint8_t target = (chan <= tuner_chan::FOUR) ? static_cast<uint8_t>(chan) : tunerChannel;
+    if (action == tuner_action::TURN_ON) {
+        if (tunerOn && tunerChannel != target) {
+            sendTunerPacket(tuner_action::TURN_OFF, tunerChannel);
+        }
+        tunerOn = true;
+        tunerChannel = target;
+        tunerHeard = false;
+        lastTunerPitchMs = 0;
+        tunerMidi = 0;
+        tunerNoteId = 0;
+        tunerCents = 0.0f;
+        tunerHz = 0.0f;
+        ignoreTunerOffUntil = millis() + 300;
+        sendTunerPacket(tuner_action::TURN_ON, target);
+        tunerRetryAt = millis() + 80;
+        tunerRetryChan = target;
+        return;
+    }
+    uint8_t offChan = tunerOn ? tunerChannel : target;
+    tunerOn = false;
+    tunerHeard = false;
+    lastTunerPitchMs = 0;
+    tunerMidi = 0;
+    tunerNoteId = 0;
+    tunerCents = 0.0f;
+    tunerHz = 0.0f;
+    sendTunerPacket(tuner_action::TURN_OFF, offChan);
+    if (target != offChan) {
+        sendTunerPacket(tuner_action::TURN_OFF, target);
+    }
 }
 
 float MackieShowbox::getBatteryLevel() {
@@ -180,6 +535,88 @@ float MackieShowbox::getBatteryLevel() {
 
 sd_card_state MackieShowbox::getSdCardState() {
     return sdCardState;
+}
+
+uint8_t MackieShowbox::getTunerState() {
+    return tunerOn ? 1 : 0;
+}
+
+uint8_t MackieShowbox::getTunerChan() {
+    return tunerChannel;
+}
+
+bool MackieShowbox::getTunerHeard() const {
+    if (!tunerOn || !tunerHeard || lastTunerPitchMs == 0) {
+        return false;
+    }
+    return (millis() - lastTunerPitchMs) < 2500;
+}
+
+uint8_t MackieShowbox::getTunerMidi() const {
+    return tunerMidi;
+}
+
+uint8_t MackieShowbox::getTunerNoteId() const {
+    return tunerNoteId;
+}
+
+float MackieShowbox::getTunerCents() const {
+    return tunerCents;
+}
+
+float MackieShowbox::getTunerHz() const {
+    return tunerHz;
+}
+
+static uint8_t tunerPitchClassMidi(uint8_t noteId) {
+    static const uint8_t kMidi[] = {
+        0, 69, 70, 71, 60, 61, 62, 63, 64, 65, 66, 67, 68
+    };
+    return noteId <= 12 ? kMidi[noteId] : 0;
+}
+
+void MackieShowbox::applyTunerFeedback(uint8_t chan, uint8_t noteId, float cents) {
+    if (!tunerOn) {
+        return;
+    }
+    if (chan <= 3 && chan != tunerChannel) {
+        return;
+    }
+    if (noteId == 0 || noteId > 12) {
+        tunerHeard = false;
+        tunerNoteId = 0;
+        tunerMidi = 0;
+        tunerCents = 0.0f;
+        tunerHz = 0.0f;
+        lastTunerPitchMs = 0;
+        return;
+    }
+    if (!std::isfinite(cents)) {
+        return;
+    }
+    if (cents > 50.0f) {
+        cents = 50.0f;
+    }
+    if (cents < -50.0f) {
+        cents = -50.0f;
+    }
+    tunerNoteId = noteId;
+    tunerMidi = tunerPitchClassMidi(noteId);
+    tunerCents = cents;
+    tunerHz = 0.0f;
+    tunerHeard = true;
+    lastTunerPitchMs = millis();
+}
+
+void MackieShowbox::parseTunerFeedback(const uint8_t* packet, size_t length) {
+    if (packet == nullptr || length < 13) {
+        return;
+    }
+    uint8_t chan = packet[5];
+    uint8_t noteId = packet[6];
+    float cents = 0.0f;
+    memcpy(&cents, &packet[9], sizeof(float));
+    applyTunerFeedback(chan, noteId, cents);
 }
 
 uint32_t MackieShowbox::linkAgeMs() const {
@@ -328,34 +765,72 @@ void MackieShowbox::waitQuiet(uint32_t maxMs) const {
     }
 }
 
-void MackieShowbox::rememberMixerEntity(const uint8_t* packet, size_t length) {
-    if (packet == nullptr || length < 10) {
+void MackieShowbox::wireUnplug(uint32_t ms) {
+    if (!uartStarted) {
         return;
+    }
+    diagEventForce("uart", "wire unplug %u ms (baseAge=%u hbAge=%u)",
+        (unsigned)ms, (unsigned)baseAgeMs(), (unsigned)heartbeatAgeMs());
+    debugLog("uart wire unplug %ums baseAge=%u", (unsigned)ms, (unsigned)baseAgeMs());
+    interceptor.wireUnplug(ms);
+}
+
+bool MackieShowbox::rememberMixerEntity(const uint8_t* packet, size_t length) {
+    if (packet == nullptr || length < 10) {
+        return false;
     }
     uint8_t id = packet[5];
     if (id > FX_BYPASS) {
-        return;
+        return false;
     }
     if (!mixerOwnsEntity(static_cast<entity_id>(id))) {
-        return;
+        return false;
     }
     if (ignoreTouchUntil != 0 && (int32_t)(millis() - ignoreTouchUntil) < 0) {
-        return;
+        return false;
     }
     auto it = entity_type_mapping.find(static_cast<entity_id>(id));
     if (it == entity_type_mapping.end()) {
-        return;
+        return false;
     }
-    mixerTouched[id] = true;
     if (it->second == BOOL) {
+        mixerTouched[id] = true;
         entityValues[static_cast<entity_id>(id)].boolValue = packet[9] != 0;
-    } else if (it->second == UINT8) {
+        entityValues[static_cast<entity_id>(id)].heard = true;
+        return true;
+    }
+    if (it->second == UINT8) {
+        mixerTouched[id] = true;
         entityValues[static_cast<entity_id>(id)].uint8Value = packet[9];
-    } else if (length >= 13) {
+        entityValues[static_cast<entity_id>(id)].heard = true;
+        return true;
+    }
+    if (length >= 13) {
         float value;
         memcpy(&value, &packet[9], sizeof(float));
-        entityValues[static_cast<entity_id>(id)].floatValue = value;
+        entity_id entityId = static_cast<entity_id>(id);
+        const float snapped = snapFloat(entityId, value);
+        if (ignoreAnalogJitter(entityId, snapped)) {
+            return false;
+        }
+        mixerTouched[id] = true;
+        const bool same = entityValues[entityId].heard
+            && entityValues[entityId].floatValue == snapped;
+        entityValues[entityId].floatValue = snapped;
+        entityValues[entityId].heard = true;
+        if (analogEntity(entityId)) {
+            if (same) {
+                return false;
+            }
+            if (entityId == MAIN_HEADPHONE_GAIN) {
+                analogDirtyPhones = true;
+            } else {
+                analogDirtyLoop = true;
+            }
+        }
+        return !same;
     }
+    return false;
 }
 
 void MackieShowbox::restoreMixerEntities() {
@@ -416,11 +891,14 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         if (length < 9 + valueSize) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
         }
+        bool mixerAccepted = false;
         if (fromMixer) {
-            rememberMixerEntity(raw_packet, length);
+            mixerAccepted = rememberMixerEntity(raw_packet, length);
         }
         const bool baseOwned = !mixerOwnsEntity(entityId);
-        if (baseOwned && fromMixer) {
+        if (entityId == LOOPER_STATE && looperHoldActive()) {
+            // Keep the predicted looper state until the hardware echo catches up.
+        } else if (baseOwned && fromMixer) {
             // Mixer display/status echoes are not DSP truth (especially LOOPER_STATE).
         } else if (entityType == BOOL) {
             bool value = raw_packet[9];
@@ -437,18 +915,38 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
                 entityListener(entityId, heard);
             }
         } else if (entityType == FLOAT) {
-            float value;
-            memcpy(&value, &raw_packet[9], sizeof(float));
-            setEntityValue(entityId, value, false);
-            if (entityListener != nullptr) {
-                char heard[24];
-                snprintf(heard, sizeof(heard), "%.4g", value);
-                entityListener(entityId, heard);
+            if (fromMixer && analogEntity(entityId)) {
+                // Analog ENTITY from the mixer is stored on the UART path and
+                // coalesced in tick(). Re-running jitter here used to reject
+                // the same packet and skip the UI notify.
+            } else {
+                float value;
+                memcpy(&value, &raw_packet[9], sizeof(float));
+                if (fromMixer && analogHoldOn(entityId) && !mixerAccepted) {
+                    // rememberMixerEntity left the store alone (knob jitter).
+                } else {
+                    float stored;
+                    if (fromMixer && mixerAccepted) {
+                        stored = getFloatEntityValue(entityId);
+                    } else {
+                        stored = snapFloat(entityId, value);
+                        setEntityValue(entityId, stored, false);
+                    }
+                    if (entityListener != nullptr) {
+                        char heard[24];
+                        snprintf(heard, sizeof(heard), "%.6g", (double)stored);
+                        entityListener(entityId, heard);
+                    }
+                }
             }
         }
     } else if (packetType == ACK) {
         if (length < 6) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
+        // Track which side confirms SD packets: BE EF 01 01 00 1E EF BE.
+        if (raw_packet[5] == SD_CARD_EVENT && Debug != nullptr) {
+            debugLog("uart SD-ACK[%s]", direction == TO_MIXER ? "to-mixer" : "to-base");
         }
     } else if (packetType == BATTERY_LEVEL) {
         // Value form is BE EF 08 16 .. <float at offset 9> EF BE. The short form has no float.
@@ -459,11 +957,73 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             batteryHeard = true;
         }
     } else if (packetType == SD_CARD_EVENT) {
-        // BE EF 00 1E <state> EF BE — the state byte is at index 4, not the end signature.
+        // Two shapes share type 0x1E (see constants.h for the full dialog):
+        //   BE EF 00 1E <code>     EF BE — 7-byte: mixer announce (1 = ready)
+        //                                 or the record toggle echo (2 = command)
+        //   BE EF 01 1E 00 <state> EF BE — 8-byte: base record state
+        // Reading index 4 of the 8-byte shape as the state turned
+        // "card available" into "no card" — the old NOT_DETECTED bug.
         if (length < 5) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
         }
-        sdCardState = static_cast<sd_card_state>(raw_packet[4]);
+        uint8_t code = raw_packet[4];
+        if (length >= 8 && code == 0x00) {
+            uint8_t state = raw_packet[5];
+            sdCardHeard = true;
+            if (state == 3) {
+                sdCardPresent = true;
+                sdCardState = sd_card_state::RECORDING;
+            } else if (state == 2 || state == 1) {
+                sdCardPresent = true;
+                if (sdCardState != sd_card_state::RECORDING) {
+                    sdCardState = sd_card_state::READY;
+                }
+            }
+            // state 0 is the base's boot/idle announce; keep what we know.
+        } else if (code == sd_card_state::RECORDING && length <= 7) {
+            // 7-byte 2 is the toggle command echo, not a state report.
+        } else if (code == sd_card_state::READY && length <= 7) {
+            sdCardHeard = true;
+            if (sdCardState == sd_card_state::NOT_DETECTED) {
+                sdCardState = sd_card_state::READY;
+            }
+        }
+        if (Debug != nullptr) {
+            debugLog("uart SD[%s] len=%u %02X %02X %02X %02X %02X %02X %02X %02X -> st=%u",
+                direction == TO_MIXER ? "to-mixer" : "to-base",
+                (unsigned)length,
+                length > 0 ? raw_packet[0] : 0, length > 1 ? raw_packet[1] : 0,
+                length > 2 ? raw_packet[2] : 0, length > 3 ? raw_packet[3] : 0,
+                length > 4 ? raw_packet[4] : 0, length > 5 ? raw_packet[5] : 0,
+                length > 6 ? raw_packet[6] : 0, length > 7 ? raw_packet[7] : 0,
+                (unsigned)sdCardState);
+        }
+    } else if (packetType == TUNER_TOGGLE) {
+        if (length < 6) {
+            return UARTInterceptor::PACKET_NOT_MODIFIED;
+        }
+        uint8_t action = raw_packet[4];
+        uint8_t chan = raw_packet[5];
+        if (action == tuner_action::TURN_ON) {
+            if (chan <= 3) {
+                if (tunerOn && chan != tunerChannel) {
+                    // Stale ON from the channel we just left.
+                } else {
+                    tunerChannel = chan;
+                    tunerOn = true;
+                }
+            } else {
+                tunerOn = true;
+            }
+        } else if ((int32_t)(millis() - ignoreTunerOffUntil) >= 0) {
+            if (chan > 3 || chan == tunerChannel || !tunerOn) {
+                tunerOn = false;
+                tunerHeard = false;
+                lastTunerPitchMs = 0;
+            }
+        }
+    } else if (packetType == TUNER_FEEDBACK) {
+        parseTunerFeedback(raw_packet, length);
     } else if (packetType == ALL_ENTITIES) {
         if (length < 9) {
             return UARTInterceptor::PACKET_NOT_MODIFIED;
@@ -488,25 +1048,33 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             }
             if (dataType == BOOL) {
                 bool value = bodyStart[offset];
-                if (entityId == LOOPER_STATE || !mixerTouched[entityId]) {
+                if (!(entityId == LOOPER_STATE && looperHoldActive()) && (entityId == LOOPER_STATE || !mixerTouched[entityId])) {
                     setEntityValue(entityId, value, false);
                 }
                 offset += 1;
             } else if (dataType == UINT8) {
                 uint8_t value = bodyStart[offset];
-                if (entityId == LOOPER_STATE || !mixerTouched[entityId]) {
+                if (!(entityId == LOOPER_STATE && looperHoldActive()) && (entityId == LOOPER_STATE || !mixerTouched[entityId])) {
                     setEntityValue(entityId, value, false);
                 }
                 offset += 1;
             } else if (dataType == FLOAT) {
                 float value;
                 memcpy(&value, &bodyStart[offset], sizeof(float));
-                if (entityId == LOOPER_STATE || !mixerTouched[entityId]) {
+                if (!(entityId == LOOPER_STATE && looperHoldActive()) && (entityId == LOOPER_STATE || !mixerTouched[entityId])) {
                     setEntityValue(entityId, value, false);
                 }
                 offset += 4;
             }
         }
+        if (packetType == ALL_ENTITIES) {
+            // A mixer dump during a recall means the restore landed; a save
+            // still needs its flash write, so only shorten a recall wait.
+            if (snapshotBusyUntil != 0 && snapshotPendingAction != static_cast<uint8_t>(snapshot_action::SAVE)) {
+                snapshotBusyUntil = millis() + 500;
+            }
+        }
+        dumpGen = dumpGen + 1;
         if (!fromMixer) {
             restoreAtMs = millis() + 120;
         }
@@ -524,6 +1092,7 @@ void MackieShowbox::enqueueParse(uint8_t* packet, size_t length, UARTInterceptor
     portENTER_CRITICAL(&parseMux);
     uint8_t next = static_cast<uint8_t>((parseQHead + 1) % kParseQ);
     if (next == parseQTail) {
+        parseDrop = parseDrop + 1;
         portEXIT_CRITICAL(&parseMux);
         return;
     }
@@ -537,6 +1106,7 @@ void MackieShowbox::enqueueParse(uint8_t* packet, size_t length, UARTInterceptor
 }
 
 void MackieShowbox::drainParse() {
+    int n = 0;
     for (;;) {
         ParseItem item;
         portENTER_CRITICAL(&parseMux);
@@ -549,9 +1119,46 @@ void MackieShowbox::drainParse() {
         portEXIT_CRITICAL(&parseMux);
         UARTInterceptor::Direction direction = static_cast<UARTInterceptor::Direction>(item.direction);
         UARTInterceptor::PacketHandlerResult result = handlePacket(item.data, item.length, direction);
+        const bool analogEntityPkt = item.length >= 6
+            && item.data[3] == ENTITY
+            && analogEntity(static_cast<entity_id>(item.data[5]));
+        if (packetListener != nullptr && !analogEntityPkt) {
+            packetListener(item.data, item.length, direction == TO_BASE ? "mixer" : "base");
+        }
         if (postHandlePacketCallback != nullptr) {
             postHandlePacketCallback(item.data, item.length, direction, result);
         }
+        if (++n >= 12) {
+            return;
+        }
+    }
+}
+
+void MackieShowbox::flushAnalogNotifies() {
+    if (!analogDirtyPhones && !analogDirtyLoop) {
+        return;
+    }
+    uint32_t now = millis();
+    if ((int32_t)(now - lastAnalogNotifyMs) < (int32_t)kAnalogNotifyMs) {
+        return;
+    }
+    lastAnalogNotifyMs = now;
+    if (entityListener == nullptr) {
+        analogDirtyPhones = false;
+        analogDirtyLoop = false;
+        return;
+    }
+    if (analogDirtyPhones) {
+        analogDirtyPhones = false;
+        char heard[24];
+        snprintf(heard, sizeof(heard), "%.6g", (double)getFloatEntityValue(MAIN_HEADPHONE_GAIN));
+        entityListener(MAIN_HEADPHONE_GAIN, heard);
+    }
+    if (analogDirtyLoop) {
+        analogDirtyLoop = false;
+        char heard[24];
+        snprintf(heard, sizeof(heard), "%.6g", (double)getFloatEntityValue(LOOPER_LEVEL));
+        entityListener(LOOPER_LEVEL, heard);
     }
 }
 
@@ -563,6 +1170,14 @@ void MackieShowbox::uartTask(void* arg) {
         // burst used to hold core 1 long enough for the 128-byte UART FIFO
         // to overflow; the Showbox base then went silent.
         self->interceptor.tick();
+        {
+            static uint32_t lastEmitFlushMs = 0;
+            uint32_t now = millis();
+            if ((int32_t)(now - lastEmitFlushMs) >= 15) {
+                lastEmitFlushMs = now;
+                self->flushEmits();
+            }
+        }
         // Cut-through already moved live mixer↔base bytes. Yield often so
         // HID notifies on this core still run; never spin without a delay.
         if (self->interceptor.wirePending()) {
@@ -580,13 +1195,50 @@ void MackieShowbox::uartTask(void* arg) {
 }
 
 void MackieShowbox::tick() {
+    if (analogHoldDirty) {
+        saveAnalogHold();
+    }
     if (!uartTaskRunning) {
         interceptor.tick();
+        flushEmits();
     }
     drainParse();
+    flushAnalogNotifies();
+    if (tunerRetryAt != 0 && (int32_t)(millis() - tunerRetryAt) >= 0) {
+        tunerRetryAt = 0;
+        if (tunerOn && tunerChannel == tunerRetryChan) {
+            sendTunerPacket(tuner_action::TURN_ON, tunerRetryChan);
+        }
+    }
     if (restoreAtMs != 0 && (int32_t)(millis() - restoreAtMs) >= 0) {
         restoreAtMs = 0;
         restoreMixerEntities();
+    }
+    const bool live = parseEnabled && uartStarted && linkOk(1500);
+    if (dumpLinkLive && !live) {
+        dumpLinkLost = true;
+    }
+    if (live && dumpLinkLost) {
+        dumpTries = 0;
+        lastDumpReqMs = 0;
+        dumpLinkLost = false;
+        debugLog("uart dump retry after link restore initM=%u initB=%u dumpSeq=%u",
+            (unsigned)initMix, (unsigned)initBase, (unsigned)dumpGen);
+    }
+    dumpLinkLive = live;
+    if (live && millis() >= 2000 && (dumpGen == 0 || !batteryHeard)) {
+        uint32_t nowDump = millis();
+        const int32_t interval = dumpTries < 8 ? 2500 : 8000;
+        if (lastDumpReqMs == 0 || (int32_t)(nowDump - lastDumpReqMs) >= interval) {
+            lastDumpReqMs = nowDump;
+            if (dumpTries < 250) {
+                dumpTries = static_cast<uint8_t>(dumpTries + 1);
+            }
+            requestMixerDump();
+            debugLog("uart request mixer dump try=%u initM=%u initB=%u dumpSeq=%u batt=%u",
+                (unsigned)dumpTries, (unsigned)initMix, (unsigned)initBase,
+                (unsigned)dumpGen, batteryHeard ? 1u : 0u);
+        }
     }
     uint32_t dropB = interceptor.droppedFrom1();
     uint32_t dropM = interceptor.droppedFrom2();
@@ -632,6 +1284,47 @@ void MackieShowbox::tick() {
     }
     static uint32_t lastLog = 0;
     uint32_t now = millis();
+    // Base-wedge recovery ladder. A reboot mid-transaction can wedge the
+    // base's UART state machine; packets never fixed it, but the user proved
+    // a physical unplug of the base-side wires does. Emulate that: after a
+    // silence threshold, nudge with packets, then tri-state the base-side
+    // pins for 3 s and let the normal re-handshake run.
+    if (uartStarted && interceptor.rxFrom1() > 0) {
+        const bool baseSilent = baseAgeMs() > 8000;
+        if (wedgeStage == 0) {
+            if (baseSilent) {
+                wedgeSinceMs = now;
+                wedgeStage = 1;
+                diagEvent("uart", "wedge suspected, base silent %u ms", (unsigned)baseAgeMs());
+            }
+        } else if (baseAgeMs() < 2000) {
+            wedgeStage = 0;
+            diagEvent("uart", "wedge cleared after stage %u", (unsigned)wedgeStage);
+        } else {
+            const uint32_t held = now - wedgeSinceMs;
+            if (wedgeStage == 1 && held >= 6000) {
+                wedgeStage = 2;
+                uint8_t hb[] = { 0xBE, 0xEF, 0x00, HEARTBEAT, 0x00, 0xEF, 0xBE };
+                interceptor.sendPacket(hb, sizeof(hb), TO_BASE);
+                uint8_t req[] = { 0xBE, 0xEF, 0x00, DATA_REQUEST, ALL_ENTITIES, 0xEF, 0xBE };
+                interceptor.sendPacket(req, sizeof(req), TO_BASE);
+                diagEvent("uart", "wedge nudge packets sent (base silent %u ms)", (unsigned)held);
+            }
+            if (wedgeStage == 2 && held >= 14000
+                && (wedgeLastAtMs == 0 || (int32_t)(now - wedgeLastAtMs) > 25000)) {
+                wedgeStage = 3;
+                wedgeLastAtMs = now;
+                wireUnplug(3000);
+            }
+            if (wedgeStage == 3 && !interceptor.wireUnplugActive()
+                && baseAgeMs() > 4000
+                && (int32_t)(now - wedgeLastAtMs) > 20000) {
+                // Unplug done and base still silent: re-arm the ladder.
+                wedgeStage = 1;
+                wedgeSinceMs = now;
+            }
+        }
+    }
     if (lastLog == 0 || (int32_t)(now - lastLog) >= 5000) {
         lastLog = now;
         debugLog("uart rxB=%u rxM=%u cutB=%u cutM=%u fifo1=%u fifo2=%u int1=%08x int2=%08x raw1=%08x raw2=%08x ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u dropB=%u dropM=%u ovfB=%u ovfM=%u frmB=%u frmM=%u initM=%u initB=%u hbM=%u hbB=%u heap=%u largest=%u",
@@ -961,6 +1654,118 @@ void MackieShowbox::setLooperLevel(float level) {
 
 void MackieShowbox::setLooperState(looper_state state) {
     entityValues[LOOPER_STATE].uint8Value = static_cast<uint8_t>(state);
+    looperHoldUntil = millis() + 4000;
+}
+
+bool MackieShowbox::looperHoldActive() const {
+    return looperHoldUntil != 0 && (int32_t)(millis() - looperHoldUntil) < 0;
+}
+
+float MackieShowbox::snapFloat(entity_id entityId, float value) const {
+    if (entityId == MAIN_MASTER_GAIN) {
+        return nearestStep(value, kMainMasterGain, sizeof(kMainMasterGain) / sizeof(kMainMasterGain[0]));
+    }
+    if (analogEntity(entityId)) {
+        // Hardware analog: −120..+10. 0.5 dB steps keep the pot feel without
+        // unique-float floods that overflow parseQ and stall the main loop.
+        auto it = entityValues.find(entityId);
+        const bool heard = it != entityValues.end() && it->second.heard;
+        const float previous = heard ? it->second.floatValue : value;
+        return snapAnalogHeld(value, previous, heard);
+    }
+    if (entityId == STEREO_INPUT1_VOLUME) {
+        return nearestStep(value, kInputVolume, sizeof(kInputVolume) / sizeof(kInputVolume[0]));
+    }
+    if (entityId == STEREO_INPUT1_EQ_LOW_GAIN || entityId == STEREO_INPUT1_EQ_MID_GAIN
+        || entityId == STEREO_INPUT1_EQ_HIGH_GAIN) {
+        return nearestStep(value, kEqGain, sizeof(kEqGain) / sizeof(kEqGain[0]));
+    }
+    if (entityId >= INPUT1_GAIN && entityId <= INPUT4_EXT_FX_SENDS) {
+        uint8_t off = static_cast<uint8_t>((entityId - INPUT1_GAIN) % 17);
+        if (off == 0) {
+            return nearestStep(value, kInputGain, sizeof(kInputGain) / sizeof(kInputGain[0]));
+        }
+        if (off == 1) {
+            return nearestStep(value, kInputVolume, sizeof(kInputVolume) / sizeof(kInputVolume[0]));
+        }
+        if (off == 6 || off == 8) {
+            return nearestStep(value, kUnitAmount, sizeof(kUnitAmount) / sizeof(kUnitAmount[0]));
+        }
+        if (off == 10 || off == 11 || off == 12) {
+            return nearestStep(value, kEqGain, sizeof(kEqGain) / sizeof(kEqGain[0]));
+        }
+        if (off == 14) {
+            return nearestStep(value, kUnitAmount, sizeof(kUnitAmount) / sizeof(kUnitAmount[0]));
+        }
+        if (off == 16) {
+            return nearestStep(value, kExtSends, sizeof(kExtSends) / sizeof(kExtSends[0]));
+        }
+    }
+    return value;
+}
+
+bool MackieShowbox::analogHoldOn(entity_id entityId) const {
+    if (entityId == MAIN_HEADPHONE_GAIN) {
+        return analogHoldPhonesFlag;
+    }
+    if (entityId == LOOPER_LEVEL) {
+        return analogHoldLoopFlag;
+    }
+    return false;
+}
+
+bool MackieShowbox::ignoreAnalogJitter(entity_id entityId, float value) {
+    if (!analogHoldOn(entityId)) {
+        return false;
+    }
+    AnalogRest& rest = entityId == MAIN_HEADPHONE_GAIN ? phonesRest : loopRest;
+    const float thresh = kAnalogHoldNorm * kAnalogSpan;
+    if (!rest.have) {
+        rest.value = value;
+        rest.have = true;
+        rest.dir = 0;
+        return false;
+    }
+    const float delta = value - rest.value;
+    const float absDelta = fabsf(delta);
+    const bool sameDir = (delta > 0.0f && rest.dir > 0) || (delta < 0.0f && rest.dir < 0);
+    const float allow = sameDir ? thresh * 0.35f : thresh;
+    if (absDelta < allow) {
+        rest.value = rest.value + delta * 0.35f;
+        return true;
+    }
+    rest.value = value;
+    rest.dir = delta > 0.0f ? 1 : (delta < 0.0f ? -1 : rest.dir);
+    return false;
+}
+
+void MackieShowbox::setAnalogHold(bool phones, bool loop) {
+    analogHoldPhonesFlag = phones;
+    analogHoldLoopFlag = loop;
+    phonesRest.have = false;
+    loopRest.have = false;
+    analogHoldDirty = true;
+}
+
+void MackieShowbox::loadAnalogHold() {
+    Preferences prefs;
+    if (!prefs.begin("showbox", true)) {
+        return;
+    }
+    analogHoldPhonesFlag = prefs.getBool("holdPh", true);
+    analogHoldLoopFlag = prefs.getBool("holdLp", true);
+    prefs.end();
+}
+
+void MackieShowbox::saveAnalogHold() {
+    Preferences prefs;
+    if (!prefs.begin("showbox", false)) {
+        return;
+    }
+    analogHoldDirty = false;
+    prefs.putBool("holdPh", analogHoldPhonesFlag);
+    prefs.putBool("holdLp", analogHoldLoopFlag);
+    prefs.end();
 }
 
 bool MackieShowbox::mixerOwnsEntity(entity_id id) const {

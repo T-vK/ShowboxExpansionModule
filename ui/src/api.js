@@ -68,3 +68,54 @@ export async function postJson(url, body) {
 export function asList(value) {
   return Array.isArray(value) ? value : [];
 }
+
+export function connectLive(onEvent, hooks = {}) {
+  let socket = null;
+  let closed = false;
+  let timer = 0;
+  let ping = 0;
+  let watchdog = 0;
+  function armWatch() {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => { if (socket) socket.close(); }, 12000);
+  }
+  function open() {
+    if (closed) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${proto}://${location.host}/ws`);
+    socket.onopen = () => {
+      if (hooks.onOpen) hooks.onOpen();
+      clearInterval(ping);
+      ping = setInterval(() => {
+        if (socket && socket.readyState === 1) socket.send("p");
+      }, 4000);
+      armWatch();
+    };
+    socket.onmessage = (event) => {
+      armWatch();
+      try {
+        onEvent(JSON.parse(event.data));
+      } catch {
+        /* ignore */
+      }
+    };
+    socket.onclose = () => {
+      clearInterval(ping);
+      clearTimeout(watchdog);
+      socket = null;
+      if (hooks.onClose) hooks.onClose();
+      if (!closed) timer = setTimeout(open, 1500);
+    };
+    socket.onerror = () => {
+      if (socket) socket.close();
+    };
+  }
+  open();
+  return () => {
+    closed = true;
+    clearTimeout(timer);
+    clearInterval(ping);
+    clearTimeout(watchdog);
+    if (socket) socket.close();
+  };
+}

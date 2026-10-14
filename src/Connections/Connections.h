@@ -8,6 +8,7 @@
 
 class MultiMidi;
 class MackieShowbox;
+class FrontPanel;
 
 // Pairing and transport switches. MIDI lives in MultiMidi. HID is passed in.
 class Connections : public BleMidiHostPolicy {
@@ -50,7 +51,7 @@ public:
     bool queueTouch(const String& action, int x, int y, int x2, int y2, String& error, const char* via = nullptr);
     bool queueKey(const char* name, String& error);
     bool queueScroll(int amount, String& error);
-    bool queueMidiTest(String& error);
+    bool queueMidiTest(String& error, int note = 60, int velocity = 100, int channel = 1, const char* kind = nullptr);
     void noteLog(const char* text);
     bool bleIncomingOn() const;
     void openPairingWindow(uint32_t ms);
@@ -59,6 +60,7 @@ public:
     uint32_t pairingMsLeft() const;
     void setBluetoothRadio(bool on);
     bool bluetoothRadioOn() const { return bluetoothRadioEnabled; }
+    void setFrontPanel(FrontPanel* panel);
     enum class UsbPortMode {
         Jtag,
         Host,
@@ -78,6 +80,7 @@ private:
     void applyDebug();
     void applyHidAdvertising();
     void applyAdvertisingPolicy();
+    void ensureHidGatt();
     void scheduleReboot(const char* reason);
     bool sameAddress(const char* left, const char* right) const;
     bool anyHostHid() const;
@@ -88,6 +91,7 @@ private:
     bool setUsbHidPart(const String& name, bool enabled, String& error);
     bool setBleHidPart(const String& name, bool enabled, String& error);
     void applyPairingMixIfIdle();
+    void advertisePairingMix();
     void rememberIncomingHost(const BleRadio::Incoming& incoming);
     void enforceHostSlots();
     void enforcePeripheralSlots();
@@ -137,6 +141,8 @@ private:
     uint32_t lastPruneMs = 0;
     uint32_t lastHostRememberMs = 0;
     uint32_t midiTestOffAt = 0;
+    uint8_t midiTestNote = 60;
+    uint8_t midiTestChan = 1;
     static constexpr int kLogMax = 16;
     char logLine[kLogMax][88] = {};
     int logCount = 0;
@@ -146,6 +152,7 @@ private:
     BleRadio* radio = nullptr;
     Hid* hid = nullptr;
     MackieShowbox* showbox = nullptr;
+    FrontPanel* panel = nullptr;
     void (*debugSettingsHandler)(bool, bool) = nullptr;
     void (*linkChangeHandler)() = nullptr;
     int lastBleLinks = -1;

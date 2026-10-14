@@ -32,6 +32,8 @@ public:
     void setCustomDebugSerial(Print& debug);
     void setWifiLogHistory(bool enable);
     bool wifiLogHistory() const { return _wifiLogHistory; }
+    void quarantineTelnet(uint32_t ms);
+    WiFiClient* telnetClient();
     bool wifiLogConnected() const { return _remoteDebugWasConnected; }
     size_t wifiLogBytes() const { return Debug.wifiBuffered(); }
     Print& wifiLog() { return _wifiLog; }
@@ -39,6 +41,7 @@ public:
     void setDeviceUrl(const char* deviceUrl);
     void setHostName(const char* hostName);
     void setVersion(const char* version);
+    const char* version() const { return _version ? _version : ""; }
 
     // Getter methods
     const char* getHostName();
@@ -102,6 +105,8 @@ private:
     RemoteDebug _remoteDebug;
     unsigned long _remoteDebugLastConnect = 0;
     bool _wifiLogHistory = true;
+    uint32_t _telnetQuarantineUntil = 0;
+    bool _telnetQuarantineDropped = false;
     bool _remoteDebugWasConnected = false;
     WifiLogPrint _wifiLog;
 

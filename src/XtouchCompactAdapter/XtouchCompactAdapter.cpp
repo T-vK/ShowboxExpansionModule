@@ -117,13 +117,12 @@ void XtouchCompactAdapter::begin() {
                 onShowboxEntityChange(entityId);
             }            
         } else if (packetType == SD_CARD_EVENT && length >= 5) {
-            sd_card_state sdCardState = static_cast<sd_card_state>(raw_packet[4]);
-            if (sdCardState == sd_card_state::NOT_DETECTED) {
-                instance->setRecordButton(0);
-            } else if (sdCardState == sd_card_state::DETECTED) {
+            // Mirror MackieShowbox: 8-byte body {00, v} carries the base's
+            // record state (3 = recording, 2/1 = idle).
+            if (length >= 8 && raw_packet[4] == 0) {
+                instance->setRecordButton(raw_packet[5] == 3 ? 2 : (raw_packet[5] == 0 ? 0 : 1));
+            } else if (length <= 7 && raw_packet[4] == 1) {
                 instance->setRecordButton(1);
-            } else if (sdCardState == sd_card_state::RECORDING) {
-                instance->setRecordButton(2); // blinking
             }
         } else if (packetType == TUNER_TOGGLE && length >= 6) { // BE EF 01 18 <state> <chan> EF BE
             bool tunerState = raw_packet[4] != 0;
@@ -287,7 +286,6 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
     if (entityId == INPUT1_GAIN || entityId == INPUT2_GAIN || entityId == INPUT3_GAIN || entityId == INPUT4_GAIN) {
         float gain = instance->showbox->getInputGain(input); // input gain goes from 0.0 to 60.0
         float gainPercent = gain / 60.0;
-        instance->Debug->printf("Gain: %f\n", gainPercent);
         instance->setChannelEncoderPercent(input, gainPercent);
     } else if (entityId == INPUT1_VOLUME || entityId == INPUT2_VOLUME || entityId == INPUT3_VOLUME || entityId == INPUT4_VOLUME || entityId == STEREO_INPUT1_VOLUME) {
         float volume = instance->showbox->getInputVolume(input); // input volume goes from -120.0 to 10.0 (20.0 for STERO_INPUT1_VOLUME)
@@ -296,7 +294,6 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
             volumePercent = (volume + 120.0) / 140.0;
         }
         float volumePercentLinear = instance->mapNonlinearToLinear(volumePercent);
-        instance->Debug->printf("Volume: %f\n", volumePercentLinear);
         instance->setFaderPercent(input, volumePercentLinear);
     } else if (entityId == INPUT1_MUTE || entityId == INPUT2_MUTE || entityId == INPUT3_MUTE || entityId == INPUT4_MUTE || entityId == STEREO_INPUT1_MUTE) {
         bool mute = instance->showbox->getInputMute(input);
@@ -368,7 +365,6 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
             if (enable) {
                 float gain = instance->showbox->getInputEqGain(input, EQ_LOW_BAND); // input eq gain goes from -15.0 to 15.0
                 float gainPercent = (gain + 15.0) / 30.0;
-                instance->Debug->printf("Low Gain: %f\n", gainPercent);
                 instance->setEncoderPercent(12, gainPercent);
             }
         } else if (entityId == INPUT1_EQ_MID_GAIN || entityId == INPUT2_EQ_MID_GAIN || entityId == INPUT3_EQ_MID_GAIN || entityId == INPUT4_EQ_MID_GAIN || entityId == STEREO_INPUT1_EQ_MID_GAIN) {
@@ -376,7 +372,6 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
             if (enable) {
                 float gain = instance->showbox->getInputEqGain(input, EQ_MID_BAND); // input eq gain goes from -15.0 to 15.0
                 float gainPercent = (gain + 15.0) / 30.0;
-                instance->Debug->printf("Mid Gain: %f\n", gainPercent);
                 instance->setEncoderPercent(10, gainPercent);
             }
         } else if (entityId == INPUT1_EQ_HIGH_GAIN || entityId == INPUT2_EQ_HIGH_GAIN || entityId == INPUT3_EQ_HIGH_GAIN || entityId == INPUT4_EQ_HIGH_GAIN || entityId == STEREO_INPUT1_EQ_HIGH_GAIN) {
@@ -384,7 +379,6 @@ void XtouchCompactAdapter::onShowboxEntityChange(entity_id entityId) {
             if (enable) {
                 float gain = instance->showbox->getInputEqGain(input, EQ_HIGH_BAND); // input eq gain goes from -15.0 to 15.0
                 float gainPercent = (gain + 15.0) / 30.0;
-                instance->Debug->printf("High Gain: %f\n", gainPercent);
                 instance->setEncoderPercent(8, gainPercent);
             }
         } else if (entityId == INPUT1_EXT_FX_MUTE || entityId == INPUT2_EXT_FX_MUTE || entityId == INPUT3_EXT_FX_MUTE || entityId == INPUT4_EXT_FX_MUTE) {
@@ -489,7 +483,6 @@ void XtouchCompactAdapter::setEncoder(uint8_t encoder, uint8_t value) { // 0-127
         return;
     }
     rememberOutboundCc(cc, value);
-    Debug->printf("Setting encoder %d to %d\n", encoder, value);
     midi->controlChange(cc, value);
 }
 
@@ -696,7 +689,6 @@ void XtouchCompactAdapter::setFader(uint8_t fader, uint8_t value) { // index 0-8
         return;
     }
     rememberOutboundCc(cc, value);
-    Debug->printf("Setting fader %d to %d\n", fader, value);
     midi->controlChange(cc, value);
 }
 

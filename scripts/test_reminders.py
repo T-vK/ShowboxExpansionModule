@@ -1,0 +1,35 @@
+"""Printed at the start of every live test script."""
+
+from __future__ import annotations
+
+
+def print_run_reminders() -> None:
+    print()
+    print("── Debug reminder (every run)")
+    print("  Complex flakes (HTTPS timeout, STA dead, BLE+mixer up): do not guess.")
+    print("    • Crash / Guru Meditation / abort: read the panic from USB-Serial/JTAG")
+    print("      or the coredump after reboot (/api/v1/debug, USB ring, coredump partition).")
+    print("    • Attach OpenOCD/JTAG (pio debug / xtensa-esp32s3-elf-gdb) and break")
+    print("      in HttpsGate, LanKeep, BleMidi — HTTP timeouts hide the real fault.")
+    print("  Write down fast/helpful test cases when a combo actually caught a bug:")
+    print("    Fast / cheap — keep on by default, they do not hurt:")
+    print("      check_live.py                 ~30s  ping + /services + midi + mDNS + UART")
+    print("      check_https_repeat.py         HTTPS GET / while mixer+AIRSTEP stay up (skip if HTTPS off)")
+    print("      check_features Core           ICMP, UART, HTTP health, MIDI JSON")
+    print("      check_uart.py                 mixer↔base reconnect / ALL_ENTITIES soak")
+    print("      mdns-a / http-via-mdns        seconds, catches showbox.local death")
+    print("      names POST + mixer gzip GET   caught NVS-on-AsyncTCP crash and BLE PTA stalls")
+    print("    Slow — skipped by default unless they earned their keep:")
+    print("      check_features --pair         minutes, BLE re-pair / HOGP map")
+    print("      --din / --ethernet / --usb    need cables on the desk")
+    print("      --soak / --simultaneous       8–12s extra radio load; keep unless flaky")
+    print("      --host-scan                   ~8s BLE advertisement scan")
+    print("    Combinations that have caught real bugs:")
+    print("      check_live under AIRSTEP      HTTP/ARP death while GATT held PTA")
+    print("      mDNS multicast 224.0.0.251    browsers/avahi cannot resolve showbox.local")
+    print("      --pair after HID descriptor   HOGP map mismatch on laptop/tablet")
+    print("      check_https_repeat.py         TLS ClientHello truncated / 443 wedged")
+    print("      JTAG / MemoryBIO TLS          96B ServerHello arrives; cert flight never does")
+    print("    If a probe here saved you, add it to scripts/test_reminders.py so later")
+    print("    runs know which tests are worth the time.")
+    print()

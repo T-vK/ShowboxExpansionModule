@@ -6,7 +6,7 @@ UART liveness check, and a stale link fails the run even if HTTP looks fine.
 
   python3 scripts/check_features.py                    # showbox.local
   python3 scripts/check_features.py --ip 192.168.3.55  # skip mDNS lookup
-  python3 scripts/check_features.py --no-pair          # skip laptop/tablet HID+MIDI matrix
+  python3 scripts/check_features.py --pair             # laptop/tablet HID+MIDI matrix (slow)
   python3 scripts/check_features.py --din --ethernet   # only when those cables are plugged in
 """
 
@@ -19,6 +19,7 @@ import random
 import re
 import select
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -29,6 +30,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
+
+from test_reminders import print_run_reminders
 
 BLE_NAME = "ShowboxMod"
 AIRSTEP_NAME = "AIRSTEP"
@@ -133,8 +136,8 @@ def ping_ok(ip: str) -> bool:
         return False
 
 
-def http_get(url: str, timeout: float = HTTP_TIMEOUT, host: Optional[str] = None) -> tuple[int, bytes]:
-    headers = {"Connection": "close", "User-Agent": "showbox-features", "Cache-Control": "no-store"}
+def http_get(url: str, timeout: float = HTTP_TIMEOUT, host: Optional[str] = None, ua: str = "showbox-features") -> tuple[int, bytes]:
+    headers = {"Connection": "close", "User-Agent": ua, "Cache-Control": "no-store"}
     if host:
         headers["Host"] = host
     req = urllib.request.Request(url, headers=headers, method="GET")
@@ -145,6 +148,73 @@ def http_get(url: str, timeout: float = HTTP_TIMEOUT, host: Optional[str] = None
         return err.code, err.read() if err.fp else b""
     except Exception:
         return 0, b""
+
+
+def http_get_noredirect(url: str, timeout: float = HTTP_TIMEOUT) -> tuple[int, bytes, str]:
+    class NoRedir(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+            return None
+
+    opener = urllib.request.build_opener(NoRedir)
+    req = urllib.request.Request(
+        url,
+        headers={"Connection": "close", "User-Agent": "showbox-features", "Cache-Control": "no-store"},
+        method="GET",
+    )
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.getcode() or 0, resp.read(), resp.headers.get("Location") or ""
+    except urllib.error.HTTPError as err:
+        loc = err.headers.get("Location") if err.headers else ""
+        return err.code, err.read() if err.fp else b"", loc or ""
+    except Exception:
+        return 0, b"", ""
+
+
+def https_get(ip: str, path: str, timeout: float = 8.0) -> tuple[str, bytes]:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    raw = socket.create_connection((ip, 443), timeout=timeout)
+    try:
+        tls = ctx.wrap_socket(raw, server_hostname="showbox.local")
+        ver = tls.version() or ""
+        tls.sendall(f"GET {path} HTTP/1.0\r\nHost: showbox.local\r\nConnection: close\r\n\r\n".encode())
+        chunks: list[bytes] = []
+        header_blob = b""
+        header_done = False
+        content_len: int | None = None
+        body_len = 0
+        while True:
+            buf = tls.recv(2048)
+            if not buf:
+                break
+            chunks.append(buf)
+            if not header_done:
+                header_blob += buf
+                sep = header_blob.find(b"\r\n\r\n")
+                if sep >= 0:
+                    header_done = True
+                    for line in header_blob[:sep].split(b"\r\n"):
+                        if line.lower().startswith(b"content-length:"):
+                            try:
+                                content_len = int(line.split(b":", 1)[1].strip())
+                            except ValueError:
+                                content_len = None
+                    body_len = len(header_blob) - (sep + 4)
+            else:
+                body_len += len(buf)
+            if header_done and content_len is not None and body_len >= content_len:
+                break
+        tls.close()
+        return ver, b"".join(chunks)
+    finally:
+        try:
+            raw.close()
+        except OSError:
+            pass
 
 
 def http_get_retry(url: str, timeout: float = HTTP_TIMEOUT, host: Optional[str] = None, attempts: int = 3) -> tuple[int, bytes]:
@@ -199,26 +269,68 @@ def http_json(url: str, timeout: float = HTTP_TIMEOUT) -> tuple[int, dict[str, A
     return last_code, {}
 
 
-def mdns_query(name: str, rtype: int, dest: str, timeout: float = 0.6) -> list[bytes]:
+def local_ip_toward(ip: str) -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect((ip, 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "0.0.0.0"
+    finally:
+        sock.close()
+
+
+def mdns_query(
+    name: str,
+    rtype: int,
+    dest: str,
+    timeout: float = 0.6,
+    toward: Optional[str] = None,
+) -> list[bytes]:
+    multicast = dest.startswith("224.")
     q = bytearray()
-    q += struct.pack("!HHHHHH", 0x1200, 0x0000, 1, 0, 0, 0)
+    # RFC 6762: multicast DNS query ID MUST be 0 or responders ignore it.
+    q += struct.pack("!HHHHHH", 0x0000, 0x0000, 1, 0, 0, 0)
     for label in name.rstrip(".").split("."):
         raw = label.encode("ascii")
         q.append(len(raw))
         q += raw
     q += b"\x00"
-    q += struct.pack("!HH", rtype, 1)
+    # QM for multicast (module must answer 224.0.0.251), QU for unicast-to-IP.
+    q += struct.pack("!HH", rtype, 0x0001 if multicast else 0x8001)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
         sock.settimeout(timeout)
+        iface = local_ip_toward(toward or (dest if not multicast else "8.8.8.8"))
+        if multicast:
+            sock.bind(("", 5353))
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+            if iface != "0.0.0.0":
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface))
+                mreq = socket.inet_aton("224.0.0.251") + socket.inet_aton(iface)
+            else:
+                mreq = struct.pack("4sI", socket.inet_aton("224.0.0.251"), socket.INADDR_ANY)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         sock.sendto(bytes(q), (dest, 5353))
         records: list[bytes] = []
         deadline = now() + timeout
         while now() < deadline:
             try:
-                data, _addr = sock.recvfrom(2048)
+                data, addr = sock.recvfrom(2048)
             except socket.timeout:
                 break
+            src_ip = addr[0]
+            if multicast:
+                if toward and src_ip != toward:
+                    continue
+            elif src_ip != dest:
+                continue
             if len(data) < 12:
                 continue
             _id, flags, qd, an, _ns, _ar = struct.unpack("!HHHHHH", data[:12])
@@ -245,6 +357,8 @@ def mdns_query(name: str, rtype: int, dest: str, timeout: float = 0.6) -> list[b
                 pos += rdlen
                 if got_type == rtype:
                     records.append(rdata)
+            if records:
+                break
         return records
     except OSError:
         return []
@@ -252,17 +366,19 @@ def mdns_query(name: str, rtype: int, dest: str, timeout: float = 0.6) -> list[b
         sock.close()
 
 
-def mdns_query_a(host: str, dest: str, timeout: float = 0.6) -> list[str]:
+def mdns_query_a(host: str, dest: str, timeout: float = 0.6, toward: Optional[str] = None) -> list[str]:
     out: list[str] = []
-    for rdata in mdns_query(host, 1, dest, timeout):
+    for rdata in mdns_query(host, 1, dest, timeout, toward=toward):
         if len(rdata) == 4:
-            out.append(socket.inet_ntoa(rdata))
+            ip = socket.inet_ntoa(rdata)
+            if ip not in out:
+                out.append(ip)
     return out
 
 
-def mdns_has_ptr(service: str, dests: list[str]) -> bool:
+def mdns_has_ptr(service: str, dests: list[str], toward: Optional[str] = None) -> bool:
     for dest in dests:
-        if mdns_query(service, 12, dest, 0.7):
+        if mdns_query(service, 12, dest, 0.7, toward=toward):
             return True
     return False
 
@@ -290,7 +406,7 @@ def lookup_ipv4(host: str) -> list[str]:
 
     for ip in resolver_ips(host):
         add(ip)
-    for ip in mdns_query_a(host, "224.0.0.251", 0.7):
+    for ip in mdns_query_a(host, "224.0.0.251", 0.8):
         add(ip)
     try:
         for info in socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM):
@@ -330,6 +446,18 @@ def applemidi_invite(ip: str, port: int = APPLEMIDI_PORT, timeout: float = 1.5) 
     return data[2:4].decode("ascii", "replace")
 
 
+def tcp_open(ip: str, port: int, timeout: float = 0.4) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect((ip, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 def udp_open(ip: str, port: int) -> bool:
     """True when a UDP send does not get an immediate ICMP port-unreachable."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -354,6 +482,10 @@ def telnet_messages(ip: str, port: int = TELNET_PORT, want: int = 2, timeout: fl
     sock.settimeout(timeout)
     try:
         sock.connect((ip, port))
+        try:
+            sock.sendall(b"\r\n")
+        except OSError:
+            pass
         sock.settimeout(1.0)
         chunks = b""
         deadline = now() + timeout
@@ -406,6 +538,23 @@ def run_cmd(args: list[str], timeout: float = 8.0, input_text: Optional[str] = N
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
         return subprocess.CompletedProcess(args, 124, out, (err + f"\ntimeout after {timeout}s").strip())
+
+
+def bt_power_on() -> str:
+    """Unblock and power the default adapter. Returns `bluetoothctl show` text."""
+    try:
+        subprocess.run(["rfkill", "unblock", "bluetooth"], capture_output=True, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        run_cmd(["bluetoothctl", "power", "on"], timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    time.sleep(0.4)
+    try:
+        return strip_ansi(run_cmd(["bluetoothctl", "show"], timeout=3).stdout or "")
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
 
 
 def bt_scan_off() -> None:
@@ -470,6 +619,11 @@ def bt_disconnect_named(exact: str) -> None:
 
 def host_le_scan(seconds: float = 8.0) -> tuple[str, str, Optional[str]]:
     """Scan from this machine for ShowboxMod. Returns (status, detail, address)."""
+    show = bt_power_on()
+    if "No default controller" in show or "No controller available" in show:
+        return "skip", "no Bluetooth adapter", None
+    if re.search(r"Powered:\s*no\b", show) or "off-blocked" in show.lower():
+        return "skip", "Bluetooth adapter powered off", None
     try:
         out = subprocess.run(
             ["timeout", f"{seconds + 2:.0f}", "bluetoothctl", "--timeout", f"{seconds:.0f}", "scan", "le"],
@@ -484,7 +638,8 @@ def host_le_scan(seconds: float = 8.0) -> tuple[str, str, Optional[str]]:
     except (OSError, subprocess.TimeoutExpired):
         extra = ""
     bt_scan_off()
-    blob = strip_ansi((out.stdout or "") + "\n" + (out.stderr or "") + "\n" + extra)
+    scan_blob = strip_ansi((out.stdout or "") + "\n" + (out.stderr or ""))
+    blob = scan_blob + "\n" + extra
     if "No default controller" in blob or "No controller available" in blob:
         return "skip", "no Bluetooth adapter", None
     addr = None
@@ -498,7 +653,10 @@ def host_le_scan(seconds: float = 8.0) -> tuple[str, str, Optional[str]]:
         return "pass", f"saw {BLE_NAME}" + (f" {addr}" if addr else ""), addr
     if MIDI_UUID in low:
         return "pass", "saw BLE MIDI UUID", None
-    if "discovery started" in low or "set-scan-enable" in low or "scanning" in low or "device " in low:
+    scan_low = scan_blob.lower()
+    if "notready" in scan_low or "failed to start discovery" in scan_low:
+        return "skip", "host LE scan not ready", None
+    if "discovery started" in scan_low or "set-scan-enable" in scan_low or "scanning" in scan_low:
         return "fail", f"{BLE_NAME} not seen in {seconds:.0f}s host LE scan", None
     if out.returncode != 0 and "timeout" not in (out.stderr or "").lower():
         return "skip", (out.stderr or out.stdout or "bluetoothctl failed")[:120], None
@@ -557,6 +715,10 @@ def uart_ok_sampled(session: Session, stale_ms: int, samples: int = 4, gap: floa
             return last
         time.sleep(gap)
     return last
+
+
+def print_test_memory() -> None:
+    print_run_reminders()
 
 
 class Results:
@@ -650,11 +812,13 @@ class Results:
                     if detail:
                         print(STYLE.dim(f"       {detail}"))
             self._print_skips()
+            print_test_memory()
             return 1
         print(STYLE.green(bar))
         print(STYLE.invert_green(line.center(64)))
         print(STYLE.green(bar))
         self._print_skips()
+        print_test_memory()
         return 0
 
     def _print_skips(self) -> None:
@@ -695,7 +859,8 @@ class Session:
     ) -> bool:
         ok, detail = uart_ok_sampled(self, stale_ms or self.stale_ms)
         if not ok:
-            recover_until = now() + 12.0
+            # Laptop MIDI-only HOGP role changes can stall mixer↔base ~16 s on PTA.
+            recover_until = now() + 25.0
             while now() < recover_until:
                 time.sleep(0.4)
                 ok, detail = uart_ok_sampled(self, stale_ms or self.stale_ms, samples=2, gap=0.15)
@@ -715,7 +880,13 @@ class Session:
 
     def post_settings(self, **fields: Any) -> tuple[int, str]:
         data = {k: ("1" if v is True else "0" if v is False else str(v)) for k, v in fields.items()}
-        return http_post(f"{self.base}/api/v1/midi/settings", data)
+        last = (0, "no post")
+        for attempt in range(5):
+            last = http_post(f"{self.base}/api/v1/midi/settings", data)
+            if last[0] == 200:
+                return last
+            time.sleep(1.2)
+        return last
 
 
 def transport(midi: dict[str, Any], ident: str) -> dict[str, Any]:
@@ -727,6 +898,50 @@ def transport(midi: dict[str, Any], ident: str) -> dict[str, Any]:
 
 def connected_hosts(midi: dict[str, Any]) -> list[dict[str, Any]]:
     return [h for h in (midi.get("hosts") or []) if h.get("connected")]
+
+
+def live_host_address(session: Session, fallback: str = "") -> str:
+    hosts = connected_hosts(session.midi())
+    if hosts:
+        return str(hosts[0].get("address") or fallback or "")
+    return fallback
+
+
+def module_forget(session: Session, address: str) -> None:
+    if not address:
+        return
+    http_post(f"{session.base}/api/v1/midi/ble/forget", {"address": address})
+
+
+def forget_module_hosts(session: Session) -> None:
+    """Drop leftover HID hosts so the pairing mix can become kb+mouse again.
+
+    Forget is queued one-at-a-time on the module. A second POST while the
+    first is pending returns Busy and leaves the digitizer mix in NVS.
+    """
+    deadline = now() + 10.0
+    while now() < deadline:
+        addrs = []
+        seen: set[str] = set()
+        for host in session.midi().get("hosts") or []:
+            addr = str(host.get("address") or "")
+            if addr and addr.lower() not in seen:
+                seen.add(addr.lower())
+                addrs.append(addr)
+        if not addrs:
+            wait_no_hosts(session, 2.0)
+            return
+        code, text = http_post(f"{session.base}/api/v1/midi/ble/forget", {"address": addrs[0]})
+        if code != 200:
+            time.sleep(0.6)
+            continue
+        gone = now() + 3.0
+        while now() < gone:
+            left = [str(h.get("address") or "") for h in (session.midi().get("hosts") or [])]
+            if addrs[0] not in left:
+                break
+            time.sleep(0.3)
+    wait_no_hosts(session, 4.0)
 
 
 def auto_peripherals(midi: dict[str, Any]) -> list[dict[str, Any]]:
@@ -832,7 +1047,7 @@ def bt_connected(addr: str) -> bool:
     return "Connected: yes" in info
 
 
-def laptop_pair(addr: str) -> tuple[bool, str]:
+def laptop_pair(addr: str, session: Optional["Session"] = None) -> tuple[bool, str]:
     run_cmd(["bluetoothctl", "power", "on"], timeout=4)
     run_cmd(["bluetoothctl", "pairable", "on"], timeout=4)
     run_cmd(["bluetoothctl", "agent", "NoInputNoOutput"], timeout=4)
@@ -857,29 +1072,36 @@ def laptop_pair(addr: str) -> tuple[bool, str]:
         if not bt_connected(addr):
             run_cmd(["bluetoothctl", "connect", addr], timeout=15)
         deadline = now() + 10
+        paired_up = False
         while now() < deadline:
             info = bt_info(addr)
-            if "Connected: yes" in info:
-                bt_scan_off()
-                how = "pair+connect"
-                if "Pairing successful" in pair_blob or "Paired: yes" in info:
-                    how = "pairing successful"
-                if attempt:
-                    how += f" attempt {attempt + 1}"
-                return True, how
+            if "Connected: yes" in info and ("Paired: yes" in info or "Pairing successful" in pair_blob):
+                paired_up = True
+                break
             time.sleep(0.4)
+        if paired_up or ("Paired: yes" in bt_info(addr)):
+            # The pairing connection often fails HID CCC writes. Drop it and
+            # connect on the bond so BlueZ can subscribe to reports.
+            bt_scan_off()
+            hogp = laptop_bond_connect(addr, session)
+            how = "pairing successful"
+            if attempt:
+                how += f" attempt {attempt + 1}"
+            if hogp:
+                return True, how
+            last_reason = "paired but HOGP reconnect failed"
+            # Keep the bond. Ads are off while AIRSTEP is up unless the
+            # pairing window is open; the caller retries with the window up.
+            break
         info = bt_info(addr)
         paired = "Paired: yes" in info
         connected = "Connected: yes" in info
         last_reason = "no pair result"
         for line in pair_blob.splitlines():
             low = line.lower()
-            if "fail" in low or "error" in low or "pairing" in low:
+            if "fail" in low or "error" in low or "pairing" in low or "not available" in low:
                 last_reason = line.strip()
                 break
-        if paired and connected:
-            bt_scan_off()
-            return True, f"pairing successful attempt {attempt + 1}"
         laptop_disconnect(addr, forget=True)
         time.sleep(1.5)
     bt_scan_off()
@@ -889,16 +1111,38 @@ def laptop_pair(addr: str) -> tuple[bool, str]:
     return False, f"paired={int(paired)} connected={int(connected)} ({last_reason})"
 
 
-def laptop_reconnect(mod_addr: str) -> None:
-    bt_scan_off()
-    run_cmd(["bluetoothctl", "disconnect", mod_addr], timeout=6)
-    time.sleep(1.5)
-    run_cmd(["bluetoothctl", "connect", mod_addr], timeout=12)
-    deadline = now() + 8
+def laptop_open_ads(session: Optional["Session"]) -> None:
+    """AIRSTEP holds PTA; ShowboxMod only advertises while the pairing window is open."""
+    if session is None:
+        return
+    session.post_settings(acceptNewHosts=True)
+    deadline = now() + 10
     while now() < deadline:
-        if bt_connected(mod_addr):
+        if session.midi().get("advertising"):
             return
+        session.post_settings(acceptNewHosts=True)
+        time.sleep(0.6)
+
+
+def laptop_bond_connect(addr: str, session: Optional["Session"] = None) -> bool:
+    """Connect on an existing bond. HID CCC writes fail on the pairing link."""
+    bt_scan_off()
+    laptop_open_ads(session)
+    if bt_connected(addr):
+        run_cmd(["bluetoothctl", "disconnect", addr], timeout=6)
+        time.sleep(2.5)
+        laptop_open_ads(session)
+    run_cmd(["bluetoothctl", "connect", addr], timeout=15)
+    deadline = now() + 12
+    while now() < deadline:
+        if bt_connected(addr):
+            return True
         time.sleep(0.4)
+    return bt_connected(addr)
+
+
+def laptop_reconnect(mod_addr: str, session: Optional["Session"] = None) -> None:
+    laptop_bond_connect(mod_addr, session)
 
 
 def laptop_disconnect(addr: str, forget: bool) -> None:
@@ -914,16 +1158,30 @@ def wipe_hogp_cache(addr: str) -> None:
     folder = addr.upper()
     root = "/var/lib/bluetooth"
     try:
+        subprocess.run(
+            ["sudo", "-n", "find", root, "-iname", folder, "-exec", "rm", "-rf", "{}", "+"],
+            timeout=5,
+            check=False,
+            capture_output=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
         adapters = os.listdir(root)
     except OSError:
         return
     for adapter in adapters:
-        path = os.path.join(root, adapter, folder)
-        if os.path.isdir(path):
-            try:
-                subprocess.run(["rm", "-rf", path], timeout=3, check=False, capture_output=True)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+        for path in (
+            os.path.join(root, adapter, folder),
+            os.path.join(root, adapter, "cache", folder),
+        ):
+            if os.path.isdir(path) or os.path.isfile(path):
+                try:
+                    subprocess.run(["rm", "-rf", path], timeout=3, check=False, capture_output=True)
+                    if os.path.exists(path):
+                        subprocess.run(["sudo", "-n", "rm", "-rf", path], timeout=3, check=False, capture_output=True)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
 
 
 def hid_descriptor_key(case: tuple[Any, ...]) -> Optional[tuple[int, int, int]]:
@@ -961,6 +1219,9 @@ def laptop_forget(session: Session, addr: str) -> None:
     laptop_disconnect(addr, forget=True)
     bt_scan_off()
     wait_no_hosts(session)
+    gone = now() + 6.0
+    while now() < gone and evdev_showbox():
+        time.sleep(0.3)
     session.post_settings(acceptNewHosts=True)
 
 
@@ -968,7 +1229,7 @@ def laptop_rebond(session: Session, addr: str) -> tuple[bool, str]:
     # Pair only. Caller must forget, then apply the new mix, then call this so
     # the host reads the updated HOGP report map instead of blePairMix.
     session.post_settings(acceptNewHosts=True)
-    paired, how = laptop_pair(addr)
+    paired, how = laptop_pair(addr, session)
     if not paired:
         return False, how
     host = wait_host(session, 18)
@@ -985,19 +1246,42 @@ def tablet_forget(session: Session, serial: str) -> None:
     session.post_settings(acceptNewHosts=True)
 
 
+def tablet_reconnect(serial: str, session: Optional["Session"] = None) -> None:
+    if tablet_showbox_connected(serial):
+        tablet_close_ads(session)
+        return
+    tablet_keep_pairing(session)
+    if tablet_connect_paired(serial) and tablet_showbox_connected(serial):
+        tablet_close_ads(session)
+        return
+    tablet_wait_hogp(serial, 45.0, session=session)
+    tablet_close_ads(session)
+
+
+def tablet_close_ads(session: Optional["Session"]) -> None:
+    """Ads + AIRSTEP hold PTA; close the pairing window once HOGP is up."""
+    if session is not None:
+        session.post_settings(acceptNewHosts=False)
+
+
 def tablet_rebond(session: Session, serial: str) -> tuple[bool, str]:
+    # Pair only. Caller already applied the new mix; resetting to kb+mouse
+    # here made Android cache the wrong report map for abs/touch cases.
+    # Drop Android's HOGP cache so the next bond re-reads the report map.
+    tablet_bt_reset(serial)
     session.post_settings(acceptNewHosts=True)
     time.sleep(1.0)
-    ok, how = tablet_try_pair(serial)
-    host = wait_host(session, 16 if ok else 10)
+    ok, how = tablet_try_pair(serial, session)
+    host = wait_host(session, 16 if ok else 8)
     if host is None:
         return False, how
-    hogp_deadline = now() + 12
-    while now() < hogp_deadline and not tablet_showbox_connected(serial):
-        tablet_confirm_pair_dialog(serial)
-        time.sleep(0.8)
-    hogp = tablet_showbox_connected(serial)
-    return True, how + (" hogp" if hogp else " no-hogp")
+    hogp = ok or tablet_showbox_connected(serial)
+    if not hogp:
+        hogp = tablet_wait_hogp(serial, 60.0, session=session)
+    tablet_close_ads(session)
+    if not hogp:
+        return False, how + " no-hogp"
+    return True, how
 
 
 def evdev_showbox() -> list[Any]:
@@ -1036,13 +1320,13 @@ def wait_evdev(timeout: float, need_mouse: bool = False) -> list[str]:
     return names
 
 
-def wait_laptop_hid(addr: str) -> list[str]:
-    names = wait_evdev(8.0, need_mouse=True)
+def wait_laptop_hid(addr: str, session: Optional["Session"] = None) -> list[str]:
+    names = wait_evdev(12.0, need_mouse=True)
     if evdev_has_mouse(names):
         return names
     print(STYLE.dim("  HOGP has no mouse node yet; reconnecting so BlueZ re-reads reports"))
-    laptop_reconnect(addr)
-    return wait_evdev(10.0, need_mouse=True)
+    laptop_reconnect(addr, session)
+    return wait_evdev(15.0, need_mouse=True)
 
 
 def evdev_collect(seconds: float = 2.0) -> list[tuple[str, int, int]]:
@@ -1151,48 +1435,85 @@ def during_laptop(action: Callable[[], None]) -> dict[str, bool]:
     return saw
 
 
+def tablet_wake(serial: str) -> None:
+    try:
+        adb(serial, ["shell", "input", "keyevent", "KEYCODE_WAKEUP"], timeout=4)
+        adb(serial, ["shell", "svc", "power", "stayon", "usb"], timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def tablet_input_nodes(serial: str) -> list[str]:
+    nodes: list[str] = []
+    current = None
+    for line in tablet_getevent_names(serial).splitlines():
+        add = re.match(r"add device \d+:\s+(\S+)", line.strip())
+        if add:
+            current = add.group(1)
+            continue
+        name = re.search(r'name:\s+"?([^"]+?)"?\s*$', line, re.I)
+        if current and name and BLE_NAME.lower() in name.group(1).lower():
+            nodes.append(current)
+            current = None
+    return nodes
+
+
+def classify_android_events(blob: str) -> dict[str, bool]:
+    keyboard = mouse = abs_xy = touch = False
+    for raw in blob.splitlines():
+        line = raw.lower()
+        if "ev_key" in line or re.search(r":\s+0001\s", line):
+            if "btn_touch" in line or "btn_tool" in line:
+                touch = True
+            elif "btn_left" in line or "btn_right" in line or "btn_middle" in line:
+                mouse = True
+            elif "key_" in line:
+                keyboard = True
+        if "ev_rel" in line or "rel_x" in line or "rel_y" in line or "rel_wheel" in line:
+            mouse = True
+        if "ev_abs" in line or "abs_" in line:
+            if "abs_mt_" in line or "slot" in line:
+                touch = True
+            if re.search(r"\babs_x\b", line) or re.search(r"\babs_y\b", line):
+                abs_xy = True
+        if "btn_touch" in line:
+            touch = True
+    return {"keyboard": keyboard, "mouse": mouse, "abs": abs_xy, "touch": touch, "midi": False}
+
+
 def during_tablet(serial: str) -> Callable[[Callable[[], None]], dict[str, bool]]:
     def during(action: Callable[[], None]) -> dict[str, bool]:
+        tablet_wake(serial)
+        nodes = tablet_input_nodes(serial)
+        # Piped getevent block-buffers, so a live readline loop sees nothing
+        # until the process exits. timeout(1) kills it and libc flushes.
         try:
             proc = subprocess.Popen(
-                ["adb", "-s", serial, "shell", "getevent", "-lt"],
+                ["adb", "-s", serial, "shell", "timeout", "3.5", "getevent", "-lt"],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.DEVNULL,
                 text=True,
             )
         except OSError:
             action()
             return {"keyboard": False, "mouse": False, "abs": False, "touch": False, "midi": False}
-        time.sleep(0.2)
+        time.sleep(0.35)
         try:
             action()
+            out, _err = proc.communicate(timeout=5.0)
         except Exception:
             proc.kill()
+            try:
+                proc.communicate(timeout=1.5)
+            except Exception:
+                pass
             raise
-        deadline = now() + 2.2
-        chunks: list[str] = []
-        assert proc.stdout is not None
-        while now() < deadline:
-            ready, _, _ = select.select([proc.stdout], [], [], 0.1)
-            if ready:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                chunks.append(line)
-        proc.kill()
-        try:
-            proc.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-        blob = "".join(chunks)
-        low = blob.lower()
-        return {
-            "keyboard": "key" in low and ("0001" in blob or "ev_key" in low),
-            "mouse": "rel" in low or "0002" in blob,
-            "abs": "abs" in low or "0003" in blob,
-            "touch": "abs" in low or "btn_touch" in low or "slot" in low,
-            "midi": False,
-        }
+        lines = (out or "").splitlines()
+        if nodes:
+            filtered = [ln for ln in lines if any(node in ln for node in nodes)]
+            if filtered:
+                lines = filtered
+        return classify_android_events("\n".join(lines))
 
     return during
 
@@ -1242,12 +1563,26 @@ def tablet_labels(xml: str) -> list[str]:
     return [t for t in re.findall(r'(?:text|content-desc)="([^"]+)"', xml) if t]
 
 
+def tablet_bounds(raw: str) -> Optional[tuple[int, int, int, int]]:
+    m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", raw or "")
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+
+
+def tablet_tap_xy(serial: str, box: tuple[int, int, int, int]) -> None:
+    x = (box[0] + box[2]) // 2
+    y = (box[1] + box[3]) // 2
+    adb(serial, ["shell", "input", "tap", str(x), str(y)], timeout=4)
+
+
 def tablet_tap_from_xml(serial: str, xml: str, needle: str, exact: bool = False) -> bool:
     try:
         root = ET.fromstring(xml)
     except ET.ParseError:
         return False
     needle_l = needle.lower()
+    matches: list[tuple[bool, tuple[int, int, int, int]]] = []
     for node in root.iter("node"):
         label = (node.attrib.get("text") or "").strip() or (node.attrib.get("content-desc") or "").strip()
         if not label:
@@ -1260,15 +1595,29 @@ def tablet_tap_from_xml(serial: str, xml: str, needle: str, exact: bool = False)
             continue
         if needle_l == BLE_NAME.lower() and low == "showbox":
             continue
-        bounds = node.attrib.get("bounds") or ""
-        m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
-        if not m:
+        box = tablet_bounds(node.attrib.get("bounds") or "")
+        if not box:
             continue
-        x = (int(m.group(1)) + int(m.group(3))) // 2
-        y = (int(m.group(2)) + int(m.group(4))) // 2
-        adb(serial, ["shell", "input", "tap", str(x), str(y)], timeout=4)
-        return True
-    return False
+        matches.append((node.attrib.get("clickable") == "true", box))
+    if not matches:
+        return False
+    clickable = [box for is_click, box in matches if is_click]
+    box = (clickable or [matches[0][1]])[0]
+    if not clickable:
+        cx = (box[0] + box[2]) // 2
+        cy = (box[1] + box[3]) // 2
+        covering: list[tuple[int, tuple[int, int, int, int]]] = []
+        for node in root.iter("node"):
+            if node.attrib.get("clickable") != "true":
+                continue
+            parent = tablet_bounds(node.attrib.get("bounds") or "")
+            if parent and parent[0] <= cx <= parent[2] and parent[1] <= cy <= parent[3]:
+                covering.append(((parent[2] - parent[0]) * (parent[3] - parent[1]), parent))
+        if covering:
+            covering.sort()
+            box = covering[0][1]
+    tablet_tap_xy(serial, box)
+    return True
 
 
 def tablet_tap_text(serial: str, needle: str, exact: bool = False) -> bool:
@@ -1291,49 +1640,96 @@ def tablet_getevent_names(serial: str) -> str:
 
 
 def tablet_showbox_connected(serial: str) -> bool:
+    if tablet_input_nodes(serial):
+        return True
     names = tablet_getevent_names(serial)
     if BLE_NAME.lower() in names.lower():
         return True
     dump = adb(serial, ["shell", "dumpsys", "bluetooth_manager"], timeout=8).stdout or ""
     low = dump.lower()
-    idx = low.find(BLE_NAME.lower())
+    idx = low.find("8d:25")
+    if idx < 0:
+        idx = low.find(BLE_NAME.lower())
     if idx < 0:
         return False
-    window = low[idx : idx + 1600]
-    markers = (
-        "hogp connection state=2",
-        "hid connection state=2",
-        "connection state=2",
-        "connection_state_connected",
-        "connection state: connected",
-        "connected: true",
-        "acl_connected",
-    )
-    return any(m in window for m in markers)
+    window = low[idx : idx + 400]
+    return "hogp connection state=2" in window or "hid connection state=2" in window
 
 
-def tablet_confirm_pair_dialog(serial: str) -> None:
-    xml = tablet_dump_xml(serial) or ""
-    for label in (
-        "Pair & connect",
-        "Pair and connect",
-        "PAIR & CONNECT",
-        "Pair",
-        "PAIR",
-        "Connect",
-        "Allow",
-        "OK",
-        "Yes",
-        "Confirm",
-        "Enter",
-    ):
-        if tablet_tap_from_xml(serial, xml, label, exact=True) or tablet_tap_from_xml(serial, xml, label):
-            time.sleep(0.8)
-            return
-    adb(serial, ["shell", "input", "keyevent", "KEYCODE_TAB"], timeout=4)
-    time.sleep(0.2)
-    adb(serial, ["shell", "input", "keyevent", "KEYCODE_ENTER"], timeout=4)
-    time.sleep(0.6)
+def tablet_pairing_dialog(xml: str) -> bool:
+    labels = [x.lower() for x in tablet_labels(xml)]
+    if any(x.startswith("pair with") for x in labels):
+        return True
+    return "cancel" in labels and "pair" in labels
+
+
+def tablet_confirm_pair_dialog(serial: str) -> bool:
+    """Tap the Android Pair button. Do not substring-match 'Pair new device'."""
+    deadline = now() + 8.0
+    while now() < deadline:
+        xml = tablet_dump_xml(serial) or ""
+        if not xml:
+            time.sleep(0.35)
+            continue
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            time.sleep(0.35)
+            continue
+        for node in root.iter("node"):
+            rid = node.attrib.get("resource-id") or ""
+            text = (node.attrib.get("text") or "").strip().lower()
+            if rid.endswith("button1") and text == "pair":
+                box = tablet_bounds(node.attrib.get("bounds") or "")
+                if box:
+                    tablet_tap_xy(serial, box)
+                    time.sleep(0.8)
+                    return True
+        for label in (
+            "Pair & connect",
+            "Pair and connect",
+            "PAIR & CONNECT",
+            "Pair",
+            "PAIR",
+            "Connect",
+            "Allow",
+            "OK",
+            "Yes",
+            "Confirm",
+        ):
+            if tablet_tap_from_xml(serial, xml, label, exact=True):
+                time.sleep(0.8)
+                return True
+        if not tablet_pairing_dialog(xml):
+            time.sleep(0.35)
+            continue
+        time.sleep(0.35)
+    return False
+
+
+def tablet_swipe_available(serial: str, xml: str) -> None:
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return
+    box = None
+    for node in root.iter("node"):
+        rid = node.attrib.get("resource-id") or ""
+        if rid.endswith("recycler_view"):
+            box = tablet_bounds(node.attrib.get("bounds") or "")
+            if box:
+                break
+    if not box:
+        return
+    x = (box[0] + box[2]) // 2
+    y1 = box[1] + int((box[3] - box[1]) * 0.75)
+    y2 = box[1] + int((box[3] - box[1]) * 0.25)
+    adb(serial, ["shell", "input", "swipe", str(x), str(y1), str(x), str(y2)], timeout=4)
+
+
+def tablet_keep_pairing(session: Optional["Session"]) -> None:
+    if session is not None:
+        session.post_settings(acceptNewHosts=True)
 
 
 def tablet_bt_reset(serial: str) -> None:
@@ -1351,7 +1747,7 @@ def tablet_bt_reset(serial: str) -> None:
             "/data/misc/bluetooth/logs 2>/dev/null; "
             "for d in /data/misc/bluedroid /data/misc/bluetooth /data/misc/bluedroid/bt_config.conf "
             "/data/vendor/bluetooth; do [ -e \"$d\" ] || continue; "
-            "grep -l 30:30:F9:72:8D:25 \"$d\" 2>/dev/null | xargs -r rm -f; done",
+            "grep -il '30:30:f9:72:8d:25' \"$d\" 2>/dev/null | xargs -r rm -f; done",
         ],
         timeout=8,
     )
@@ -1360,53 +1756,72 @@ def tablet_bt_reset(serial: str) -> None:
     time.sleep(2.0)
 
 
-def tablet_try_pair(serial: str) -> tuple[bool, str]:
+def tablet_try_pair(serial: str, session: Optional["Session"] = None) -> tuple[bool, str]:
     if not adb_root(serial):
         return False, "adb present but not rooted"
     adb(serial, ["shell", "svc", "bluetooth", "enable"], timeout=6)
     adb(serial, ["shell", "cmd", "bluetooth_manager", "enable"], timeout=6)
+    tablet_keep_pairing(session)
     time.sleep(1.0)
     if tablet_showbox_connected(serial):
         return True, "already connected"
     tablet_try_unpair(serial)
     tablet_back(serial)
+    tablet_keep_pairing(session)
     xml = tablet_open_bt(serial)
     if xml is None:
         return False, "could not open Bluetooth settings"
     tapped = False
     reset_once = False
+    pairing_started = False
     started = now()
-    deadline = started + 50
+    last_keep = started
+    deadline = started + 90
     while now() < deadline:
+        if session is not None and now() - last_keep > 25:
+            tablet_keep_pairing(session)
+            last_keep = now()
         if tablet_showbox_connected(serial):
             return True, "uiautomator pair/connect"
         xml = tablet_dump_xml(serial) or xml
         labels = tablet_labels(xml)
         low = [x.lower() for x in labels]
         joined = " ".join(low)
+        if pairing_started:
+            print(STYLE.dim("  Pair tapped; waiting for Android GATT/HOGP"))
+            if tablet_wait_hogp(serial, 150.0, confirm=True, session=session):
+                return True, "uiautomator pair/connect"
+            return False, "tapped ShowboxMod; tablet did not complete HOGP connect"
+        if tablet_pairing_dialog(xml):
+            tapped = True
+            pairing_started = True
+            tablet_confirm_pair_dialog(serial)
+            continue
         if BLE_NAME.lower() in low:
-            if tablet_tap_from_xml(serial, xml, BLE_NAME, exact=True) or tablet_tap_from_xml(serial, xml, BLE_NAME):
+            if tablet_tap_from_xml(serial, xml, BLE_NAME, exact=True):
                 tapped = True
-                time.sleep(1.2)
+                time.sleep(0.5)
                 tablet_confirm_pair_dialog(serial)
-                time.sleep(2.5)
+                pairing_started = True
                 continue
-        if "pair new device" in low:
-            tablet_tap_from_xml(serial, xml, "Pair new device")
+        if "pair new device" in low and "available devices" not in joined:
+            tablet_tap_from_xml(serial, xml, "Pair new device", exact=True)
             time.sleep(2.5)
             continue
         if "refresh" in low:
             tablet_tap_from_xml(serial, xml, "Refresh")
             time.sleep(2.0)
             continue
-        if "available devices" in joined or "available" in low:
-            adb(serial, ["shell", "input", "swipe", "540", "1400", "540", "700"], timeout=4)
+        if "available devices" in joined:
+            if BLE_NAME.lower() not in low:
+                tablet_swipe_available(serial, xml)
             time.sleep(1.2)
             continue
-        if not reset_once and now() - started >= 15:
+        if not reset_once and now() - started >= 45:
             reset_once = True
             print(STYLE.dim("  tablet Bluetooth reset; ShowboxMod not on the pairing list yet"))
             tablet_bt_reset(serial)
+            tablet_keep_pairing(session)
             xml = tablet_open_bt(serial) or xml
             continue
         time.sleep(1.0)
@@ -1434,9 +1849,79 @@ def tablet_open_bt(serial: str) -> Optional[str]:
     return xml
 
 
+def tablet_showbox_in_config(serial: str) -> bool:
+    conf = adb(serial, ["shell", "cat", "/data/misc/bluedroid/bt_config.conf"], timeout=6).stdout or ""
+    return "30:30:f9:72:8d:25" in conf.lower()
+
+
+def tablet_connect_paired(serial: str) -> bool:
+    """After bonding, Android often needs Connect on the device details page."""
+    tablet_back(serial)
+    adb(serial, ["shell", "am", "start", "-a", "android.settings.BLUETOOTH_SETTINGS"], timeout=6)
+    time.sleep(1.0)
+    xml = tablet_dump_xml(serial)
+    if not xml:
+        return False
+    labels = [x.lower() for x in tablet_labels(xml)]
+    if "available devices" in " ".join(labels):
+        tablet_back(serial)
+        time.sleep(0.8)
+        xml = tablet_dump_xml(serial) or xml
+    if not tablet_tap_from_xml(serial, xml, BLE_NAME, exact=True):
+        return False
+    time.sleep(1.0)
+    xml = tablet_dump_xml(serial) or ""
+    if tablet_tap_from_xml(serial, xml, "Connect", exact=True):
+        time.sleep(1.2)
+        return True
+    return "disconnect" in [x.lower() for x in tablet_labels(xml)]
+
+
+def tablet_wait_hogp(
+    serial: str,
+    seconds: float = 150.0,
+    confirm: bool = False,
+    session: Optional["Session"] = None,
+) -> bool:
+    """Android GATT+HOGP beside AIRSTEP often takes ~2 minutes after the Pair tap.
+
+    Do not uiautomator-dump in this loop unless a pairing dialog may still be
+    up. Dumping the Settings UI every second is enough to stall HIDH.
+    Keep the pairing window open: ads die when it closes beside AIRSTEP.
+    """
+    deadline = now() + seconds
+    last_note = 0.0
+    last_keep = now()
+    started = now()
+    tried_connect = False
+    tablet_keep_pairing(session)
+    while now() < deadline:
+        if tablet_showbox_connected(serial):
+            tablet_close_ads(session)
+            return True
+        if session is not None and now() - last_keep > 25:
+            tablet_keep_pairing(session)
+            last_keep = now()
+        if confirm:
+            xml = tablet_dump_xml(serial) or ""
+            if tablet_pairing_dialog(xml):
+                tablet_confirm_pair_dialog(serial)
+                confirm = False
+        elapsed = now() - started
+        if not tried_connect and elapsed >= 25:
+            tried_connect = True
+            print(STYLE.dim("  opening ShowboxMod device details to tap Connect"))
+            tablet_connect_paired(serial)
+        if elapsed - last_note >= 15:
+            last_note = elapsed
+            print(STYLE.dim(f"  waiting for Android HOGP ({elapsed:.0f}s)"))
+        time.sleep(1.5)
+    return tablet_showbox_connected(serial)
+
+
 def tablet_try_unpair(serial: str) -> str:
     xml = tablet_open_bt(serial)
-    if xml and tablet_tap_from_xml(serial, xml, BLE_NAME):
+    if xml and tablet_tap_from_xml(serial, xml, BLE_NAME, exact=True):
         time.sleep(0.8)
         xml = tablet_dump_xml(serial) or ""
         tablet_tap_from_xml(serial, xml, "Disconnect") or tablet_tap_from_xml(serial, xml, "Forget") or tablet_tap_from_xml(serial, xml, "Unpair")
@@ -1444,8 +1929,8 @@ def tablet_try_unpair(serial: str) -> str:
         xml = tablet_dump_xml(serial) or ""
         tablet_tap_from_xml(serial, xml, "Forget") or tablet_tap_from_xml(serial, xml, "Unpair") or tablet_tap_from_xml(serial, xml, "OK")
         return "disconnect/forget from Bluetooth settings"
-    dump = adb(serial, ["shell", "dumpsys", "bluetooth_manager"], timeout=8).stdout or ""
-    if BLE_NAME.lower() in dump.lower():
+    # dumpsys always mentions ShowboxMod after a scan. Only reset for a real bond.
+    if tablet_showbox_in_config(serial):
         tablet_bt_reset(serial)
         return "Bluetooth reset to drop a leftover ShowboxMod bond"
     return "ShowboxMod row not found to unpair"
@@ -1552,8 +2037,13 @@ def run_hid_probes(
         elif saw.get("abs") or saw.get("touch"):
             notes.append("abs")
         else:
-            ok = False
-            notes.append("no-abs")
+            action, heard = fire(f"{session.base}/api/v1/hid/touch", {"action": "tap", "x": "5000", "y": "5000", "via": "touch"})
+            saw = during(action)
+            if heard["code"] == 200 and (saw.get("abs") or saw.get("touch")):
+                notes.append("abs-via-touch")
+            else:
+                ok = False
+                notes.append("no-abs")
     if dig:
         action, heard = fire(f"{session.base}/api/v1/hid/touch", {"action": "tap", "x": "5000", "y": "5000", "via": "touch"})
         saw = during(action)
@@ -1608,8 +2098,9 @@ def run_pairing_matrix(
     initial_desc: Optional[tuple[int, int, int]] = None,
 ) -> None:
     prev_desc = initial_desc
-    reconnects = 0
+    host_addr = address
     for case in HOST_CASES:
+        reconnects = 0
         cid, title, midi, hid, kb, mouse, abs_p, dig = case
         name = f"{prefix} {title}"
         session.assert_uart(results, f"uart-before-{prefix}-{cid}", stale_ms=SCAN_STALE_MS)
@@ -1622,7 +2113,11 @@ def run_pairing_matrix(
             ))
             if forget is not None:
                 forget()
-        code, text = apply_case(session, address, case)
+        host_addr = live_host_address(session, host_addr) or host_addr
+        code, text = apply_case(session, host_addr, case)
+        if code != 200:
+            host_addr = live_host_address(session, host_addr) or host_addr
+            code, text = apply_case(session, host_addr, case)
         if code != 200:
             results.fail(name, f"role http={code} {text[:80]}")
             continue
@@ -1634,8 +2129,10 @@ def run_pairing_matrix(
                 prev_desc = desc
                 continue
             print(STYLE.dim(f"  re-paired: {how}"))
-            apply_case(session, address, case)
+            host_addr = live_host_address(session, host_addr) or host_addr
+            apply_case(session, host_addr, case)
             prev_desc = desc
+            reconnects = 0
         elif desc is not None:
             prev_desc = desc
         host = None
@@ -1645,12 +2142,26 @@ def run_pairing_matrix(
             hosts = connected_hosts(midi_body)
             if hosts:
                 host = hosts[0]
+                host_addr = str(host.get("address") or host_addr)
                 if host_matches(host, case) and (not hid or midi_body.get("hidReady")):
                     break
             time.sleep(0.4)
         if host is None:
             results.fail(name, "host disconnected after role change")
             continue
+        if not host_matches(host, case):
+            host_addr = str(host.get("address") or host_addr)
+            apply_case(session, host_addr, case)
+            retry_until = now() + 8
+            while now() < retry_until:
+                midi_body = session.midi()
+                hosts = connected_hosts(midi_body)
+                if hosts:
+                    host = hosts[0]
+                    host_addr = str(host.get("address") or host_addr)
+                    if host_matches(host, case) and (not hid or midi_body.get("hidReady")):
+                        break
+                time.sleep(0.4)
         if not host_matches(host, case):
             results.fail(
                 name,
@@ -1659,11 +2170,12 @@ def run_pairing_matrix(
                 f"abs={host.get('hidAbs')} dig={host.get('hidDigitizer')}",
             )
             continue
+        want_mouse = bool(mouse) and not bool(abs_p or dig)
         if hid and prefix == "laptop":
             until = now() + 5.0
             while now() < until and not evdev_showbox():
                 time.sleep(0.25)
-            if reconnect is not None and reconnects < 1 and not evdev_has_mouse():
+            if reconnect is not None and reconnects < 1 and want_mouse and not evdev_has_mouse():
                 print(STYLE.dim(f"  {prefix} {cid}: no mouse node after mix change, reconnecting"))
                 reconnects += 1
                 reconnect()
@@ -1687,7 +2199,8 @@ def run_pairing_matrix(
                 reconnects += 1
                 print(STYLE.dim(f"  {prefix} {cid}: HID probes missed events, reconnecting"))
                 reconnect()
-                wait_evdev(8.0, need_mouse=True)
+                if prefix == "laptop":
+                    wait_evdev(8.0, need_mouse=want_mouse)
                 time.sleep(0.5)
                 retry_ok, retry_detail = run_hid_probes(session, case, during, require_midi_wire)
                 if retry_ok:
@@ -1718,6 +2231,7 @@ def run(args: argparse.Namespace) -> int:
     args.ip = ip
     s = Session(ip, args.host, args.stale_ms)
     r = Results()
+    print_run_reminders()
     print()
     print(STYLE.bold("Showbox feature check"))
     print(STYLE.dim(f"  {how}"))
@@ -1757,13 +2271,81 @@ def run(args: argparse.Namespace) -> int:
         r.pass_("http-services", f"{code} {len(body)} bytes")
     else:
         r.fail("http-services", f"http={code} size={len(body)}")
+    plain_code, plain_body, location = http_get_noredirect(f"{s.base}/services", timeout=3.0)
+    if plain_code == 200 and not location:
+        r.pass_("http-plain", f"{plain_code} {len(plain_body)} bytes, no redirect")
+    else:
+        r.fail("http-plain", f"http={plain_code} location={location!r} size={len(plain_body)}")
     s.assert_uart(r, "uart-after-http")
 
-    code, _ = http_get(f"{s.base}/")
-    if code == 200:
-        r.pass_("http-root", str(code))
+    code, body = http_get(f"{s.base}/manifest.webmanifest", timeout=2.0)
+    if code == 200 and b"ShowboxMod" in body and b"standalone" in body:
+        r.pass_("pwa-manifest", f"{len(body)} bytes")
     else:
-        r.fail("http-root", f"http={code}")
+        r.fail("pwa-manifest", f"http={code} size={len(body)}")
+    code, body = http_get(f"{s.base}/sw.js", timeout=2.0)
+    if code == 200 and b"showboxmod-v" in body and b"addEventListener(\"fetch\"" in body:
+        r.pass_("pwa-sw", f"{len(body)} bytes")
+    else:
+        r.fail("pwa-sw", f"http={code} size={len(body)}")
+    code, body = http_get(f"{s.base}/icon-192.png", timeout=2.0)
+    if code == 200 and body[:8] == b"\x89PNG\r\n\x1a\n":
+        r.pass_("pwa-icon", f"{len(body)} bytes")
+    else:
+        r.fail("pwa-icon", f"http={code} size={len(body)}")
+
+    https = {}
+    code = 0
+    for _ in range(12):
+        code, body = http_get(f"{s.base}/api/v1/https", timeout=2.0)
+        try:
+            https = json.loads(body.decode("utf-8", "replace")) if code == 200 else {}
+        except json.JSONDecodeError:
+            https = {}
+        if code == 200 and https.get("enabled") is True and https.get("listening"):
+            break
+        if code == 200 and https.get("enabled") is not True:
+            break
+        time.sleep(0.5)
+    if code == 200 and https.get("enabled") is True and https.get("listening"):
+        r.pass_("https-on", f"listening={https.get('listening')} hasCa={https.get('hasCa')}")
+    elif https.get("enabled") is True:
+        r.fail("https-on", f"http={code} enabled={https.get('enabled')} listening={https.get('listening')}")
+    else:
+        r.skip("https-on", "HTTPS not enabled")
+    if tcp_open(args.ip, 443):
+        r.pass_("https-port", "443 open")
+    elif https.get("enabled") is True:
+        r.fail("https-port", "443 closed while HTTPS is enabled")
+    else:
+        r.skip("https-port", "HTTPS not enabled")
+    ca_code, ca_body = http_get(f"{s.base}/api/v1/https/ca.pem", timeout=2.0)
+    if https.get("enabled") is not True:
+        r.skip("https-ca", "HTTPS not enabled")
+    elif ca_code == 200 and b"BEGIN CERTIFICATE" in ca_body:
+        r.pass_("https-ca", f"{len(ca_body)} bytes")
+    elif https.get("listening"):
+        r.fail("https-ca", f"http={ca_code} size={len(ca_body)}")
+    else:
+        r.skip("https-ca", "TLS still starting")
+    if https.get("enabled") is True:
+        try:
+            ver, payload = https_get(args.ip, "/services", timeout=8.0)
+            ok = b"HTTP/1." in payload[:32] and b" 301" not in payload[:48] and b" 302" not in payload[:48]
+            if ok and len(payload) > 200:
+                r.pass_("https-handshake", f"{ver} {len(payload)} bytes")
+            else:
+                r.fail("https-handshake", f"{ver} {payload[:120]!r}")
+        except Exception as exc:
+            r.fail("https-handshake", str(exc))
+    else:
+        r.skip("https-handshake", "HTTPS not enabled")
+
+    code, body = http_get(f"{s.base}/", timeout=8.0, ua="Mozilla/5.0")
+    if code == 200 and len(body) > 10000:
+        r.pass_("http-root", f"{code} {len(body)} bytes")
+    else:
+        r.fail("http-root", f"http={code} size={len(body)}")
 
     midi = s.midi()
     if midi:
@@ -1791,36 +2373,50 @@ def run(args: argparse.Namespace) -> int:
     else:
         r.pass_("heap", f"heap={heap} largest={largest}")
 
-    uni = mdns_query_a(args.host, args.ip, 0.5)
-    mcast = mdns_query_a(args.host, "224.0.0.251", 0.5)
+    uni = mdns_query_a(args.host, args.ip, 0.5, toward=args.ip)
+    mcast = mdns_query_a(args.host, "224.0.0.251", 0.8, toward=args.ip)
     resolv = resolver_ips(args.host)
-    if args.ip in uni or args.ip in mcast or args.ip in resolv:
+    if args.ip in mcast:
         r.pass_("mdns-a", f"unicast={uni} mcast={mcast} resolv={resolv}")
+    elif args.ip in uni or args.ip in resolv:
+        r.fail("mdns-a", f"no multicast A from module uni={uni} mcast={mcast} resolv={resolv}")
     else:
         r.fail("mdns-a", f"unicast={uni} mcast={mcast} resolv={resolv}")
     dests = [args.ip, "224.0.0.251"]
-    if mdns_has_ptr("_http._tcp.local", dests) or args.ip in resolv:
-        r.pass_("mdns-http", "_http._tcp or A record for showbox.local")
+    if mdns_has_ptr("_http._tcp.local", dests, toward=args.ip):
+        r.pass_("mdns-http", "_http._tcp from module")
+    elif args.ip in mcast:
+        r.skip("mdns-http", "no PTR in 0.7s (multicast A is up)")
     else:
-        r.skip("mdns-http", "no PTR in 0.7s (A record may still work)")
+        r.fail("mdns-http", "no multicast PTR and no multicast A")
     if args.ip in resolv or args.ip in uni:
         code, body = http_get_retry(f"{s.base}/services", timeout=2.0, host=args.host)
         if code == 200 and len(body) > 1000:
             r.pass_("http-via-mdns", f"{code} {len(body)} bytes Host={args.host}")
         else:
             r.fail("http-via-mdns", f"http={code} size={len(body)}")
+        root_ok = any(st == "PASS" and name == "http-root" for st, _sec, name, _d in r.rows)
+        if root_ok:
+            r.pass_("mixer-via-mdns", "http-root already pulled the SPA; skip a second gzip under BLE")
+        else:
+            code, body = http_get(f"{s.base}/", timeout=8.0, host=args.host, ua="Mozilla/5.0")
+            if code == 200 and len(body) > 10000:
+                r.pass_("mixer-via-mdns", f"{code} {len(body)} bytes Host={args.host}")
+            else:
+                r.fail("mixer-via-mdns", f"http={code} size={len(body)}")
     else:
         r.skip("http-via-mdns", "name did not resolve")
+        r.skip("mixer-via-mdns", "name did not resolve")
     s.assert_uart(r, "uart-after-mdns")
 
-    tel_ok, tel_detail = telnet_messages(args.ip, want=2)
+    tel_ok, tel_detail = telnet_messages(args.ip, want=1, timeout=4.0)
     if tel_ok:
         r.pass_("telnet", tel_detail)
     else:
         r.fail("telnet", tel_detail)
     s.assert_uart(r, "uart-after-telnet")
 
-    ota_mdns = mdns_has_ptr("_arduino._tcp.local", dests)
+    ota_mdns = mdns_has_ptr("_arduino._tcp.local", dests, toward=args.ip)
     ota_udp = udp_open(args.ip, OTA_PORT)
     if ota_mdns or ota_udp:
         r.pass_("ota-available", f"mDNS _arduino._tcp={int(ota_mdns)} UDP {OTA_PORT}={int(ota_udp)} (not flashing)")
@@ -1856,33 +2452,17 @@ def run(args: argparse.Namespace) -> int:
     with ThreadPoolExecutor(max_workers=6) as pool:
         while now() < deadline:
             sim_n += 1
-            futs = {
-                pool.submit(ping_ok, args.ip): "ping",
-                pool.submit(http_get, f"{s.base}/services"): "services",
-                pool.submit(http_json, f"{s.base}/api/v1/showbox/link"): "link",
-                pool.submit(http_json, f"{s.base}/api/v1/midi"): "midi",
-            }
-            ping = True
-            link_body: dict[str, Any] = {}
-            svc_ok = False
-            midi_ok = False
-            for fut in as_completed(futs):
-                kind = futs[fut]
-                try:
-                    val = fut.result()
-                except Exception:
-                    sim_fail += 1
-                    continue
-                if kind == "ping":
-                    ping = bool(val)
-                elif kind == "services":
-                    code, body = val
-                    svc_ok = code == 200 and len(body) > 1000
-                elif kind == "link":
-                    _code, link_body = val
-                elif kind == "midi":
-                    _code, midi_body = val
-                    midi_ok = bool(midi_body.get("discoverable"))
+            ping_fut = pool.submit(ping_ok, args.ip)
+            code, body = http_get(f"{s.base}/services")
+            svc_ok = code == 200 and len(body) > 1000
+            _code, link_body = http_json(f"{s.base}/api/v1/showbox/link")
+            _code, midi_body = http_json(f"{s.base}/api/v1/midi")
+            midi_ok = bool(midi_body.get("discoverable"))
+            try:
+                ping = bool(ping_fut.result())
+            except Exception:
+                ping = False
+                sim_fail += 1
             live, why = uart_ok(link_body, SCAN_STALE_MS)
             if not live:
                 live, why = uart_ok_sampled(s, SCAN_STALE_MS)
@@ -1908,6 +2488,9 @@ def run(args: argparse.Namespace) -> int:
     r.section("Radios")
     wifi = transport(s.midi(), "wifi")
     cmd = applemidi_invite(args.ip)
+    if cmd not in ("OK", "NO", "BY", "CK", "IN"):
+        time.sleep(0.4)
+        cmd = applemidi_invite(args.ip, timeout=2.0)
     if cmd in ("OK", "NO", "BY", "CK", "IN"):
         r.pass_("wifi-rtp-midi", f"AppleMIDI UDP {APPLEMIDI_PORT} replied {cmd}")
     elif not wifi.get("enabled"):
@@ -1917,6 +2500,7 @@ def run(args: argparse.Namespace) -> int:
     s.assert_uart(r, "uart-after-rtp-midi")
 
     print(STYLE.dim(f"  host LE scan for {BLE_NAME} ({args.host_scan:.0f}s)"))
+    laptop_open_ads(s)
     status, scan_detail, scanned_addr = host_le_scan(args.host_scan)
     if status == "pass":
         r.pass_("ble-advertising-air", scan_detail)
@@ -1924,6 +2508,10 @@ def run(args: argparse.Namespace) -> int:
         r.skip("ble-advertising-air", scan_detail)
     else:
         r.fail("ble-advertising-air", scan_detail)
+    s.post_settings(acceptNewHosts=False)
+    wifi_until = now() + 15.0
+    while now() < wifi_until and not ping_ok(args.ip):
+        time.sleep(0.4)
     s.assert_uart(r, "uart-after-host-le-scan", stale_ms=SCAN_STALE_MS)
 
     print(STYLE.dim("  module BLE scan (crowds the radio; UART must still move)"))
@@ -1961,12 +2549,26 @@ def run(args: argparse.Namespace) -> int:
     want_laptop = args.pair and args.laptop
     want_tablet = args.pair and args.tablet
     if not args.pair:
-        r.skip("host-matrix", "--no-pair")
+        r.skip("host-matrix", "slow; pass --pair if the HID+MIDI matrix has earned its keep")
     else:
         bt_disconnect_named("ShowBox")
         bt_scan_off()
+        # A leftover Android HOGP link plus BlueZ discovery is what produced
+        # bluetoothd ATT Unlikely Error on HID Information / Report Reference.
+        if args.tablet:
+            serials = adb_devices()
+            if serials:
+                print(STYLE.dim("  dropping leftover tablet ShowboxMod bond before laptop pair"))
+                tablet_try_unpair(serials[0])
+                # Identity + last RPAs. Forget also ignores them so a leftover
+                # Android bond cannot take the only host slot during laptop pair.
+                for addr in ("c0:3d:03:11:1f:c8", "5f:9a:8f:79:59:2c", "47:62:67:e6:a7:5d"):
+                    module_forget(s, addr)
+        # Leftover NVS hosts keep the last laptop/tablet mix (often digitizer).
+        # Pairing on that map then applying kb+mouse rebuilds HOGP and drops the link.
+        forget_module_hosts(s)
         s.post_settings(acceptNewHosts=True, bleHid=True, bleMidiPeripheral=True, bleHidKeyboard=True, bleHidMouse=True, bleHidAbs=False, bleHidDigitizer=False)
-        time.sleep(0.3)
+        laptop_open_ads(s)
 
         if want_laptop:
             addr = scanned_addr or bt_find_showbox()
@@ -1977,7 +2579,7 @@ def run(args: argparse.Namespace) -> int:
                 r.skip("laptop-pair", "ShowboxMod address not in bluetoothctl")
             else:
                 print(STYLE.dim(f"  pairing this laptop to {addr} (temporary)"))
-                paired, how = laptop_pair(addr)
+                paired, how = laptop_pair(addr, s)
                 if not paired:
                     r.fail("laptop-pair", how)
                 else:
@@ -1995,11 +2597,13 @@ def run(args: argparse.Namespace) -> int:
                             if hosts and host_matches(hosts[0], HOST_CASES[1]) and midi_body.get("hidReady"):
                                 break
                             time.sleep(0.3)
-                        names = wait_laptop_hid(addr)
+                        names = wait_laptop_hid(addr, s)
                         if not names:
                             r.fail("laptop-hid-device", "no /dev/input node named ShowboxMod")
                         else:
                             r.pass_("laptop-hid-device", ", ".join(sorted(names)))
+                            http_post(f"{s.base}/api/v1/hid/keyboard", {"key": "pageup"})
+                            time.sleep(0.5)
                         run_pairing_matrix(
                             s,
                             r,
@@ -2007,6 +2611,7 @@ def run(args: argparse.Namespace) -> int:
                             host.get("address") or addr,
                             during_laptop,
                             False,
+                            reconnect=lambda: laptop_reconnect(addr, s),
                             rebond=lambda: laptop_rebond(s, addr),
                             forget=lambda: laptop_forget(s, addr),
                             initial_desc=(1, 1, 0),
@@ -2020,7 +2625,17 @@ def run(args: argparse.Namespace) -> int:
                     if not args.keep_host:
                         laptop_disconnect(addr, forget=True)
                         bt_scan_off()
-                        s.post_settings(acceptNewHosts=True, bleHid=True, bleMidiPeripheral=True)
+                        module_forget(s, (host or {}).get("address") or addr)
+                        wait_no_hosts(s, 6.0)
+                        s.post_settings(
+                            acceptNewHosts=True,
+                            bleHid=True,
+                            bleMidiPeripheral=True,
+                            bleHidKeyboard=True,
+                            bleHidMouse=True,
+                            bleHidAbs=False,
+                            bleHidDigitizer=False,
+                        )
                         r.pass_("laptop-unpair", "disconnected and removed")
                         time.sleep(2.0)
                     else:
@@ -2039,12 +2654,33 @@ def run(args: argparse.Namespace) -> int:
             else:
                 serial = serials[0]
                 print(STYLE.dim("  waiting for ShowboxMod to advertise again after laptop unpair"))
+                forget_module_hosts(s)
+                s.post_settings(
+                    acceptNewHosts=True,
+                    bleHid=True,
+                    bleMidiPeripheral=True,
+                    bleHidKeyboard=True,
+                    bleHidMouse=True,
+                    bleHidAbs=False,
+                    bleHidDigitizer=False,
+                )
+                adv_deadline = now() + 12.0
+                while now() < adv_deadline and not s.midi().get("advertising"):
+                    s.post_settings(acceptNewHosts=True, bleHid=True, bleMidiPeripheral=True)
+                    time.sleep(1.0)
                 adv_status, adv_detail, _adv_addr = host_le_scan(8.0)
                 if adv_status != "pass":
                     print(STYLE.dim(f"  host LE scan after unpair: {adv_detail}"))
+                    s.post_settings(acceptNewHosts=True)
                     time.sleep(3.0)
                 print(STYLE.dim(f"  pairing tablet {serial} to ShowboxMod (temporary)"))
-                ok_tab, how = tablet_try_pair(serial)
+                # Leftover Android DSCP is a 31-byte truncated Pointer
+                # (MTU 23 first+last blob). Reusing that bond yields EV=1.
+                if tablet_showbox_in_config(serial) or tablet_showbox_connected(serial):
+                    print(STYLE.dim("  dropping leftover Android ShowboxMod bond/cache"))
+                    tablet_try_unpair(serial)
+                    time.sleep(1.0)
+                ok_tab, how = tablet_try_pair(serial, s)
                 host = wait_host(s, 16 if ok_tab else 10)
                 if host is None and not ok_tab:
                     if "tapped ShowboxMod" in how:
@@ -2055,14 +2691,26 @@ def run(args: argparse.Namespace) -> int:
                     r.fail("tablet-pair", f"{how}; module never listed a connected host")
                 else:
                     r.pass_("tablet-pair", f"{host.get('name') or host.get('address')} {how}")
-                    hogp_deadline = now() + 18
-                    while now() < hogp_deadline and not tablet_showbox_connected(serial):
-                        tablet_confirm_pair_dialog(serial)
-                        time.sleep(1.0)
-                    if tablet_showbox_connected(serial):
-                        r.pass_("tablet-hid-device", "ShowboxMod in tablet getevent/dumpsys")
+                    # Leftover NVS mix from the laptop matrix can be digitizer-only.
+                    apply_case(s, host.get("address") or "", HOST_CASES[1])
+                    mix_deadline = now() + 8
+                    while now() < mix_deadline:
+                        midi_body = s.midi()
+                        hosts = connected_hosts(midi_body)
+                        if hosts:
+                            host = hosts[0]
+                            if host_matches(host, HOST_CASES[1]) and midi_body.get("hidReady"):
+                                break
+                        time.sleep(0.3)
+                    print(STYLE.dim("  waiting for Android HOGP (GATT discovery can take ~2 min)"))
+                    hogp = tablet_wait_hogp(serial, 150.0, confirm=True, session=s)
+                    if hogp:
+                        nodes = tablet_input_nodes(serial)
+                        r.pass_("tablet-hid-device", f"ShowboxMod nodes={nodes or 'dumpsys-only'}")
+                        tablet_close_ads(s)
                     else:
                         r.fail("tablet-hid-device", "BLE host up but Android HOGP did not create an input device")
+                    tablet_wake(serial)
                     run_pairing_matrix(
                         s,
                         r,
@@ -2070,10 +2718,29 @@ def run(args: argparse.Namespace) -> int:
                         host.get("address") or "",
                         during_tablet(serial),
                         False,
+                        reconnect=lambda: tablet_reconnect(serial, s),
                         rebond=lambda: tablet_rebond(s, serial),
                         forget=lambda: tablet_forget(s, serial),
                         initial_desc=(1, 1, 0),
                     )
+                    saw_hid = {"keyboard": False, "mouse": False, "abs": False, "touch": False}
+                    for st, _sec, name, detail in r.rows:
+                        if st != "PASS" or not str(name).startswith("tablet "):
+                            continue
+                        blob = str(detail).lower()
+                        if "key" in blob:
+                            saw_hid["keyboard"] = True
+                        if "rel" in blob:
+                            saw_hid["mouse"] = True
+                        if "abs" in blob:
+                            saw_hid["abs"] = True
+                        if "touch" in blob:
+                            saw_hid["touch"] = True
+                    missing = [kind for kind, ok in saw_hid.items() if not ok]
+                    if missing:
+                        r.fail("tablet-hid-android", "Android never saw " + ",".join(missing))
+                    else:
+                        r.pass_("tablet-hid-android", "keyboard + relative mouse + abs mouse + touch")
                     if not args.keep_host:
                         note = tablet_try_unpair(serial)
                         r.pass_("tablet-unpair", note)
@@ -2156,8 +2823,8 @@ def main() -> int:
     parser.add_argument("--host-scan", type=float, default=8.0, help="seconds for local LE advertisement scan")
     parser.add_argument("--soak", type=float, default=12.0, help="final soak seconds")
     parser.add_argument("--interval", type=float, default=0.8)
-    parser.add_argument("--pair", dest="pair", action="store_true", default=True, help="pair laptop/tablet (default)")
-    parser.add_argument("--no-pair", dest="pair", action="store_false", help="skip HID+MIDI host matrix")
+    parser.add_argument("--pair", dest="pair", action="store_true", default=False, help="pair laptop/tablet HID+MIDI matrix (slow, opt-in)")
+    parser.add_argument("--no-pair", dest="pair", action="store_false", help="skip HID+MIDI host matrix (default)")
     parser.add_argument("--laptop", dest="laptop", action="store_true", default=True)
     parser.add_argument("--no-laptop", dest="laptop", action="store_false")
     parser.add_argument("--tablet", dest="tablet", action="store_true", default=True)

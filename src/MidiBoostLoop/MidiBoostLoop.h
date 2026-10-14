@@ -37,7 +37,7 @@ private:
     enum class Job : uint8_t {
         None,
         Tap,
-        EndRecThenOverdub,
+        Tap2,
         Stop,
         Delete
     };
@@ -49,6 +49,7 @@ private:
 
     void logIncoming(const char* kind, uint8_t channel, uint8_t a, uint8_t b);
     void handleControlChange(uint8_t channel, uint8_t controller, uint8_t value);
+    void sendLooperNow(uint8_t controller);
     void handleRecordPlayOverdub();
     void handleStop();
     void handleDelete();
@@ -63,9 +64,11 @@ private:
     const char* stateName(looper_state state) const;
     bool isLooperCc(uint8_t controller) const;
     bool isBoostCc(uint8_t controller) const;
+    bool isAutoBoostCc(uint8_t controller) const;
+    bool isBoostToggleCc(uint8_t controller) const;
     bool isBoostEcho(uint8_t controller, uint8_t value) const;
-    bool looperIsPlay() const;
     bool autoBoostWanted() const;
+    void toggleAutoBoost();
     void setBoost(bool on);
     void syncBoost();
     void applyBoost();
@@ -94,6 +97,7 @@ private:
     bool boostDirty = false;
     bool boostNeedAnnounce = false;
     bool autoBoostOn = false;
+    bool autoBoostEnabled = true;
     uint8_t lastPublishedBoostCc = 0;
     uint32_t lastOutputGeneration = 0;
     uint32_t announceAt = 0;
@@ -113,15 +117,14 @@ private:
 
     static constexpr uint8_t kInputChannel2 = 1;
     static constexpr uint8_t kPressValue = 64;
-    static constexpr int kBoostSteps = 4;
+    static constexpr uint8_t kAutoBoostCc = 107;
+    static constexpr uint8_t kBoostToggleCc = 108;
+    static constexpr int kBoostSteps = 2;
     static constexpr int kStepCount = 16;
     static constexpr float kMinGain = Showbox::InputGain::POSITION_1;
     static constexpr float kMaxGain = Showbox::InputGain::POSITION_16;
     static constexpr uint32_t kPressDebounceMs = 40;
-    static constexpr uint32_t kBoostEchoMs = 250;
-    static constexpr uint32_t kTapGapMs = 60;
-    static constexpr uint32_t kOverdubMinMs = 250;
-    static constexpr uint32_t kOverdubMaxMs = 900;
+    static constexpr uint32_t kBoostEchoMs = 1000;
 
     static MidiBoostLoop* instance;
 };

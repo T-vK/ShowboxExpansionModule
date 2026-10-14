@@ -22,6 +22,8 @@ import time
 import urllib.error
 import urllib.request
 
+from test_reminders import print_run_reminders
+
 REQUIRED = ("initM", "initB", "hbM", "hbB", "frmBase", "frmMix", "goodM", "goodB", "lock")
 
 
@@ -38,6 +40,17 @@ def fetch(url: str, timeout: float) -> tuple[int, dict]:
         return err.code, {}
     except Exception:
         return 0, {}
+
+
+def fetch_live(url: str, timeout: float = 2.0, attempts: int = 3) -> tuple[int, dict]:
+    last = (0, {})
+    for i in range(attempts):
+        last = fetch(url, timeout=timeout)
+        if last[0] == 200 and last[1]:
+            return last
+        if i + 1 < attempts:
+            time.sleep(0.2)
+    return last
 
 
 def age(v) -> int:
@@ -65,6 +78,7 @@ def main() -> int:
     parser.add_argument("--stale-ms", type=int, default=2000)
     args = parser.parse_args()
 
+    print_run_reminders()
     url = f"http://{args.ip}/api/v1/showbox/link"
     print(
         f"UART reconnect check {url} soak={args.seconds:.0f}s settle={args.settle:.0f}s "
@@ -80,7 +94,7 @@ def main() -> int:
     live_at = None
     print("WAIT both sides live...")
     while time.monotonic() < live_deadline:
-        code, body = fetch(url, timeout=1.0)
+        code, body = fetch_live(url)
         missing = [k for k in REQUIRED if k not in body]
         base = age(body.get("baseAgeMs"))
         mix = age(body.get("mixerAgeMs"))
@@ -116,7 +130,7 @@ def main() -> int:
         i += 1
         t0 = time.monotonic()
         is_settled = t0 >= settle_until
-        code, body = fetch(url, timeout=1.0)
+        code, body = fetch_live(url)
         missing = [k for k in REQUIRED if k not in body]
         if code != 200:
             http_fail += 1

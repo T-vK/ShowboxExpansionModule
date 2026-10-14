@@ -31,9 +31,28 @@ public:
                 continue;
             }
             if (wantTimestamp && (byte & 0x80) != 0) {
-                i++;
-                wantTimestamp = false;
-                continue;
+                uint8_t kind = byte & 0xF0;
+                bool channelStatus = kind >= 0x80 && kind <= 0xE0;
+                int need = channelStatus ? dataBytesFor(byte) : 0;
+                bool complete = channelStatus && need > 0 && i + (size_t)need < len;
+                if (complete) {
+                    for (int k = 1; k <= need; k++) {
+                        if ((data[i + k] & 0x80) != 0) {
+                            complete = false;
+                            break;
+                        }
+                    }
+                }
+                // AIRSTEP often omits the timestamp-low byte, so the first
+                // 0x80+ after the header is already MIDI status. Only steal it
+                // as a timestamp when we already have running status, or the
+                // following bytes are not a complete channel message.
+                bool airstepStatus = complete && runningStatus == 0 && i == 1;
+                if (!airstepStatus && !(complete && byte == runningStatus)) {
+                    i++;
+                    wantTimestamp = false;
+                    continue;
+                }
             }
             uint8_t statusByte;
             if ((byte & 0x80) != 0) {
@@ -92,21 +111,7 @@ private:
     }
 
     void emit(uint8_t statusByte, uint8_t p1, uint8_t p2) {
-        uint8_t kind = statusByte >> 4;
-        uint8_t channel = statusByte & 0x0F;
-        if (kind == 0xB) {
-            action->onControlChange(channel, p1, p2);
-        } else if (kind == 0x9) {
-            if (p2 == 0) {
-                action->onNoteOff(channel, p1, p2);
-            } else {
-                action->onNoteOn(channel, p1, p2);
-            }
-        } else if (kind == 0x8) {
-            action->onNoteOff(channel, p1, p2);
-        } else if (kind == 0xE) {
-            action->onPitchBend(channel, p1);
-        }
+        midiInboundDispatch(action, statusByte, p1, p2);
     }
 };
 

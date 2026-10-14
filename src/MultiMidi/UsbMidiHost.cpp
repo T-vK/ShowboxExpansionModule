@@ -2,7 +2,7 @@
 
 #include "MidiAction.h"
 #include "MidiCommon.h"
-#include "MidiParser.h"
+#include "MultiMidi/FullMidiParser.h"
 #include <usb/usb_host.h>
 #include <cstring>
 
@@ -26,7 +26,7 @@ uint8_t midiQueue[256];
 int queueHead = 0;
 int queueTail = 0;
 portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
-midi::MidiParser parser;
+FullMidiParser parser;
 bool parserReady = false;
 
 void pushMidi(const uint8_t* data, int len) {

@@ -10,6 +10,7 @@ namespace {
 constexpr const char* kPrefsNamespace = "midiboost";
 constexpr const char* kBoostActiveKey = "boostOn";
 constexpr const char* kBaseGainKey = "baseGain";
+constexpr const char* kAutoBoostKey = "autoEn";
 
 const float kGainSteps[] = {
     Showbox::InputGain::POSITION_1,
@@ -69,8 +70,8 @@ void MidiBoostLoop::begin(MultiMidi* midiIn) {
     announceAt = millis() + 250;
     lastOutputGeneration = midi->outputGeneration();
 
-    Debug->printf("MIDI boost/loop CC on channel %u, value >= %u: rec/play/overdub %u, stop %u, delete %u, boost on %u, boost off %u, %+d steps\n",
-        midiChannel + 1, kPressValue, recPlayOverdubCc, stopCc, deleteCc, boostOnCc, boostOffCc, kBoostSteps);
+    Debug->printf("MIDI boost/loop CC on channel %u, value > 0: rec/play/overdub %u, stop %u, delete %u, boost on %u, boost off %u, auto %u, toggle %u, %+d steps\n",
+        midiChannel + 1, recPlayOverdubCc, stopCc, deleteCc, boostOnCc, boostOffCc, kAutoBoostCc, kBoostToggleCc, kBoostSteps);
     Debug->printf("Looper start state %s (%u) mode=%s\n",
         stateName(showbox->getLooperState()),
         (unsigned)showbox->getUint8EntityValue(entity_id::LOOPER_STATE),
@@ -80,10 +81,18 @@ void MidiBoostLoop::begin(MultiMidi* midiIn) {
 void MidiBoostLoop::tick() {
     runJob();
     syncModeFromLive();
-    syncBoost();
-    if (boostApply) {
-        applyBoost();
+    static uint32_t lastClaimMs = 0;
+    static bool boostClaimed = false;
+    uint32_t now = millis();
+    if (lastClaimMs == 0 || (int32_t)(now - lastClaimMs) >= 250) {
+        lastClaimMs = now;
+        boostClaimed = actionRulesClaimMidi("cc", midiChannel, boostOnCc)
+            || actionRulesClaimMidi("cc", midiChannel, boostOffCc);
     }
+    if (boostClaimed) {
+        return;
+    }
+    syncBoost();
     uint32_t gen = (midi != nullptr) ? midi->outputGeneration() : 0;
     if (gen != lastOutputGeneration) {
         lastOutputGeneration = gen;
@@ -143,6 +152,12 @@ void MidiBoostLoop::onControlChange(uint8_t channel, uint8_t controller, uint8_t
     if (instance->isBoostEcho(controller, value)) {
         return;
     }
+    if (value > 0 && instance->isLooperCc(controller) && !instance->isBoostCc(controller)) {
+        if (!instance->acceptPress()) {
+            return;
+        }
+        instance->sendLooperNow(controller);
+    }
     instance->logIncoming("cc", channel, controller, value);
     instance->handleControlChange(channel, controller, value);
 }
@@ -152,6 +167,7 @@ void MidiBoostLoop::onPitchBend(uint8_t channel, uint8_t value) {
         return;
     }
     instance->logIncoming("pitch", channel, value, 0);
+    actionRulesOnMidi("pitchBend", channel, value, 0);
     if (instance->nextPitchBend != nullptr) {
         instance->nextPitchBend(channel, value);
     }
@@ -164,6 +180,14 @@ bool MidiBoostLoop::isLooperCc(uint8_t controller) const {
 
 bool MidiBoostLoop::isBoostCc(uint8_t controller) const {
     return controller == boostOnCc || controller == boostOffCc;
+}
+
+bool MidiBoostLoop::isAutoBoostCc(uint8_t controller) const {
+    return controller == kAutoBoostCc;
+}
+
+bool MidiBoostLoop::isBoostToggleCc(uint8_t controller) const {
+    return controller == kBoostToggleCc;
 }
 
 bool MidiBoostLoop::isBoostEcho(uint8_t controller, uint8_t value) const {
@@ -187,29 +211,42 @@ bool MidiBoostLoop::acceptPress() {
 }
 
 void MidiBoostLoop::handleControlChange(uint8_t channel, uint8_t controller, uint8_t value) {
-    (void)channel;
-    if (value >= kPressValue && isBoostCc(controller)) {
+    if (isLooperCc(controller) && !isBoostCc(controller)) {
+        if (value > 0) {
+            actionRulesOnMidi("cc", channel, controller, value);
+            if (actionRulesClaimMidi("cc", channel, controller)) {
+                return;
+            }
+            if (controller == recPlayOverdubCc) {
+                handleRecordPlayOverdub();
+            } else if (controller == stopCc) {
+                handleStop();
+            } else if (controller == deleteCc) {
+                handleDelete();
+            }
+        }
+        return;
+    }
+    if (value > 0 && isBoostCc(controller)) {
         bool on = controller == boostOnCc;
         Debug->printf("Boost CC %u -> %s\n", (unsigned)controller, on ? "on" : "off");
         setBoost(on);
         return;
     }
-    if (value >= kPressValue && isLooperCc(controller)) {
-        if (!acceptPress()) {
-            return;
+    if (value > 0 && isBoostToggleCc(controller)) {
+        if (!actionRulesClaimMidi("cc", channel, controller)) {
+            Debug->printf("Boost CC %u -> toggle\n", (unsigned)controller);
+            setBoost(!boostActive);
         }
-        if (controller == recPlayOverdubCc) {
-            handleRecordPlayOverdub();
-            return;
+        actionRulesOnMidi("cc", channel, controller, value);
+        return;
+    }
+    if (value > 0 && isAutoBoostCc(controller)) {
+        if (!actionRulesClaimMidi("cc", channel, controller)) {
+            toggleAutoBoost();
         }
-        if (controller == stopCc) {
-            handleStop();
-            return;
-        }
-        if (controller == deleteCc) {
-            handleDelete();
-            return;
-        }
+        actionRulesOnMidi("cc", channel, controller, value);
+        return;
     }
     if (isLooperCc(controller)) {
         return;
@@ -267,9 +304,25 @@ const char* MidiBoostLoop::buttonName(looper_button_action action) const {
 }
 
 void MidiBoostLoop::sendButton(looper_button_action action) {
-    Debug->printf("Looper LOOPER_BUTTON %s (live %s)\n",
-        buttonName(action), stateName(showbox->getLooperState()));
     showbox->sendLooperButtonAction(action);
+}
+
+void MidiBoostLoop::sendLooperNow(uint8_t controller) {
+    if (controller == recPlayOverdubCc) {
+        uint8_t state = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
+        showbox->tapLooper(state == looper_state::RECORD_INITIAL_LOOP ? 2 : 1);
+        showbox->noteLooperOutgoing();
+        return;
+    }
+    if (controller == stopCc) {
+        showbox->sendLooperButtonAction(looper_button_action::DOUBLE_PRESS);
+        showbox->noteLooperOutgoing();
+        return;
+    }
+    if (controller == deleteCc) {
+        showbox->sendLooperButtonAction(looper_button_action::LONG_PRESS);
+        showbox->noteLooperOutgoing();
+    }
 }
 
 void MidiBoostLoop::syncModeFromLive() {
@@ -293,144 +346,85 @@ void MidiBoostLoop::queueJob(Job next) {
     jobAt = millis();
 }
 
-bool MidiBoostLoop::looperIsPlay() const {
-    return showbox->getLooperState() == PLAY;
-}
-
 void MidiBoostLoop::runJob() {
-    if (job == Job::None) {
-        return;
-    }
-    if ((int32_t)(millis() - jobAt) < 0) {
-        return;
-    }
-    if (job == Job::Tap) {
-        if (jobStep == 0) {
-            sendButton(looper_button_action::DOWN);
-            jobStep = 1;
-            jobAt = millis() + kTapGapMs;
-            return;
-        }
-        sendButton(looper_button_action::UP);
-        job = Job::None;
-        return;
-    }
-    if (job == Job::EndRecThenOverdub) {
-        if (jobStep == 0) {
-            sendButton(looper_button_action::DOWN);
-            jobStep = 1;
-            jobAt = millis() + kTapGapMs;
-            return;
-        }
-        if (jobStep == 1) {
-            sendButton(looper_button_action::UP);
-            jobStep = 2;
-            jobAt = millis() + kOverdubMinMs;
-            Debug->println("Looper rec ended, waiting for PLAY before overdub tap");
-            return;
-        }
-        if (jobStep == 2) {
-            bool ready = looperIsPlay();
-            bool timedOut = (int32_t)(millis() - jobAt) >= (int32_t)(kOverdubMaxMs - kOverdubMinMs);
-            if (!ready && !timedOut) {
-                return;
-            }
-            Debug->printf("Looper overdub tap (live %s%s)\n",
-                stateName(showbox->getLooperState()),
-                timedOut && !ready ? ", timed out" : "");
-            sendButton(looper_button_action::DOWN);
-            jobStep = 3;
-            jobAt = millis() + kTapGapMs;
-            return;
-        }
-        sendButton(looper_button_action::UP);
-        job = Job::None;
-        Debug->println("Looper overdub");
-        return;
-    }
-    if (job == Job::Stop) {
-        sendButton(looper_button_action::DOUBLE_PRESS);
-        job = Job::None;
-        Debug->println("Looper stop");
-        return;
-    }
-    if (job == Job::Delete) {
-        sendButton(looper_button_action::LONG_PRESS);
-        job = Job::None;
-        Debug->println("Looper delete");
-    }
+    job = Job::None;
 }
 
 void MidiBoostLoop::handleRecordPlayOverdub() {
-    if (job != Job::None) {
-        Debug->println("Looper 102 ignored (busy)");
-        return;
-    }
     syncModeFromLive();
     switch (mode) {
         case Mode::Empty:
             mode = Mode::Recording;
-            queueJob(Job::Tap);
-            Debug->printf("Looper rec (button tap, live %s)\n",
-                stateName(showbox->getLooperState()));
+            if (autoBoostEnabled) {
+                setBoost(false);
+            }
             break;
         case Mode::Recording:
             mode = Mode::Overdub;
-            queueJob(Job::EndRecThenOverdub);
-            Debug->println("Looper rec -> play -> overdub");
+            if (autoBoostEnabled) {
+                setBoost(false);
+            }
             break;
         case Mode::Playing:
             mode = Mode::Overdub;
-            queueJob(Job::Tap);
-            Debug->println("Looper overdub (button tap)");
+            if (autoBoostEnabled) {
+                setBoost(false);
+            }
             break;
         case Mode::Overdub:
             mode = Mode::Playing;
-            queueJob(Job::Tap);
-            Debug->println("Looper play after overdub (button tap)");
+            if (autoBoostEnabled) {
+                setBoost(true);
+            }
             break;
         case Mode::Stopped:
             mode = Mode::Playing;
-            queueJob(Job::Tap);
-            Debug->println("Looper play from stop (button tap)");
             break;
     }
 }
 
 void MidiBoostLoop::handleStop() {
-    if (job != Job::None) {
-        Debug->println("Looper 103 ignored (busy)");
-        return;
-    }
     syncModeFromLive();
-    Debug->printf("Looper stop (live %s mode %s)\n",
-        stateName(showbox->getLooperState()), modeName(mode));
     mode = (mode == Mode::Recording || mode == Mode::Empty) ? Mode::Empty : Mode::Stopped;
-    queueJob(Job::Stop);
+    if (autoBoostEnabled) {
+        setBoost(false);
+    }
 }
 
 void MidiBoostLoop::handleDelete() {
-    if (job != Job::None) {
-        Debug->println("Looper 104 ignored (busy)");
-        return;
-    }
     syncModeFromLive();
-    Debug->printf("Looper delete (live %s mode %s)\n",
-        stateName(showbox->getLooperState()), modeName(mode));
     mode = Mode::Empty;
-    queueJob(Job::Delete);
+    if (autoBoostEnabled) {
+        setBoost(false);
+    }
 }
 
 void MidiBoostLoop::setBoost(bool on) {
     boostWanted = on;
-    boostApply = true;
+    applyBoost();
 }
 
 bool MidiBoostLoop::autoBoostWanted() const {
-    return mode == Mode::Playing && job == Job::None;
+    return autoBoostEnabled && mode == Mode::Playing && job == Job::None && boostWanted;
+}
+
+void MidiBoostLoop::toggleAutoBoost() {
+    autoBoostEnabled = !autoBoostEnabled;
+    boostDirty = true;
+    Debug->printf("Auto boost %s\n", autoBoostEnabled ? "on" : "off");
+    if (!autoBoostEnabled) {
+        setBoost(false);
+        return;
+    }
+    if (mode == Mode::Playing) {
+        setBoost(true);
+    }
 }
 
 void MidiBoostLoop::syncBoost() {
+    if (actionRulesClaimMidi("cc", midiChannel, boostOnCc) || actionRulesClaimMidi("cc", midiChannel, boostOffCc)) {
+        return;
+    }
     // Auto on/off only when play actually starts or ends. A manual CC 105/106
     // is left alone until the next rec/overdub/stop/play transition.
     bool want = autoBoostWanted();
@@ -494,6 +488,7 @@ void MidiBoostLoop::loadBoostState() {
         if (prefs.isKey(kBaseGainKey)) {
             baseGain = prefs.getFloat(kBaseGainKey, 0.0f);
         }
+        autoBoostEnabled = prefs.getBool(kAutoBoostKey, true);
         prefs.end();
         return;
     }
@@ -514,6 +509,7 @@ void MidiBoostLoop::saveBoostState() {
         return;
     }
     prefs.putBool(kBoostActiveKey, boostActive);
+    prefs.putBool(kAutoBoostKey, autoBoostEnabled);
     prefs.putFloat(kBaseGainKey, baseGain);
     prefs.end();
 }

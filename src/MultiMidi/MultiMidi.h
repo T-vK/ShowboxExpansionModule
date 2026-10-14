@@ -8,6 +8,7 @@
 #include "MultiMidi/BleClassicMidi.h"
 #include "MultiMidi/BleMidiHostPolicy.h"
 #include "UsbMidi.h"
+#include "MidiPorts.h"
 //#include <BluetoothSerial.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
@@ -90,8 +91,11 @@ public:
     // Process incoming MIDI messages for all active interfaces
     void tick();
 
-    // Write MIDI data to all active interfaces
+    // Write MIDI data to enabled interfaces. ports==0 sends to every live output.
     void writeData(MidiMessage *msg, int len);
+    void writeData(MidiMessage *msg, int len, uint16_t ports);
+    void writeRaw(uint8_t status, uint8_t d1, uint8_t d2, uint16_t ports = 0);
+    void writeBytes(const uint8_t* data, size_t n, uint16_t ports = 0);
 
     // Bumps when a MIDI output appears (BLE pedal, BLE phone, DIN, AppleMIDI, USB).
     uint32_t outputGeneration() const { return outGeneration; }

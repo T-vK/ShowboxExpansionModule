@@ -1,6 +1,7 @@
 #include "BleRadio.h"
 #include <BLEDevice.h>
 #include <BLESecurity.h>
+#include <host/ble_att.h>
 #include <host/ble_gap.h>
 #include <host/ble_gatt.h>
 #include <host/ble_hs.h>
@@ -10,6 +11,14 @@
 
 namespace {
 constexpr char kMidiService[] = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700";
+
+// Android HOGP stays at ATT MTU 23 unless we initiate the exchange.
+// At 23 bytes the 53-byte Pointer map arrives as first+last blob only
+// (31-byte cached DSCP, EV=1 SYN-only). 256 fits kb+consumer+mouse.
+void requestAttMtu(uint16_t connId) {
+    ble_att_set_preferred_mtu(256);
+    ble_gattc_exchange_mtu(connId, nullptr, nullptr);
+}
 
 void copyAddress(const ble_addr_t& addr, char* out, size_t size) {
     BLEAddress address(addr);
@@ -165,8 +174,51 @@ void BleRadio::setHidPeripheral(bool enabled) {
 bool BleRadio::midiPeripheral() const { return midiOn; }
 bool BleRadio::hidPeripheral() const { return hidOn; }
 
+namespace {
+void stopGapAdv(BLEAdvertising* advertising) {
+    if (!ble_gap_adv_active()) {
+        return;
+    }
+    if (advertising != nullptr) {
+        advertising->stop();
+    }
+    ble_gap_adv_stop();
+    uint32_t t0 = millis();
+    while (ble_gap_adv_active() && (int32_t)(millis() - t0) < 80) {
+        delay(1);
+    }
+}
+}
+
 void BleRadio::restartWhenIdle() {
     restartAdvertising = true;
+    lastAdvStartMs = 0;
+}
+
+void BleRadio::stopNow() {
+    stopGapAdv(BLEDevice::getAdvertising());
+    advertised = false;
+    advIntervalApplied = false;
+    restartAdvertising = false;
+}
+
+void BleRadio::resumeExisting() {
+    adsAllowed = true;
+    restartAdvertising = false;
+    BLEAdvertising* advertising = BLEDevice::getAdvertising();
+    if (advertising == nullptr) {
+        return;
+    }
+    advertising->setMinInterval(BleRadio::kAdvItvlMin);
+    advertising->setMaxInterval(BleRadio::kAdvItvlMax);
+    advertising->setScanResponse(false);
+    if (!ble_gap_adv_active()) {
+        advertising->start();
+    }
+    advertised = ble_gap_adv_active();
+    advertisedMidi = midiOn;
+    advertisedHid = hidOn;
+    advIntervalApplied = advertised;
 }
 
 void BleRadio::setAdvertiseAllowed(bool allowed) {
@@ -175,6 +227,10 @@ void BleRadio::setAdvertiseAllowed(bool allowed) {
         lastAdvStartMs = 0;
     }
     adsAllowed = allowed;
+}
+
+void BleRadio::setPedalShare(bool share) {
+    pedalShare = share;
 }
 
 void BleRadio::apply() {
@@ -187,31 +243,27 @@ void BleRadio::apply() {
     }
     refreshLinkCount();
     bool want = (midiOn || hidOn) && adsAllowed;
-    if (!want) {
-        if (advertising->isAdvertising()) {
-            advertising->stop();
-        }
+    uint16_t advMin = BleRadio::kAdvItvlMin;
+    uint16_t advMax = BleRadio::kAdvItvlMax;
+    if (pedalShare && adsAllowed) {
+        // 100 ms ads plus AIRSTEP used to kill ARP. 2560 ms was too
+        // slow for the 8 s host scan. 400 ms stays visible and leaves
+        // Wi-Fi gaps next to the 200 ms pedal.
+        advMin = 0x280;
+        advMax = 0x320;
+    }
+    advertising->setMinInterval(advMin);
+    advertising->setMaxInterval(advMax);
+    if (!want || liveLinks >= kMaxIncoming) {
+        stopGapAdv(advertising);
         advertised = false;
+        advIntervalApplied = false;
         restartAdvertising = false;
         return;
     }
-    // With every ACL link in use a fourth connect cannot complete, and
-    // retrying start() there crowds Wi-Fi off the radio.
-    if (liveLinks >= kMaxIncoming) {
-        if (advertising->isAdvertising()) {
-            advertising->stop();
-        }
-        advertised = false;
-        restartAdvertising = false;
-        return;
-    }
-    bool active = advertising->isAdvertising();
+    bool active = ble_gap_adv_active();
     bool payloadSame = advertised && midiOn == advertisedMidi && hidOn == advertisedHid;
-    if (active && payloadSame && !restartAdvertising) {
-        return;
-    }
-    if (active && payloadSame) {
-        restartAdvertising = false;
+    if (active && payloadSame && advIntervalApplied && !restartAdvertising) {
         return;
     }
     uint32_t now = millis();
@@ -222,22 +274,19 @@ void BleRadio::apply() {
     if (hosts > 0 && lastIncomingMs != 0 && (int32_t)(now - lastIncomingMs) < 800) {
         return;
     }
-    if (!restartAdvertising && lastAdvStartMs != 0 && (int32_t)(now - lastAdvStartMs) < 5000) {
+    if (!restartAdvertising && active && lastAdvStartMs != 0 && (int32_t)(now - lastAdvStartMs) < 5000) {
         return;
     }
-    // The library default is 20–40 ms, the shortest interval the controller
-    // allows. On this chip that duty cycle leaves Wi-Fi no airtime for unicast,
-    // so the page never loads. 100–200 ms is still found promptly.
-    advertising->setMinInterval(0xA0);
-    advertising->setMaxInterval(0x140);
-    // Rewriting the payload while an advertisement is already running fills the
-    // controller (HCI 0x2008/0x2009 status 0x07) and crowds Wi-Fi off the radio.
-    // A scan, a host disconnect, or a failed start leaves the controller quiet
-    // while this object still thinks it is advertising — start again from the
-    // radio state, not that flag.
     if (active) {
-        advertising->stop();
+        stopGapAdv(advertising);
+        if (ble_gap_adv_active()) {
+            restartAdvertising = true;
+            advIntervalApplied = false;
+            return;
+        }
     }
+    advertising->setMinInterval(advMin);
+    advertising->setMaxInterval(advMax);
 
     BLEAdvertisementData adv;
     adv.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
@@ -270,7 +319,9 @@ void BleRadio::apply() {
         BLEDevice::setSecurityCallbacks(&radioSecurity);
         pairingReady = true;
     }
-    bool needScan = midiOn && hidOn;
+    // Scan-response RX after every adv eats Wi-Fi when a 200 ms pedal is live.
+    // The name stays in the advert, so phones and the 8s host scan still find us.
+    bool needScan = midiOn && hidOn && liveLinks == 0 && !pedalShare;
     advertising->setScanResponse(needScan);
     advertising->setAdvertisementData(adv);
     if (needScan) {
@@ -282,14 +333,24 @@ void BleRadio::apply() {
         advertised = true;
         advertisedMidi = midiOn;
         advertisedHid = hidOn;
+        advIntervalApplied = true;
         restartAdvertising = false;
     } else {
         advertised = false;
-        restartAdvertising = true;
+        advIntervalApplied = false;
+        restartAdvertising = false;
+        lastAdvStartMs = now;
     }
 }
 
 void BleRadio::service() {
+    int hosts = 0;
+    portENTER_CRITICAL(&mux);
+    hosts = incomingCount;
+    portEXIT_CRITICAL(&mux);
+    if (pedalShare && hosts == 0) {
+        return;
+    }
     refreshLinkCount();
     uint16_t connId = 0;
     portENTER_CRITICAL(&mux);
@@ -306,6 +367,41 @@ void BleRadio::service() {
     }
     portEXIT_CRITICAL(&mux);
     if (connId == 0) {
+        static uint32_t lastCapMs = 0;
+        uint32_t now = millis();
+        if (lastCapMs != 0 && (int32_t)(now - lastCapMs) < 2000) {
+            return;
+        }
+        lastCapMs = now;
+        ble_gap_conn_desc desc = {};
+        for (uint16_t handle = 0; handle < 32; handle++) {
+            if (ble_gap_conn_find(handle, &desc) != 0) {
+                continue;
+            }
+            bool incoming = desc.role != BLE_GAP_ROLE_MASTER;
+            // Outgoing (AIRSTEP) is capped in BleMidi. Recapping a pedal that
+            // will not go slower than 200 ms is a permanent radio storm.
+            if (!incoming) {
+                continue;
+            }
+            if (incoming && hidOn) {
+                continue;
+            }
+            if (ceCapped & (1u << handle)) {
+                continue;
+            }
+            lastCapMs = millis();
+            ceCapped |= (1u << handle);
+            ble_gap_upd_params slow = {};
+            slow.itvl_min = BleRadio::kWifiSafeItvl;
+            slow.itvl_max = BleRadio::kSlowItvlMax;
+            slow.latency = 0;
+            slow.supervision_timeout = 800;
+            slow.min_ce_len = 0;
+            slow.max_ce_len = BleRadio::kMaxCeLen;
+            ble_gap_update_params(handle, &slow);
+            break;
+        }
         return;
     }
     // Linux HID is fine at 30–60 ms. Android HOGP often drops the bond if we
@@ -315,6 +411,8 @@ void BleRadio::service() {
     params.itvl_max = hidOn ? 0x30 : 0xA0;
     params.latency = 0;
     params.supervision_timeout = 400;
+    params.min_ce_len = 0;
+    params.max_ce_len = BleRadio::kMaxCeLen;
     ble_gap_update_params(connId, &params);
 }
 
@@ -450,13 +548,21 @@ void BleRadio::setIncomingHandler(void (*handler)(void* ctx, const char* address
 
 void BleRadio::refreshLinkCount() {
     int n = 0;
+    uint16_t minInterval = 0;
+    uint32_t liveMask = 0;
     ble_gap_conn_desc desc;
     for (uint16_t handle = 0; handle < 32; handle++) {
         if (ble_gap_conn_find(handle, &desc) == 0) {
             n++;
+            liveMask |= (1u << handle);
+            if (minInterval == 0 || desc.conn_itvl < minInterval) {
+                minInterval = desc.conn_itvl;
+            }
         }
     }
     liveLinks = n;
+    minItvl = minInterval;
+    ceCapped &= liveMask;
 }
 
 int BleRadio::gapLinkCount() const {
@@ -560,8 +666,12 @@ void BleRadio::onConnect(BLEServer* /*server*/, ble_gap_conn_desc* desc) {
         advertised = false;
         restartAdvertising = false;
     }
+    // Exchange MTU only after the link is encrypted. Doing it here races
+    // BlueZ SMP and laptop-pair returns "no pair result" with Paired: no.
     if (!desc->sec_state.encrypted) {
         ble_gap_security_initiate(desc->conn_handle);
+    } else {
+        requestAttMtu(connId);
     }
 }
 
@@ -595,6 +705,7 @@ void BleRadio::onBonded(ble_gap_conn_desc* desc) {
     if (incomingHandler != nullptr && notify[0] != '\0') {
         incomingHandler(incomingHandlerCtx, notify, connId, true);
     }
+    requestAttMtu(connId);
 }
 
 void BleRadio::onDisconnect(BLEServer* /*server*/, ble_gap_conn_desc* desc) {

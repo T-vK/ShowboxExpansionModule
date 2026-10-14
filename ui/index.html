@@ -2,16 +2,28 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0b0c10">
+  <meta name="apple-mobile-web-app-title" content="ShowboxMod">
+  <meta name="application-name" content="ShowboxMod">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <title>ShowboxMod</title>
 </head>
 <body>
   <div id="app">
-    <main>
-      <h1>ShowboxMod</h1>
-      <p class="lead">Loading…</p>
-      <p><a href="/remote-ui">Showbox controls</a> · <a href="/midi">Connections</a> · <a href="/actions">Reactions</a></p>
-    </main>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <h1>ShowboxMod</h1>
+          <p class="lead">Loading mixer…</p>
+        </div>
+      </header>
+    </div>
   </div>
   <script type="module" src="/src/main.jsx"></script>
 </body>

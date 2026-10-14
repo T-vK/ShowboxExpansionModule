@@ -17,6 +17,8 @@ public:
 
     bool wifiRadioOn() const { return wifiOn; }
     bool wifiPortalOpen() const;
+    void applyWifi(bool on);
+    void startWifiPortal();
 
 private:
     enum class LedId : uint8_t {
@@ -34,8 +36,6 @@ private:
     void onGreenClick();
     void onGreenLong();
     void applyBluetooth(bool on);
-    void applyWifi(bool on);
-    void startWifiPortal();
     void stopWifiPortal();
     void updateLeds();
     void writeLeds();

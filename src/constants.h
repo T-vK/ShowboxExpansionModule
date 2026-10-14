@@ -12,7 +12,8 @@ enum packet_type : uint8_t {
     SNAPSHOT_MENU = 0x04, // e.g. SNAPSHOT1: BE EF 04 04 01 00 00 00 00 EF BE, DEFAULT: BE EF 04 04 05 00 00 00 00 EF BE, Not sure about:  BE EF 04 04 00 00 00 00 00 EF BE
     ALL_ENTITIES = 0x05, // e.g. BE EF E3 05 00 00 00 00 00 01 01 00 00 04 CC CC 0C 42 BA DA 6C 40 00 01 01 00 5C 8F 02 3F 00 AB AA AA 3E 01 00 00 00 00 01 35 9D 00 00 35 9D 00 C0 89 88 08 3F 00 00 00 00 00 9E D8 19 41 9E D8 19 41 7B 01 01 9E 5C 8F 02 3F 00 CD CC CC 3E 01 00 00 00 00 00 00 00 00 00 00 00 00 01 89 88 08 3F 00 EF EE EE 3E 00 00 20 42 02 72 8D C0 00 01 01 00 00 00 00 00 00 AB AA AA 3E 01 00 00 00 00 00 00 00 00 00 00 00 00 01 89 88 08 3F 00 EF EE EE 3E 66 66 1A 42 28 14 B9 BF 00 01 01 00 5C 8F 02 3F 00 AB AA AA 3E 01 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 80 3F 00 EF EE EE 3E 90 D1 63 3F 00 01 01 01 00 00 00 00 00 00 00 00 00 00 70 C1 00 00 00 00 04 11 9E D8 19 41 CE 4F F1 C1 00 00 00 4E 6C BF 00 00 EF BE 
     DATA_REQUEST = 0x09,
-    UNKNOWN_15 = 0x15, // e.g. BE EF 00 15 00 EF BE 
+    UNKNOWN_15 = 0x15, // autogain listen; e.g. BE EF 00 15 <chan> EF BE
+    AUTOGAIN = UNKNOWN_15, 
     BATTERY_LEVEL = 0x16, // transmitted as float - i.e. BE EF 08 16 01 5F 00 00 00 7D EE AF 42 EF BE | or wihtout body: BE EF 00 16 00 EF BE
     LOOPER_BUTTON = 0x17,
     TUNER_TOGGLE = 0x18,
@@ -158,8 +159,8 @@ enum snapshot_slot : uint8_t {
 };
 
 enum tuner_action : uint8_t {
-    TURN_ON = 0,
-    TURN_OFF = 1
+    TURN_OFF = 0,
+    TURN_ON = 1
 };
 
 enum tuner_chan : uint8_t {
@@ -171,9 +172,18 @@ enum tuner_chan : uint8_t {
 
 enum sd_card_state : uint8_t {
     NOT_DETECTED = 0,
-    DETECTED = 2,
-    RECORDING = 3
+    READY = 1,
+    RECORDING = 2
 };
+
+// Wire vocabulary, measured on the link (uart SD[..] debug lines):
+//   MIXER->BASE 7-byte  BE EF 00 1E 01        — mixer announces ready (card idle)
+//   BASE->MIXER 8-byte  BE EF 01 1E 00 <v>    — base announces its record state:
+//                                                v=3 recording, v=2 stopped/saved,
+//                                                v=1 card available, v=0 boot/idle
+//   MODULE->BASE 7-byte BE EF 00 1E 02        — toggle record (the only value the
+//                                                base acts on; 03 as a command is
+//                                                ignored). The base flips 2<->3.
 
 enum sd_card_action : uint8_t {
     TOGGLE_RECORD = 2,

@@ -2,7 +2,7 @@
 
 #include "MidiAction.h"
 #include "MidiCommon.h"
-#include "MidiParser.h"
+#include "MultiMidi/FullMidiParser.h"
 #include "USB.h"
 #include "esp32-hal-tinyusb.h"
 #include "tusb.h"
@@ -10,7 +10,7 @@
 namespace {
 bool started = false;
 bool interfaceOn = false;
-midi::MidiParser parser;
+FullMidiParser parser;
 bool parserReady = false;
 
 uint16_t loadMidiDescriptor(uint8_t* dst, uint8_t* itf) {

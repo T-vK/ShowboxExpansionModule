@@ -31,6 +31,8 @@ class DynamicMultiPrint : public Print {
     size_t drainPrint2(size_t maxBytes);
     size_t wifiBuffered() const;
     uint32_t wifiDropped() const;
+    uint32_t wifiSeq() const;
+    size_t copyWifiSince(uint32_t since, uint8_t* out, size_t cap, uint32_t* next);
     void clearWifi();
 
   private:
@@ -49,6 +51,7 @@ class DynamicMultiPrint : public Print {
     size_t _wifiTail = 0;
     size_t _wifiUsed = 0;
     uint32_t _wifiDropped = 0;
+    uint32_t _wifiSeq = 0;
     mutable portMUX_TYPE _wifiMux;
 
     bool capturePrint2() const { return _buffer2 || _print2Live; }

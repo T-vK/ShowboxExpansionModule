@@ -42,6 +42,19 @@ struct ToggleTunerBody {
 
 typedef Packet<TUNER_TOGGLE, ToggleTunerBody> ToggleTunerPacket;
 
+// TUNER_FEEDBACK 0x19, 15 bytes:
+// BE EF 08 19 <unk:01> <chan> <noteId> 00 00 <float32 LE cents> EF BE
+// noteId 1=A .. 12=G# (pitch class, no octave); 0 = no note.
+struct TunerFeedbackBody {
+    uint8_t unknown;
+    uint8_t channel;
+    uint8_t noteId;
+    uint8_t reserved[2];
+    float cents;
+} __attribute__((packed));
+
+typedef Packet<TUNER_FEEDBACK, TunerFeedbackBody> TunerFeedbackPacket;
+
 // Example: BE EF 01 1A 01 04 EF BE
 struct SnapshotBody {
     uint8_t action;

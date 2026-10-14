@@ -19,30 +19,32 @@ old_scan = """  m_pConnParams.scan_itvl = 16;                                   
   m_pConnParams.itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN;                   // min_int = 0x10*1.25ms = 20ms
   m_pConnParams.itvl_max = BLE_GAP_INITIAL_CONN_ITVL_MAX;                   // max_int = 0x20*1.25ms = 40ms"""
 
-new_scan = """  m_pConnParams.scan_itvl = 160;                                            // 100 ms. A 10 ms window equal to the interval starves Wi-Fi.
+new_scan = """  m_pConnParams.scan_itvl = 48;                                             // 30 ms. 100 ms missed AIRSTEP ads (HCI 13).
   m_pConnParams.scan_window = 16;                                           // 10 ms. Longer than the 128-byte UART FIFO (~11 ms) drops mixer↔base.
-  m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.
+  m_pConnParams.itvl_min = 0xA0;                                            // 200 ms. 100 ms offers fight AIRSTEP and storm LL_CONNECTION_UPDATE.
   m_pConnParams.itvl_max = 0xA0;                                            // 200 ms"""
 
 old_ce = """  m_pConnParams.min_ce_len = BLE_GAP_INITIAL_CONN_MIN_CE_LEN;               // Minimum length of connection event in 0.625ms units
   m_pConnParams.max_ce_len = BLE_GAP_INITIAL_CONN_MAX_CE_LEN;               // Maximum length of connection event in 0.625ms units"""
 
 new_ce = """  m_pConnParams.min_ce_len = 0;                                             // let the controller pick a short event
-  m_pConnParams.max_ce_len = 16;                                            // 10 ms. Longer CE events keep Wi-Fi off the air."""
+  m_pConnParams.max_ce_len = 8;                                             // 2.5 ms. 10 ms CEs plus AIRSTEP still starved ARP."""
 
 old_update = """  params.min_ce_len = BLE_GAP_INITIAL_CONN_MIN_CE_LEN;  // Minimum length of connection event in 0.625ms units
   params.max_ce_len = BLE_GAP_INITIAL_CONN_MAX_CE_LEN;  // Maximum length of connection event in 0.625ms units
 
   int rc = ble_gap_update_params(m_conn_id, &params);"""
 
-new_update = """  params.min_ce_len = BLE_GAP_INITIAL_CONN_MIN_CE_LEN;  // Minimum length of connection event in 0.625ms units
-  params.max_ce_len = BLE_GAP_INITIAL_CONN_MAX_CE_LEN;  // Maximum length of connection event in 0.625ms units
+new_update = """  params.min_ce_len = 0;
+  params.max_ce_len = 8;  // 5 ms. Must stay >= slave_ce_len_min (5) or the cap is ignored.
   // Peer update requests are answered from m_pConnParams. Keep them in step
   // with the interval we just asked for, or the next request snaps back to 20 ms.
   m_pConnParams.itvl_min = minInterval;
   m_pConnParams.itvl_max = maxInterval;
   m_pConnParams.latency = latency;
   m_pConnParams.supervision_timeout = timeout;
+  m_pConnParams.min_ce_len = 0;
+  m_pConnParams.max_ce_len = 8;
 
   int rc = ble_gap_update_params(m_conn_id, &params);"""
 
@@ -64,12 +66,71 @@ new_timeout = """  m_peerAddress = address;
    *  timeout (default value of m_connectTimeout)."""
 
 updated = text.replace(old_scan, new_scan, 1).replace(old_update, new_update, 1).replace(old_timeout, new_timeout, 1).replace(old_ce, new_ce, 1)
+old_update_uncapped = """  params.min_ce_len = BLE_GAP_INITIAL_CONN_MIN_CE_LEN;  // Minimum length of connection event in 0.625ms units
+  params.max_ce_len = BLE_GAP_INITIAL_CONN_MAX_CE_LEN;  // Maximum length of connection event in 0.625ms units
+  // Peer update requests are answered from m_pConnParams. Keep them in step
+  // with the interval we just asked for, or the next request snaps back to 20 ms.
+  m_pConnParams.itvl_min = minInterval;
+  m_pConnParams.itvl_max = maxInterval;
+  m_pConnParams.latency = latency;
+  m_pConnParams.supervision_timeout = timeout;
+
+  int rc = ble_gap_update_params(m_conn_id, &params);"""
+if old_update_uncapped in updated:
+    updated = updated.replace(old_update_uncapped, new_update, 1)
 old_scan_mid = """  m_pConnParams.scan_itvl = 160;                                            // 100 ms. A 10 ms window equal to the interval starves Wi-Fi.
   m_pConnParams.scan_window = 32;                                           // 20 ms
   m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.
   m_pConnParams.itvl_max = 0xA0;                                            // 200 ms"""
 if old_scan_mid in updated:
     updated = updated.replace(old_scan_mid, new_scan, 1)
+old_scan_160 = """  m_pConnParams.scan_itvl = 160;                                            // 100 ms. A 10 ms window equal to the interval starves Wi-Fi.
+  m_pConnParams.scan_window = 16;                                           // 10 ms. Longer than the 128-byte UART FIFO (~11 ms) drops mixer↔base.
+  m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.
+  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms"""
+if old_scan_160 in updated:
+    updated = updated.replace(old_scan_160, new_scan, 1)
+updated = updated.replace(
+    "  m_pConnParams.max_ce_len = 16;                                            // 10 ms. Longer CE events keep Wi-Fi off the air.",
+    "  m_pConnParams.max_ce_len = 8;                                             // 2.5 ms. 10 ms CEs plus AIRSTEP still starved ARP.",
+)
+updated = updated.replace(
+    "  params.max_ce_len = 16;  // 10 ms. updateConnParams used to restore unlimited CE events.",
+    "  params.max_ce_len = 8;  // 5 ms. Must stay >= slave_ce_len_min (5) or the cap is ignored.",
+)
+updated = updated.replace("  m_pConnParams.max_ce_len = 16;\n", "  m_pConnParams.max_ce_len = 8;\n")
+updated = updated.replace(
+    "  m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.\n  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms",
+    "  m_pConnParams.itvl_min = 0xA0;                                            // 200 ms. 100 ms offers fight AIRSTEP and storm LL_CONNECTION_UPDATE.\n  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms",
+)
+old_update_req = """      if (!rc && event->type == BLE_GAP_EVENT_CONN_UPDATE_REQ) {
+        event->conn_update_req.self_params->itvl_min = client->m_pConnParams.itvl_min;
+        event->conn_update_req.self_params->itvl_max = client->m_pConnParams.itvl_max;
+        event->conn_update_req.self_params->latency = client->m_pConnParams.latency;
+        event->conn_update_req.self_params->supervision_timeout = client->m_pConnParams.supervision_timeout;
+      }"""
+new_update_req = """      if (!rc && event->type == BLE_GAP_EVENT_CONN_UPDATE_REQ) {
+        // AIRSTEP floors at 200 ms. Answering 100–200 ms is an LL_CONNECTION_UPDATE
+        // storm that holds the 2.4 GHz PTA on BLE until ARP/ICMP die.
+        const ble_gap_upd_params *peer = event->conn_update_req.peer_params;
+        ble_gap_upd_params *self = event->conn_update_req.self_params;
+        self->min_ce_len = 0;
+        self->max_ce_len = 8;
+        self->supervision_timeout = peer != nullptr && peer->supervision_timeout != 0
+          ? peer->supervision_timeout
+          : client->m_pConnParams.supervision_timeout;
+        if (peer != nullptr && peer->itvl_min >= 0xA0) {
+          self->itvl_min = peer->itvl_min;
+          self->itvl_max = peer->itvl_max >= peer->itvl_min ? peer->itvl_max : peer->itvl_min;
+          self->latency = peer->latency;
+        } else {
+          self->itvl_min = 0xA0;
+          self->itvl_max = 0xA0;
+          self->latency = client->m_pConnParams.latency;
+        }
+      }"""
+if old_update_req in updated:
+    updated = updated.replace(old_update_req, new_update_req, 1)
 if updated != text:
     open(client, "w", encoding="utf-8").write(updated)
 
@@ -141,20 +202,136 @@ new_task = """static bool customTaskCreateUniversal(
 tcp_updated = tcp_text.replace(old_task, new_task, 1)
 if "#include <esp_heap_caps.h>" not in tcp_updated and tcp_updated:
     tcp_updated = tcp_updated.replace('#include "AsyncTCP.h"\n', '#include "AsyncTCP.h"\n#include <esp_heap_caps.h>\n', 1)
+if "static AsyncServer* s_acceptServer" not in tcp_updated:
+    tcp_updated = tcp_updated.replace(
+        '#define TAG "AsyncTCP"\n',
+        '#define TAG "AsyncTCP"\nstatic AsyncServer* s_acceptServer = nullptr;\n',
+        1,
+    )
+old_s_accept = """int8_t AsyncServer::_s_accept(void* arg, tcp_pcb* pcb, int8_t err) {
+  return reinterpret_cast<AsyncServer*>(arg)->_accept(pcb, err);
+}
+
+int8_t AsyncServer::_s_accepted(void* arg, AsyncClient* client) {
+  return reinterpret_cast<AsyncServer*>(arg)->_accepted(client);
+}"""
+new_s_accept = """int8_t AsyncServer::_s_accept(void* arg, tcp_pcb* pcb, int8_t err) {
+  AsyncServer* server = reinterpret_cast<AsyncServer*>(arg);
+  if (server == nullptr) {
+    server = s_acceptServer;
+  }
+  if (server == nullptr || pcb == nullptr) {
+    if (pcb != nullptr) {
+      tcp_abort(pcb);
+    }
+    return ERR_ABRT;
+  }
+  return server->_accept(pcb, err);
+}
+
+int8_t AsyncServer::_s_accepted(void* arg, AsyncClient* client) {
+  AsyncServer* server = reinterpret_cast<AsyncServer*>(arg);
+  if (server == nullptr) {
+    server = s_acceptServer;
+  }
+  if (server == nullptr || client == nullptr) {
+    return ERR_ARG;
+  }
+  return server->_accepted(client);
+}"""
+if old_s_accept in tcp_updated:
+    tcp_updated = tcp_updated.replace(old_s_accept, new_s_accept, 1)
+old_begin_arg = """  TCP_MUTEX_LOCK();
+  tcp_arg(_pcb, (void*)this);
+  tcp_accept(_pcb, &_s_accept);
+  TCP_MUTEX_UNLOCK();
+}"""
+new_begin_arg = """  TCP_MUTEX_LOCK();
+  tcp_arg(_pcb, (void*)this);
+  tcp_accept(_pcb, &_s_accept);
+  s_acceptServer = this;
+  TCP_MUTEX_UNLOCK();
+}"""
+if old_begin_arg in tcp_updated:
+    tcp_updated = tcp_updated.replace(old_begin_arg, new_begin_arg, 1)
+old_end_arg = """void AsyncServer::end() {
+  if (_pcb) {
+    TCP_MUTEX_LOCK();
+    tcp_arg(_pcb, NULL);
+    tcp_accept(_pcb, NULL);"""
+new_end_arg = """void AsyncServer::end() {
+  if (_pcb) {
+    TCP_MUTEX_LOCK();
+    if (s_acceptServer == this) {
+      s_acceptServer = nullptr;
+    }
+    tcp_arg(_pcb, NULL);
+    tcp_accept(_pcb, NULL);"""
+if old_end_arg in tcp_updated:
+    tcp_updated = tcp_updated.replace(old_end_arg, new_end_arg, 1)
+old_tcp_accept = """static int8_t _tcp_accept(void* arg, AsyncClient* client) {
+  lwip_event_packet_t* e = (lwip_event_packet_t*)malloc(sizeof(lwip_event_packet_t));
+  e->event = LWIP_TCP_ACCEPT;
+  e->arg = arg;
+  e->accept.client = client;
+  if (!_prepend_async_event(&e)) {
+    free((void*)(e));
+  }
+  return ERR_OK;
+}"""
+new_tcp_accept = """static int8_t _tcp_accept(void* arg, AsyncClient* client) {
+  lwip_event_packet_t* e = (lwip_event_packet_t*)malloc(sizeof(lwip_event_packet_t));
+  if (e == nullptr) {
+    return ERR_MEM;
+  }
+  e->event = LWIP_TCP_ACCEPT;
+  e->arg = arg;
+  e->accept.client = client;
+  if (!_prepend_async_event(&e)) {
+    free((void*)(e));
+  }
+  return ERR_OK;
+}"""
+if old_tcp_accept in tcp_updated:
+    tcp_updated = tcp_updated.replace(old_tcp_accept, new_tcp_accept, 1)
+old_accept_body = """int8_t AsyncServer::_accept(tcp_pcb* pcb, int8_t err) {
+  // ets_printf("+A: 0x%08x\\n", pcb);
+  if (_connect_cb) {
+    AsyncClient* c = new AsyncClient(pcb);"""
+new_accept_body = """int8_t AsyncServer::_accept(tcp_pcb* pcb, int8_t err) {
+  // ets_printf("+A: 0x%08x\\n", pcb);
+  if (pcb == nullptr) {
+    return ERR_ABRT;
+  }
+  if (_connect_cb) {
+    AsyncClient* c = new AsyncClient(pcb);"""
+if old_accept_body in tcp_updated:
+    tcp_updated = tcp_updated.replace(old_accept_body, new_accept_body, 1)
 if tcp_updated != tcp_text and tcp_updated:
     open(tcp, "w", encoding="utf-8").write(tcp_updated)
 
-def accept_existing_mtu(path):
+def skip_mtu_on_connect(path):
     try:
         source = open(path, encoding="utf-8").read()
     except OSError:
         return
-    old = """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+    olds = [
+        """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+        // The pedal starts this exchange itself. Already-running means the
+        // completion event is still coming; releasing early signals the
+        // waiter twice and reboots the module.
+        if (rc == BLE_HS_EALREADY) {
+          return 0;
+        }
         if (rc != 0) {
           log_e("BLEClient", "MTU exchange error; rc=%d %s", rc, BLEUtils::returnCodeToString(rc));
           break;
-        }"""
-    new = """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+        }
+
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }""",
+        """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
         // The pedal may start this exchange itself. Already-running means
         // the completion event is still coming.
         if (rc == BLE_HS_EALREADY) {
@@ -163,12 +340,151 @@ def accept_existing_mtu(path):
         if (rc != 0) {
           log_e("BLEClient", "MTU exchange error; rc=%d %s", rc, BLEUtils::returnCodeToString(rc));
           break;
-        }"""
-    updated_mtu = source.replace(old, new, 1)
-    if updated_mtu != source:
-        open(path, "w", encoding="utf-8").write(updated_mtu)
+        }
 
-accept_existing_mtu(client)
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }""",
+        """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+        if (rc != 0) {
+          log_e("BLEClient", "MTU exchange error; rc=%d %s", rc, BLEUtils::returnCodeToString(rc));
+          break;
+        }
+
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }""",
+    ]
+    new = """        // Skip ATT MTU exchange. Default 23-byte PDUs keep AIRSTEP CEs
+        // short; MTU 256 / DLE 251 held PTA until ARP died.
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }
+        rc = 0;
+        break;"""
+    updated = source
+    for old in olds:
+        if old in updated:
+            updated = updated.replace(old, new, 1)
+            break
+    if updated != source:
+        open(path, "w", encoding="utf-8").write(updated)
+
+skip_mtu_on_connect(client)
+
+# NimBLE memset's advertising params to 0. A 0 interval is HCI 20–40 ms, and
+# start() is a no-op if GAP is already active, so setMinInterval never lands.
+# Put 200–400 ms on the first start so showbox.local can finish TCP.
+adv = join(
+    env.PioPlatform().get_package_dir("framework-arduinoespressif32"),
+    "libraries", "BLE", "src", "BLEAdvertising.cpp",
+)
+try:
+    adv_text = open(adv, encoding="utf-8").read()
+except OSError:
+    adv_text = ""
+old_nimble_reset = """  m_advParams.conn_mode = BLE_GAP_CONN_MODE_UND;
+  m_advParams.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  m_customAdvData = false;"""
+new_nimble_reset = """  m_advParams.conn_mode = BLE_GAP_CONN_MODE_UND;
+  m_advParams.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  m_advParams.itvl_min = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.
+  m_advParams.itvl_max = 0x1400;  // 3200 ms
+  m_customAdvData = false;"""
+old_blue_int = """  m_advParams.adv_int_min = 0x20;
+  m_advParams.adv_int_max = 0x40;"""
+new_blue_int = """  m_advParams.adv_int_min = 0x400;
+  m_advParams.adv_int_max = 0x800;"""
+if old_nimble_reset in adv_text:
+    adv_text = adv_text.replace(old_nimble_reset, new_nimble_reset, 1)
+if old_blue_int in adv_text:
+    adv_text = adv_text.replace(old_blue_int, new_blue_int, 1)
+adv_text = adv_text.replace(
+    "  m_advParams.itvl_min = 0x400;  // 640 ms. Library 0 means HCI 20 ms and starves HTTP.\n  m_advParams.itvl_max = 0x800;  // 1280 ms",
+    "  m_advParams.itvl_min = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.\n  m_advParams.itvl_max = 0x1400;  // 3200 ms",
+)
+adv_text = adv_text.replace(
+    "  m_advParams.itvl_min = 0x800;  // 1280 ms. Library 0 means HCI 20 ms and starves HTTP.\n  m_advParams.itvl_max = 0xC00;  // 1920 ms",
+    "  m_advParams.itvl_min = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.\n  m_advParams.itvl_max = 0x1400;  // 3200 ms",
+)
+# Do not stop a live advert to apply intervals. stop/start every second plus
+# AIRSTEP held the PTA on BLE until ARP died.
+adv_text = adv_text.replace(
+    """  if (ble_gap_adv_active()) {
+    ble_gap_adv_stop();
+  }""",
+    """  if (ble_gap_adv_active()) {
+    return true;
+  }""",
+)
+# Central connect can host-reset. The library then restarts forever-ads by
+# itself, which is the dual-role PTA lock that kills ARP/ICMP.
+adv_text = adv_text.replace(
+    """void BLEAdvertising::onHostSync() {
+  log_v("Host re-synced");
+
+  m_advDataSet = false;
+  // If we were advertising forever, restart it now
+  if (m_duration == 0) {
+    start(m_duration, m_advCompCB);
+  } else {
+    // Otherwise we should tell the app that advertising stopped.
+    advCompleteCB();
+  }
+}  // onHostSync""",
+    """void BLEAdvertising::onHostSync() {
+  log_v("Host re-synced");
+
+  m_advDataSet = false;
+  advCompleteCB();
+}  // onHostSync""",
+)
+if adv_text:
+    open(adv, "w", encoding="utf-8").write(adv_text)
+
+# Arduino-ESP32 NimBLE is built with CE_LENGTH_TYPE_ORIG and modem sleep off.
+# nimble_port_init() applies those baked defaults. Init the controller ourselves
+# with HCI CE length + modem sleep, then start only the NimBLE host.
+dev = join(
+    env.PioPlatform().get_package_dir("framework-arduinoespressif32"),
+    "libraries", "BLE", "src", "BLEDevice.cpp",
+)
+try:
+    dev_text = open(dev, encoding="utf-8").read()
+except OSError:
+    dev_text = ""
+old_nimble_init = """#if defined(CONFIG_NIMBLE_ENABLED)
+  errRc = nimble_port_init();
+  if (errRc != ESP_OK) {
+    log_e("nimble_port_init: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+    return false;
+  }"""
+new_nimble_init = """#if defined(CONFIG_NIMBLE_ENABLED)
+  {
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    bt_cfg.sleep_mode = ESP_BT_SLEEP_MODE_1;
+    bt_cfg.sleep_clock = ESP_BT_SLEEP_CLOCK_MAIN_XTAL;
+    bt_cfg.ce_len_type = ESP_BLE_CE_LEN_TYPE_CE;
+    bt_cfg.ble_ping_en = 0;
+    errRc = esp_bt_controller_init(&bt_cfg);
+    if (errRc != ESP_OK && errRc != ESP_ERR_INVALID_STATE) {
+      log_e("esp_bt_controller_init: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+      return false;
+    }
+    errRc = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    if (errRc != ESP_OK && errRc != ESP_ERR_INVALID_STATE) {
+      log_e("esp_bt_controller_enable: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+      return false;
+    }
+  }
+  errRc = esp_nimble_init();
+  if (errRc != ESP_OK) {
+    log_e("esp_nimble_init: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+    return false;
+  }"""
+if old_nimble_init in dev_text:
+    dev_text = dev_text.replace(old_nimble_init, new_nimble_init, 1)
+    open(dev, "w", encoding="utf-8").write(dev_text)
 
 # HTTP responses malloc the whole TCP window in internal RAM. After dual-role
 # BLE that allocation fails, so / and /services come back empty or hang.
@@ -185,8 +501,8 @@ old_http = """    } else {
 old_http_1460 = """    } else {
       outLen = ((_contentLength - _sentLength) > space) ? space : (_contentLength - _sentLength);
     }
-    if (outLen > 1460) {
-      outLen = 1460;
+    if (outLen > 8192) {
+      outLen = 8192;
     }
 
     uint8_t* buf = (uint8_t*)heap_caps_malloc(outLen + headLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -196,8 +512,8 @@ old_http_1460 = """    } else {
 new_http = """    } else {
       outLen = ((_contentLength - _sentLength) > space) ? space : (_contentLength - _sentLength);
     }
-    if (outLen > 1024) {
-      outLen = 1024;
+    if (outLen > 8192) {
+      outLen = 8192;
     }
 
     uint8_t* buf = nullptr;
@@ -224,8 +540,8 @@ new_http = """    } else {
 old_http_capped = """    } else {
       outLen = ((_contentLength - _sentLength) > space) ? space : (_contentLength - _sentLength);
     }
-    if (outLen > 1024) {
-      outLen = 1024;
+    if (outLen > 8192) {
+      outLen = 8192;
     }
 
     uint8_t* buf = (uint8_t*)malloc(outLen + headLen);"""
@@ -240,8 +556,8 @@ old_http_512 = """    } else {
     if (!buf) {
       buf = (uint8_t*)malloc(outLen + headLen);
     }"""
-old_http_64 = """    if (outLen > 1024) {
-      outLen = 1024;
+old_http_64 = """    if (outLen > 8192) {
+      outLen = 8192;
     }
 
     uint8_t* buf = nullptr;
@@ -268,7 +584,47 @@ elif old_http_512 in http_text:
 elif old_http_1460 in http_text:
     http_text = http_text.replace(old_http_1460, new_http, 1)
 elif old_http_64 in http_text:
-    http_text = http_text.replace(old_http_64, new_http[new_http.find("    if (outLen > 1024)") :], 1)
+    http_text = http_text.replace(old_http_64, new_http[new_http.find("    if (outLen > 1460)") :], 1)
+http_text = http_text.replace(
+    """    if (outLen > 1024) {
+      outLen = 1024;
+    }""",
+    """    if (outLen > 8192) {
+      outLen = 8192;
+    }""",
+)
+http_text = http_text.replace(
+    """    if (outLen > 1460) {
+      outLen = 1460;
+    }""",
+    """    if (outLen > 8192) {
+      outLen = 8192;
+    }""",
+)
+http_text = http_text.replace(
+    """    if (outLen > 8192) {
+      outLen = 8192;
+    }""",
+    """    if (outLen > 256) {
+      outLen = 256;
+    }""",
+)
+http_text = http_text.replace(
+    """    if (outLen > 1460) {
+      outLen = 1460;
+    }""",
+    """    if (outLen > 256) {
+      outLen = 256;
+    }""",
+)
+http_text = http_text.replace(
+    """    if (outLen > 1024) {
+      outLen = 1024;
+    }""",
+    """    if (outLen > 256) {
+      outLen = 256;
+    }""",
+)
 if http_text and "#include <esp_heap_caps.h>" not in http_text:
     http_text = http_text.replace('#include "WebResponseImpl.h"\n', '#include "WebResponseImpl.h"\n#include <esp_heap_caps.h>\n', 1)
 if http_text:

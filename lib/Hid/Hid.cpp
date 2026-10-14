@@ -17,10 +17,12 @@ constexpr uint8_t kReportIdKb = 1;
 constexpr uint8_t kReportIdMouse = 2;
 constexpr uint8_t kReportIdAbs = 3;
 constexpr uint8_t kReportIdDig = 4;
+constexpr uint8_t kReportIdConsumer = 5;
 constexpr uint8_t kPartKb = 0x01;
 constexpr uint8_t kPartMouse = 0x02;
 constexpr uint8_t kPartAbs = 0x04;
 constexpr uint8_t kPartDig = 0x08;
+constexpr uint8_t kPartConsumer = 0x10;
 
 void append(uint8_t*& dst, const uint8_t* src, size_t len) {
     memcpy(dst, src, len);
@@ -53,6 +55,21 @@ const uint8_t kKeyboardMap[] = {
     END_COLLECTION(0)
 };
 
+const uint8_t kConsumerMap[] = {
+    USAGE_PAGE(1), 0x0C,
+    USAGE(1), 0x01,
+    COLLECTION(1), 0x01,
+        REPORT_ID(1), kReportIdConsumer,
+        LOGICAL_MINIMUM(1), 0x00,
+        LOGICAL_MAXIMUM(2), 0xFF, 0x03,
+        USAGE_MINIMUM(1), 0x00,
+        USAGE_MAXIMUM(2), 0xFF, 0x03,
+        REPORT_SIZE(1), 0x10,
+        REPORT_COUNT(1), 0x01,
+        HIDINPUT(1), 0x00,
+    END_COLLECTION(0)
+};
+
 const uint8_t kMouseMap[] = {
     USAGE_PAGE(1), 0x01,
     USAGE(1), 0x02,
@@ -81,25 +98,27 @@ const uint8_t kMouseMap[] = {
     END_COLLECTION(0)
 };
 
+// Single Generic Desktop pointer, 5 bytes: buttons + abs X/Y.
+// The old dual-contact layout only produced EV_ABS when it was the only
+// application collection. Beside a keyboard, Linux hid-generic left a
+// consumer/padding node and dropped the axes (key yes, no-abs).
 const uint8_t kAbsMap[] = {
     USAGE_PAGE(1), 0x01,
     USAGE(1), 0x01,
     COLLECTION(1), 0x01,
         REPORT_ID(1), kReportIdAbs,
-        USAGE_PAGE(1), 0x01,
         USAGE(1), 0x01,
         COLLECTION(1), 0x00,
             USAGE_PAGE(1), 0x09,
-            USAGE(1), 0x01,
+            USAGE_MINIMUM(1), 0x01,
+            USAGE_MAXIMUM(1), 0x03,
             LOGICAL_MINIMUM(1), 0x00,
             LOGICAL_MAXIMUM(1), 0x01,
             REPORT_SIZE(1), 0x01,
-            REPORT_COUNT(1), 0x01,
+            REPORT_COUNT(1), 0x03,
             HIDINPUT(1), 0x02,
-            REPORT_COUNT(1), 0x07,
-            HIDINPUT(1), 0x01,
             REPORT_COUNT(1), 0x01,
-            REPORT_SIZE(1), 0x08,
+            REPORT_SIZE(1), 0x05,
             HIDINPUT(1), 0x01,
             USAGE_PAGE(1), 0x01,
             USAGE(1), 0x30,
@@ -110,35 +129,13 @@ const uint8_t kAbsMap[] = {
             REPORT_COUNT(1), 0x02,
             HIDINPUT(1), 0x02,
         END_COLLECTION(0),
-        USAGE_PAGE(1), 0x01,
-        USAGE(1), 0x01,
-        COLLECTION(1), 0x00,
-            USAGE_PAGE(1), 0x09,
-            USAGE(1), 0x02,
-            LOGICAL_MINIMUM(1), 0x00,
-            LOGICAL_MAXIMUM(1), 0x01,
-            REPORT_SIZE(1), 0x01,
-            REPORT_COUNT(1), 0x01,
-            HIDINPUT(1), 0x02,
-            REPORT_COUNT(1), 0x07,
-            HIDINPUT(1), 0x01,
-            REPORT_COUNT(1), 0x01,
-            REPORT_SIZE(1), 0x08,
-            HIDINPUT(1), 0x01,
-            USAGE_PAGE(1), 0x01,
-            USAGE(1), 0x30,
-            USAGE(1), 0x31,
-            LOGICAL_MINIMUM(1), 0x00,
-            LOGICAL_MAXIMUM(2), 0x10, 0x27,
-            REPORT_SIZE(1), 0x10,
-            REPORT_COUNT(1), 0x02,
-            HIDINPUT(1), 0x02,
-        END_COLLECTION(0),
-        REPORT_SIZE(1), 0x08,
-        REPORT_COUNT(1), 0x01,
-        HIDINPUT(1), 0x01,
     END_COLLECTION(0)
 };
+
+// BLE registers only Report IDs that are in the map. Extra unused
+// characteristics make Android HOGP connect with no /dev/input. Pads in
+// the map (vendor / System Control / extra Consumer / dummy mouse) either
+// yield SYN-only (EV=1) or make Linux hid-generic create no evdev nodes.
 
 const uint8_t kDigitizerMap[] = {
     USAGE_PAGE(1), 0x0D,
@@ -275,6 +272,7 @@ uint16_t Hid::buildMap(uint8_t* out, Mix mix) {
     uint8_t* dst = out;
     if (mix.keyboard) {
         append(dst, kKeyboardMap, sizeof(kKeyboardMap));
+        append(dst, kConsumerMap, sizeof(kConsumerMap));
     }
     if (mix.mouse) {
         append(dst, kMouseMap, sizeof(kMouseMap));
@@ -322,7 +320,9 @@ size_t Hid::packReport(uint8_t* out, Mix mix, const CombinedReport& report) {
         put8(static_cast<uint8_t>(report.mouseWheel));
     }
     if (mix.absPointer) {
-        putContacts(0x02);
+        put8(report.contact0Flags & 0x01 ? 0x01 : 0x00);
+        put16(report.contact0X);
+        put16(report.contact0Y);
     }
     if (mix.digitizer) {
         // Keep In Range on lift so Android does not drop the contact.
@@ -418,7 +418,21 @@ void Hid::rebuildBleMap() {
     if (!mapMix.any()) {
         mapMix = Mix{true, true, false, false};
     }
-    bleMapLen = buildMap(bleMap, mapMix);
+    uint8_t* dst = bleMap;
+    if (mapMix.keyboard) {
+        append(dst, kKeyboardMap, sizeof(kKeyboardMap));
+        append(dst, kConsumerMap, sizeof(kConsumerMap));
+    }
+    if (mapMix.mouse) {
+        append(dst, kMouseMap, sizeof(kMouseMap));
+    }
+    if (mapMix.absPointer) {
+        append(dst, kAbsMap, sizeof(kAbsMap));
+    }
+    bleMapLen = static_cast<uint16_t>(dst - bleMap);
+    if (bleMapLen < sizeof(bleMap)) {
+        memset(bleMap + bleMapLen, 0, sizeof(bleMap) - bleMapLen);
+    }
     if (bleDevice != nullptr) {
         bleDevice->reportMap(bleMap, bleMapLen);
     }
@@ -432,6 +446,21 @@ void Hid::setBleMix(Mix mix) {
     }
     if (!before.same(mix.asBleMap())) {
         rebuildBleMap();
+        Mix mapMix = mix.asBleMap();
+        if (bleDevice != nullptr) {
+            if (mapMix.keyboard && bleInputKb == nullptr) {
+                bleInputKb = bleDevice->inputReport(kReportIdKb);
+            }
+            if (mapMix.mouse && bleInputMouse == nullptr) {
+                bleInputMouse = bleDevice->inputReport(kReportIdMouse);
+            }
+            if (mapMix.absPointer && bleInputAbs == nullptr) {
+                bleInputAbs = bleDevice->inputReport(kReportIdAbs);
+            }
+            if (mapMix.keyboard && bleInputConsumer == nullptr) {
+                bleInputConsumer = bleDevice->inputReport(kReportIdConsumer);
+            }
+        }
     }
 }
 
@@ -456,10 +485,14 @@ bool Hid::ensureBleStarted() {
     bleDevice->pnp(0x02, 0xE502, 0xA113, 0x0103);
     bleDevice->hidInfo(0x00, 0x02);
     rebuildBleMap();
+    // Always register Report IDs 1/2/3/5. BlueZ CCC writes fail if a
+    // characteristic is missing; unused IDs stay out of the map so Linux
+    // hid-generic still creates Keyboard/Mouse/Abs nodes.
     bleInputKb = bleDevice->inputReport(kReportIdKb);
     bleInputMouse = bleDevice->inputReport(kReportIdMouse);
     bleInputAbs = bleDevice->inputReport(kReportIdAbs);
     bleInputDig = nullptr;
+    bleInputConsumer = bleDevice->inputReport(kReportIdConsumer);
     bleDevice->startServices();
     bleBattery = 255;
     bleDevice->setBatteryLevel(100);
@@ -602,15 +635,33 @@ bool Hid::notifyParts(const CombinedReport& report, Mix mix, uint16_t connId) {
     abs.absPointer = true;
     Mix dig{};
     dig.digitizer = true;
+    auto sendConsumer = [&](uint16_t conn) {
+        if ((parts & kPartConsumer) == 0 || !mix.keyboard) {
+            return;
+        }
+        uint8_t payload[2] = {
+            static_cast<uint8_t>(report.consumer),
+            static_cast<uint8_t>(report.consumer >> 8)
+        };
+        if (conn == 0xFFFE) {
+            if (usbDevice != nullptr) {
+                any = usbDevice->send(kReportIdConsumer, payload, 2) || any;
+            }
+            return;
+        }
+        any = notifyInput(bleInputConsumer, conn, payload, 2) || any;
+    };
     if (connId == 0xFFFE) {
         sendUsb(kPartKb, mix.keyboard, kReportIdKb, kb);
         sendUsb(kPartMouse, mix.mouse, kReportIdMouse, mouse);
         sendUsb(kPartAbs, mix.absPointer, kReportIdAbs, abs);
         sendUsb(kPartDig, mix.digitizer, kReportIdDig, dig);
+        sendConsumer(connId);
         return any;
     }
     sendBle(kPartKb, mix.keyboard, bleInputKb, kb);
     sendBle(kPartMouse, mix.mouse, bleInputMouse, mouse);
+    sendConsumer(connId);
     bool wantAbs = mix.absPointer || mix.digitizer;
     uint8_t absParts = report.parts;
     if (wantAbs && (absParts & (kPartAbs | kPartDig)) != 0) {
@@ -720,24 +771,32 @@ bool Hid::sendText(const char* text) {
 }
 
 bool Hid::sendUsage(uint8_t key) {
-    if (key == 0 || !currentMix().keyboard) {
+    return sendKey(key, 0, true, true);
+}
+
+bool Hid::sendKey(uint8_t usage, uint8_t modifiers, bool down, bool autoUp) {
+    if (usage == 0 || !currentMix().keyboard) {
         return false;
     }
-    CombinedReport down = blank();
-    down.parts = kPartKb;
-    down.kbKeys[0] = key;
-    if (!emit(down)) {
+    CombinedReport report = blank();
+    report.parts = kPartKb;
+    if (down) {
+        report.kbMod = modifiers;
+        report.kbKeys[0] = usage;
+    }
+    if (!emit(report)) {
         return false;
     }
-    // Down and up in the same tick never become EV_KEY on BlueZ/Android.
-    portENTER_CRITICAL(&mux);
-    kbReleasePending = true;
-    kbReleaseAtMs = millis() + 50;
-    portEXIT_CRITICAL(&mux);
+    if (down && autoUp) {
+        portENTER_CRITICAL(&mux);
+        kbReleasePending = true;
+        kbReleaseAtMs = millis() + 50;
+        portEXIT_CRITICAL(&mux);
+    }
     return true;
 }
 
-bool Hid::sendMouse(int8_t x, int8_t y, uint8_t buttons, int8_t wheel, int8_t pan) {
+bool Hid::sendMouse(int8_t x, int8_t y, uint8_t buttons, int8_t wheel, int8_t pan, bool autoRelease) {
     if (!currentMix().mouse) {
         return false;
     }
@@ -751,10 +810,41 @@ bool Hid::sendMouse(int8_t x, int8_t y, uint8_t buttons, int8_t wheel, int8_t pa
     if (!emit(move)) {
         return false;
     }
-    if (buttons != 0) {
+    if (autoRelease && buttons != 0) {
         CombinedReport up = blank();
         up.parts = kPartMouse;
         emit(up);
+    }
+    return true;
+}
+
+bool Hid::sendConsumer(uint16_t usage, bool down, bool autoUp) {
+    if (!currentMix().keyboard) {
+        return false;
+    }
+    CombinedReport report = blank();
+    report.parts = kPartConsumer;
+    report.consumer = down ? usage : 0;
+    if (!emit(report)) {
+        return false;
+    }
+    if (down && autoUp) {
+        CombinedReport up = blank();
+        up.parts = kPartConsumer;
+        emit(up);
+    }
+    return true;
+}
+
+bool Hid::sendAbs(uint16_t x, uint16_t y, bool down, uint8_t buttons) {
+    (void)buttons;
+    x = clampAxis(x);
+    y = clampAxis(y);
+    if (!pushTouchFrame(x, y, down, 0, 0, false, down ? 1 : 0)) {
+        return false;
+    }
+    if (!down) {
+        return pushTouchFrame(x, y, false, 0, 0, false, 0);
     }
     return true;
 }
