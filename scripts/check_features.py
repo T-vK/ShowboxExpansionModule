@@ -13,6 +13,7 @@ UART liveness check, and a stale link fails the run even if HTTP looks fine.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import random
@@ -2342,10 +2343,36 @@ def run(args: argparse.Namespace) -> int:
         r.skip("https-handshake", "HTTPS not enabled")
 
     code, body = http_get(f"{s.base}/", timeout=8.0, ua="Mozilla/5.0")
-    if code == 200 and len(body) > 10000:
-        r.pass_("http-root", f"{code} {len(body)} bytes")
+    # The SPA always arrives gzip-encoded. Split build: "/" is a ~1 KB gz
+    # shell that loads hashed /assets/* files; the old single-file build
+    # returned the whole ~71 KB gz SPA inline.
+    raw = body
+    if raw[:2] == b"\x1f\x8b":
+        try:
+            raw = gzip.decompress(raw)
+        except OSError:
+            pass
+    shell = b"ShowboxMod" in raw and b"/assets/" in raw
+    if code == 200 and (len(raw) > 10000 or shell):
+        r.pass_("http-root", f"{code} {len(body)} gz bytes shell={shell}")
     else:
         r.fail("http-root", f"http={code} size={len(body)}")
+    # The shell only works if every referenced asset actually transfers; the
+    # BLE-coex link stalls big bodies partway, so try each asset a few times.
+    assets = re.findall(rb'/assets/[a-zA-Z0-9._-]+', raw)
+    asset_fail = 0
+    for asset in sorted(set(assets)):
+        asset_ok = False
+        for _attempt in range(4):
+            acode, abody = http_get(f"{s.base}{asset.decode('ascii')}", timeout=20.0)
+            if acode == 200 and len(abody) > 500:
+                asset_ok = True
+                break
+        if asset_ok:
+            r.pass_(f"asset{asset.decode('ascii')}", "transferred")
+        else:
+            asset_fail += 1
+            r.fail(f"asset{asset.decode('ascii')}", "stalled or truncated on every try")
 
     midi = s.midi()
     if midi:
@@ -2400,8 +2427,15 @@ def run(args: argparse.Namespace) -> int:
             r.pass_("mixer-via-mdns", "http-root already pulled the SPA; skip a second gzip under BLE")
         else:
             code, body = http_get(f"{s.base}/", timeout=8.0, host=args.host, ua="Mozilla/5.0")
-            if code == 200 and len(body) > 10000:
-                r.pass_("mixer-via-mdns", f"{code} {len(body)} bytes Host={args.host}")
+            raw = body
+            if raw[:2] == b"\x1f\x8b":
+                try:
+                    raw = gzip.decompress(raw)
+                except OSError:
+                    pass
+            shell = b"ShowboxMod" in raw and b"/assets/" in raw
+            if code == 200 and (len(raw) > 10000 or shell):
+                r.pass_("mixer-via-mdns", f"{code} {len(body)} gz bytes Host={args.host} shell={shell}")
             else:
                 r.fail("mixer-via-mdns", f"http={code} size={len(body)}")
     else:

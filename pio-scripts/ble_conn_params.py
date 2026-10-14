@@ -605,24 +605,24 @@ http_text = http_text.replace(
     """    if (outLen > 8192) {
       outLen = 8192;
     }""",
-    """    if (outLen > 256) {
-      outLen = 256;
+    """    if (outLen > 1460) {
+      outLen = 1460;
     }""",
 )
 http_text = http_text.replace(
     """    if (outLen > 1460) {
       outLen = 1460;
     }""",
-    """    if (outLen > 256) {
-      outLen = 256;
+    """    if (outLen > 1460) {
+      outLen = 1460;
     }""",
 )
 http_text = http_text.replace(
     """    if (outLen > 1024) {
       outLen = 1024;
     }""",
-    """    if (outLen > 256) {
-      outLen = 256;
+    """    if (outLen > 1460) {
+      outLen = 1460;
     }""",
 )
 if http_text and "#include <esp_heap_caps.h>" not in http_text:

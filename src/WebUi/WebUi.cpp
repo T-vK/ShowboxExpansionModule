@@ -1,5 +1,6 @@
 #include "WebUi.h"
 #include "Page.h"
+#include "WebAssets.h"
 #include "PwaAssets.h"
 #include "System/LanKeep.h"
 #include <esp_heap_caps.h>
@@ -167,7 +168,8 @@ static void sendFlashBytes(
     const char* type,
     const uint8_t* data,
     size_t len,
-    const char* cache
+    const char* cache,
+    bool gz = false
 ) {
     lanNoteHttp();
     if (len >= 4096) {
@@ -189,6 +191,9 @@ static void sendFlashBytes(
             }
             return fillFlash(data, len, buffer, maxLen > cap ? cap : maxLen, index);
         });
+    if (gz) {
+        response->addHeader("Content-Encoding", "gzip");
+    }
     response->addHeader("Cache-Control", cache);
     request->send(response);
 }
@@ -240,4 +245,14 @@ void registerWebUiRoutes(AsyncWebServer* server) {
     server->on("/icon-180.png", HTTP_GET, [](AsyncWebServerRequest* request) {
         sendFlashBytes(request, "image/png", PWA_ICON_180, PWA_ICON_180_LEN, "public, max-age=86400");
     });
+    // Split-build assets (hashed names, immutable): many small gz bodies
+    // survive the BLE-coex radio window far better than one 71 KB file, and
+    // the service worker caches each after the first good fetch.
+    for (size_t i = 0; i < WEBUI_ASSETS_N; i++) {
+        const WebUiAsset* asset = WEBUI_ASSETS[i];
+        server->on(asset->path, HTTP_GET, [asset](AsyncWebServerRequest* request) {
+            sendFlashBytes(request, asset->type, asset->gz, asset->len,
+                "public, max-age=31536000, immutable", true);
+        });
+    }
 }

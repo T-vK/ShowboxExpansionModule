@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
-import { viteSingleFile } from "vite-plugin-singlefile";
 
 function mockShowbox() {
   const store = {};
@@ -222,10 +221,22 @@ function mockShowbox() {
 }
 
 export default defineConfig({
-  plugins: [preact(), mockShowbox(), viteSingleFile()],
+  plugins: [preact(), mockShowbox()],
   build: {
     cssCodeSplit: false,
-    assetsInlineLimit: 100000000,
+    // The firmware serves the dist files from flash; keep the set small:
+    // one vendor chunk, one app chunk, one css. Small bodies survive the
+    // BLE-coex radio window far better than one ~71 KB single file, and the
+    // service worker caches each file after the first good fetch.
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            return "vendor";
+          }
+        }
+      }
+    },
     minify: "esbuild"
   }
 });
