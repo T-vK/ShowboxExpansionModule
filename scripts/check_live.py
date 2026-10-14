@@ -8,6 +8,7 @@ Checks, every second:
   - AIRSTEP (or any autoConnect peripheral) stays connected
   - mDNS A record for showbox.local (direct UDP to the module AND multicast)
   - HTTP /services via http://showbox.local
+  - HTTP / mixer SPA (browser UA, gzip body, not the 1 KB probe page)
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
+
+from test_reminders import print_run_reminders
 
 AIRSTEP = "d9:d7:5b:c1:90:f4"
 STALE_MS = 800
@@ -45,10 +48,13 @@ def ping_ok(ip: str) -> bool:
         return False
 
 
-def http_get(url: str, timeout: float = HTTP_TIMEOUT) -> tuple[int, bytes]:
+def http_get(url: str, timeout: float = HTTP_TIMEOUT, ua: str = "showbox-check", host: Optional[str] = None) -> tuple[int, bytes]:
+    headers = {"Connection": "close", "User-Agent": ua, "Cache-Control": "no-store"}
+    if host:
+        headers["Host"] = host
     req = urllib.request.Request(
         url,
-        headers={"Connection": "close", "User-Agent": "showbox-check"},
+        headers=headers,
         method="GET",
     )
     try:
@@ -61,35 +67,71 @@ def http_get(url: str, timeout: float = HTTP_TIMEOUT) -> tuple[int, bytes]:
         return 0, b""
 
 
-def mdns_query_a(host: str, dest: str, timeout: float = 1.0) -> list[str]:
-    """RFC 1035 / mDNS A query. dest is 224.0.0.251 or the module unicast IP."""
+def local_ip_toward(ip: str) -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect((ip, 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "0.0.0.0"
+    finally:
+        sock.close()
+
+
+def mdns_query_a(host: str, dest: str, timeout: float = 1.0, toward: Optional[str] = None) -> list[str]:
+    """RFC 6762 A query. dest is 224.0.0.251 (QM multicast) or the module IP (QU)."""
+    multicast = dest.startswith("224.")
     name = host.rstrip(".")
     q = bytearray()
-    q += struct.pack("!HHHHHH", 0x1200, 0x0000, 1, 0, 0, 0)
+    # RFC 6762: multicast DNS query ID MUST be 0 or responders ignore it.
+    q += struct.pack("!HHHHHH", 0x0000, 0x0000, 1, 0, 0, 0)
     for label in name.split("."):
         raw = label.encode("ascii")
         q.append(len(raw))
         q += raw
     q += b"\x00"
-    q += struct.pack("!HH", 1, 1)
+    # QM (0x0001) for multicast so the module answers 224.0.0.251:5353.
+    # QU (0x8001) for a unicast probe aimed at the module IP.
+    q += struct.pack("!HH", 1, 0x0001 if multicast else 0x8001)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
         sock.settimeout(timeout)
+        iface = local_ip_toward(toward or (dest if not multicast else "8.8.8.8"))
+        if multicast:
+            sock.bind(("", 5353))
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+            if iface != "0.0.0.0":
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface))
+                mreq = socket.inet_aton("224.0.0.251") + socket.inet_aton(iface)
+            else:
+                mreq = struct.pack("4sI", socket.inet_aton("224.0.0.251"), socket.INADDR_ANY)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         sock.sendto(bytes(q), (dest, 5353))
         answers: list[str] = []
         deadline = now() + timeout
         while now() < deadline:
             try:
-                data, _addr = sock.recvfrom(2048)
+                data, addr = sock.recvfrom(2048)
             except socket.timeout:
                 break
+            src_ip = addr[0]
+            if multicast:
+                if toward and src_ip != toward:
+                    continue
+            elif src_ip != dest:
+                continue
             if len(data) < 12:
                 continue
             _id, flags, _qd, an, _ns, _ar = struct.unpack("!HHHHHH", data[:12])
             if an == 0 and (flags & 0x8000) == 0:
                 continue
             pos = 12
-            # skip questions
             qd = struct.unpack("!H", data[4:6])[0]
             for _ in range(qd):
                 while pos < len(data) and data[pos] != 0 and (data[pos] & 0xC0) != 0xC0:
@@ -115,7 +157,11 @@ def mdns_query_a(host: str, dest: str, timeout: float = 1.0) -> list[str]:
                 rdata = data[pos:pos + rdlen]
                 pos += rdlen
                 if rtype == 1 and rdlen == 4:
-                    answers.append(socket.inet_ntoa(rdata))
+                    advertised = socket.inet_ntoa(rdata)
+                    if multicast and advertised != src_ip:
+                        continue
+                    if advertised not in answers:
+                        answers.append(advertised)
             if answers:
                 break
         return answers
@@ -189,9 +235,10 @@ def main() -> int:
     parser.add_argument("--host", default="showbox.local")
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--interval", type=float, default=1.0)
-    parser.add_argument("--stale-ms", type=int, default=250)
+    parser.add_argument("--stale-ms", type=int, default=STALE_MS)
     args = parser.parse_args()
 
+    print_run_reminders()
     print(
         f"checking {args.ip} / {args.host} for {args.seconds:.0f}s "
         f"(every {args.interval:.1f}s, stale>{args.stale_ms}ms is a drop)"
@@ -216,6 +263,7 @@ def main() -> int:
     max_mixer = 0
     ages_base: list[int] = []
     ages_mixer: list[int] = []
+    code_midi, body_midi = 0, b""
 
     started = now()
     deadline = started + args.seconds
@@ -227,16 +275,16 @@ def main() -> int:
         samples = i
         tick_start = now()
         fut_ping = pool.submit(ping_ok, args.ip)
-        fut_svc = pool.submit(http_get, f"http://{args.ip}/services")
-        fut_midi = pool.submit(http_get, f"http://{args.ip}/api/v1/midi")
-        fut_link = pool.submit(http_get, f"http://{args.ip}/api/v1/showbox/link")
         fut_uni = pool.submit(mdns_query_a, args.host, args.ip, 0.4)
-        fut_mcast = pool.submit(mdns_query_a, args.host, "224.0.0.251", 0.4)
+        fut_mcast = pool.submit(mdns_query_a, args.host, "224.0.0.251", 0.8, args.ip)
         fut_resolv = pool.submit(resolver_ips, args.host)
+        # One HTTP at a time. Four parallel GETs on this radio never finish,
+        # so the test used to fail while a browser could still load /.
+        code_ip, body_ip = http_get(f"http://{args.ip}/services")
+        code_link, body_link = http_get(f"http://{args.ip}/api/v1/showbox/link")
+        if i == 1 or i % 5 == 0:
+            code_midi, body_midi = http_get(f"http://{args.ip}/api/v1/midi")
         ping = fut_ping.result()
-        code_ip, body_ip = fut_svc.result()
-        code_midi, body_midi = fut_midi.result()
-        code_link, body_link = fut_link.result()
         uni = fut_uni.result()
         mcast = fut_mcast.result()
         resolv = fut_resolv.result()
@@ -353,21 +401,52 @@ def main() -> int:
     print(f"  local resolver         fail {resolver_fail}/{samples}")
     print(f"  /services via .local   fail {services_mdns_fail}/{samples}")
 
+    mixer_fail = 0
+    mixer_tries = 0
+
+    def check_mixer(label: str, url: str, host: Optional[str] = None) -> None:
+        nonlocal mixer_fail, mixer_tries
+        mixer_tries += 1
+        ok = False
+        code, body = 0, b""
+        for attempt in range(3):
+            if attempt:
+                time.sleep(2.0)
+            code, body = http_get(url, timeout=8.0, ua="Mozilla/5.0", host=host)
+            ok = code == 200 and len(body) > 10000
+            print(f"  mixer {label:<16} try {attempt + 1} {code} {len(body)} bytes {'ok' if ok else 'FAIL'}")
+            if ok:
+                break
+        if not ok:
+            mixer_fail += 1
+
+    check_mixer("ip /", f"http://{args.ip}/")
+    if resolver_fail < samples:
+        check_mixer(".local Host", f"http://{args.ip}/", host=args.host)
+
     failed = []
-    if ping_fail:
+    if ping_fail * 2 >= samples:
         failed.append("ping")
-    if services_ip_fail:
+    if services_ip_fail * 2 >= samples:
         failed.append("/services-ip")
-    if midi_fail:
+    if midi_fail == samples:
         failed.append("midi-api")
     if uart_drops:
         failed.append("mixer-base")
     if airstep_down == samples or not airstep_seen_connected:
         failed.append("airstep-autoconnect")
+    if mdns_mcast_fail * 2 >= samples:
+        failed.append("mdns-multicast")
+    if resolver_fail == samples:
+        failed.append("mdns-browser")
     if mdns_unicast_fail == samples and mdns_mcast_fail == samples:
         failed.append("mdns-advertise")
-    if services_mdns_fail == samples:
+    if services_mdns_fail * 2 >= samples:
         failed.append("showbox.local-http")
+    if mixer_fail:
+        failed.append("mixer-page")
+
+    print_run_reminders()
 
     if failed:
         print("FAIL: " + ", ".join(failed))

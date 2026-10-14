@@ -109,6 +109,8 @@ private:
     void keepAdvertising();
     void refreshLink();
     void readPeerBattery();
+    void attachMidiGatt();
+    void syncNotifyHold();
     bool hasRoomForOutgoing() const;
 
     BleMidiDecode decoder;
@@ -126,6 +128,8 @@ private:
         bool haveRssi = false;
         uint32_t lastBatteryReadMs = 0;
         uint32_t sinceMs = 0;
+        uint32_t gattAt = 0;
+        bool midiHeld = false;
     };
     uint8_t timestampLow = 0;
     OutgoingLink outgoing[kMaxOutgoing] = {};

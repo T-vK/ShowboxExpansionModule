@@ -7,12 +7,13 @@
 class MultiMidi;
 class MackieShowbox;
 class Connections;
+class Hid;
+class FrontPanel;
 
-// A reaction is a Home Assistant style automation: any trigger, then every
-// condition, then the actions in order. Stored as JSON.
 class ActionRules {
 public:
-    void begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections* connectionsIn);
+    void begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections* connectionsIn, Hid* hidIn = nullptr);
+    void setFrontPanel(FrontPanel* panelIn);
     void setDebugSerial(Print* serial);
     void tick();
 
@@ -23,36 +24,69 @@ public:
     bool runRule(int id, String& error);
 
     bool claimsTrs(const char* jack, const char* gesture) const;
+    bool claimsMidi(const char* kind, uint8_t channel, uint8_t number) const;
+    bool claimsPanel(const char* button, const char* gesture) const;
     void onMidi(const char* kind, uint8_t channel, uint8_t number, uint8_t value);
+    void onPanel(const char* button, const char* gesture);
     void onShowbox(const char* entity, const char* value);
+    void onPacket(const uint8_t* data, size_t length, const char* dir);
 
 private:
-    struct Field {
-        String type;
-        String a;
-        String b;
-        String c;
-        String d;
-        String e;
-    };
     struct Rule {
         uint16_t id = 0;
         bool on = true;
         String name;
-        std::vector<Field> triggers;
-        std::vector<Field> conditions;
-        std::vector<Field> actions;
+        String json;
+    };
+    struct LocalVar {
+        char name[20] = {};
+        float value = 0;
     };
     struct Job {
         bool active = false;
         uint16_t id = 0;
         uint16_t step = 0;
         uint32_t waitUntil = 0;
+        uint8_t moveKind = 0;
+        uint16_t x0 = 0;
+        uint16_t y0 = 0;
+        uint16_t x1 = 0;
+        uint16_t y1 = 0;
+        uint32_t moveStart = 0;
+        uint32_t moveDur = 0;
+        uint8_t moveButtons = 0;
+        int16_t lastMoveX = 0;
+        int16_t lastMoveY = 0;
+        uint16_t lastAbsX = 0;
+        uint16_t lastAbsY = 0;
+        uint8_t looperKind = 0;
+        uint8_t looperStep = 0;
+        LocalVar locals[8] = {};
+        uint8_t localCount = 0;
+    };
+    struct StoredVar {
+        char name[20] = {};
+        float value = 0;
+        bool persist = false;
     };
     enum class Ask : uint8_t { None, Save, Remove, Run, List };
 
     void load();
     void flush();
+    void seedBuiltins();
+    void patchBuiltinMeta();
+    bool hasBuiltin(const char* key) const;
+    void loadVars();
+    void saveVars();
+    float getVar(Job* job, const String& name) const;
+    void setVar(Job* job, const String& name, float value, bool local, bool persist);
+    void applyGainBoost(Job& job, JsonObjectConst step);
+    void applyMidiLoopBoost(bool on);
+    void noteLooperState(uint8_t next);
+    void dispatchLooper(const String& op);
+    void startLooper(Job& job, const String& op);
+    void runLooper(Job& job);
+    void runSystem(const String& command);
     bool applySave(const String& body, String& error);
     bool applyRemove(int id, String& error);
     String buildJson() const;
@@ -60,26 +94,33 @@ private:
     int indexOf(int id) const;
     bool enqueue(uint16_t id);
     void pump();
-    void runStep(const Field& step);
+    bool runStep(Job& job, JsonObjectConst step);
     void watchConnections();
     void watchJacks();
     bool linkUp(const String& link) const;
-    bool readTrigger(JsonObject object, Field& field, String& error);
-    bool readCondition(JsonObject object, Field& field, String& error);
-    bool readAction(JsonObject object, Field& field, String& error);
-    bool triggerMatches(const Field& trigger, const char* event, const char* p1, const char* p2, const char* p3, const char* p4) const;
-    bool conditionsPass(const Rule& rule) const;
-    void fire(const char* event, const char* p1, const char* p2, const char* p3, const char* p4);
+    bool triggerMatches(JsonObjectConst trigger, const char* event, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5) const;
+    bool conditionPass(JsonVariantConst node) const;
+    bool leafPass(JsonObjectConst leaf) const;
+    void fire(const char* event, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5 = "");
     static void jackPress(void* parameter);
     static void jackLong(void* parameter);
     static void jackShort(void* parameter);
     static void jackLongUp(void* parameter);
     static void jackDouble(void* parameter);
 
+    void noteMidiEcho(uint8_t cc, uint8_t channel);
+    bool isMidiEcho(uint8_t channel, uint8_t number) const;
+    bool wasRecentMidiCc(uint8_t cc, uint8_t channel) const;
+
     MultiMidi* midi = nullptr;
     MackieShowbox* showbox = nullptr;
     Connections* connections = nullptr;
+    Hid* hid = nullptr;
+    FrontPanel* panel = nullptr;
     Print* debug = nullptr;
+    StoredVar globals[24] = {};
+    uint8_t globalCount = 0;
+    bool varsDirty = false;
     std::vector<Rule> rules;
     std::vector<Job> jobs;
     std::vector<uint16_t> storedIds;
@@ -89,6 +130,12 @@ private:
     bool usbUp = false;
     bool inAction = false;
     uint32_t ignoreMidiUntil = 0;
+    uint32_t ignoreMidiEchoUntil = 0;
+    uint8_t ignoreMidiEchoCc = 0xFF;
+    uint8_t ignoreMidiEchoCh = 0xFF;
+    uint32_t lastMidiInUntil = 0;
+    uint8_t lastMidiInCc = 0xFF;
+    uint8_t lastMidiInCh = 0xFF;
     uint32_t ignoreShowboxUntil = 0;
     void* jacks[8] = {};
     bool dirty = false;
@@ -103,4 +150,7 @@ private:
 };
 
 bool actionRulesClaimTrs(const char* jack, const char* gesture);
+bool actionRulesClaimMidi(const char* kind, uint8_t channel, uint8_t number);
+bool actionRulesClaimPanel(const char* button, const char* gesture);
 void actionRulesOnMidi(const char* kind, uint8_t channel, uint8_t number, uint8_t value);
+void actionRulesOnPanel(const char* button, const char* gesture);

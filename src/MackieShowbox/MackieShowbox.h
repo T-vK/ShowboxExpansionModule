@@ -25,12 +25,26 @@ public:
     float getFloatEntityValue(entity_id entityId);
 
     void sendLooperButtonAction(looper_button_action action);
+    void tapLooper(uint8_t times = 1);
+    void noteLooperOutgoing();
+    bool takeLooperOutgoing();
+    void injectPacket(const uint8_t* data, size_t length, const char* dir = "both");
     void toggleSdCardRecord();
+    void sendAutogain(uint8_t chan);
     void snapshotAction(snapshot_action action, snapshot_slot slot);
+    void snapshotMenuBack();
+    bool takeSnapshotDone(uint8_t& action, uint8_t& slot);
+    bool snapshotBusy() const;
+    void sendSnapshot(snapshot_action action, snapshot_slot slot);
     void tunerAction(tuner_action action, tuner_chan chan);
     float getBatteryLevel();
     bool hasBatteryLevel() const { return batteryHeard; }
+    bool hasEntityValue(entity_id entityId) const;
+    uint32_t dumpSeq() const { return dumpGen; }
+    uint8_t dumpTryCount() const { return dumpTries; }
+    void requestMixerDump();
     sd_card_state getSdCardState();
+    bool hasSdCardState() const { return sdCardHeard; }
     void setParsing(bool enabled) { parseEnabled = enabled; }
     bool parsing() const { return parseEnabled; }
     uint32_t linkAgeMs() const;
@@ -74,9 +88,14 @@ public:
     uint32_t entityFromMixer() const { return entMix; }
     uint32_t requestFromMixer() const { return reqMix; }
     uint32_t restoreCountFromMixer() const { return restoreCount; }
+    uint32_t parseDropped() const { return parseDrop; }
+    uint32_t analogSkipped() const { return analogSkip; }
     bool linkOk(uint32_t staleMs = 1500) const;
     bool uartHot(uint32_t windowMs = 40) const;
     void waitQuiet(uint32_t maxMs = 40) const;
+    void wireUnplug(uint32_t ms);
+    bool wireUnplugActive() const { return interceptor.wireUnplugActive(); }
+    uint32_t wireUnplugCount() const { return interceptor.wireUnplugCount(); }
 
     // High level entity setters
     void setFrontLed(bool state);
@@ -132,6 +151,15 @@ public:
     bool getFxBypassState();
     uint8_t getTunerState();
     uint8_t getTunerChan();
+    bool getTunerHeard() const;
+    uint8_t getTunerMidi() const;
+    uint8_t getTunerNoteId() const;
+    float getTunerCents() const;
+    float getTunerHz() const;
+
+    void setAnalogHold(bool phones, bool loop);
+    bool analogHoldPhones() const { return analogHoldPhonesFlag; }
+    bool analogHoldLoop() const { return analogHoldLoopFlag; }
 
     void tick();
     void begin();
@@ -148,6 +176,7 @@ public:
     //void postHandlePacketHook(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, UARTInterceptor::PacketHandlerResult result);
     std::function<void(uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, UARTInterceptor::PacketHandlerResult result)> postHandlePacketCallback = nullptr;
     void (*entityListener)(entity_id id, const char* value) = nullptr;
+    void (*packetListener)(const uint8_t* data, size_t length, const char* dir) = nullptr;
     /* Example usage:
     showbox->postHandlePacketCallback = [](uint8_t* raw_packet, size_t length, UARTInterceptor::Direction direction, UARTInterceptor::PacketHandlerResult result) {
         if (result == UARTInterceptor::PacketHandlerResult::PACKET_MODIFIED) {
@@ -176,7 +205,29 @@ private:
     portMUX_TYPE parseMux = portMUX_INITIALIZER_UNLOCKED;
     void enqueueParse(uint8_t* packet, size_t length, UARTInterceptor::Direction direction);
     void drainParse();
+    void flushAnalogNotifies();
+    volatile uint32_t parseDrop = 0;
+    volatile uint32_t analogSkip = 0;
+    volatile bool analogDirtyPhones = false;
+    volatile bool analogDirtyLoop = false;
+    uint32_t lastAnalogNotifyMs = 0;
     sd_card_state sdCardState = sd_card_state::NOT_DETECTED;
+    bool sdCardHeard = false;
+    bool sdCardPresent = false;
+    bool tunerOn = false;
+    uint8_t tunerChannel = 1;
+    void sendTunerPacket(uint8_t action, uint8_t chan);
+    bool tunerHeard = false;
+    uint8_t tunerMidi = 0;
+    uint8_t tunerNoteId = 0;
+    float tunerCents = 0.0f;
+    float tunerHz = 0.0f;
+    uint32_t lastTunerPitchMs = 0;
+    uint32_t ignoreTunerOffUntil = 0;
+    uint32_t tunerRetryAt = 0;
+    uint8_t tunerRetryChan = 0;
+    void applyTunerFeedback(uint8_t chan, uint8_t noteId, float cents);
+    void parseTunerFeedback(const uint8_t* packet, size_t length);
     Print* Debug = &Serial;
     Print* packetLog = nullptr;
     bool packetLogEnabled = false;
@@ -184,8 +235,9 @@ private:
         bool boolValue;
         uint8_t uint8Value;
         float floatValue;
+        bool heard;
 
-        EntityValue() : boolValue(false), uint8Value(0), floatValue(0.0f) {}
+        EntityValue() : boolValue(false), uint8Value(0), floatValue(0.0f), heard(false) {}
     };
     std::unordered_map<entity_id, EntityValue> entityValues;
     volatile uint32_t initMix = 0;
@@ -199,13 +251,53 @@ private:
     volatile uint32_t badMix = 0;
     volatile uint32_t badBase = 0;
     bool mixerTouched[FX_BYPASS + 1] = {};
+    uint8_t emitPkt[FX_BYPASS + 1][16] = {};
+    volatile uint8_t emitLen[FX_BYPASS + 1] = {};
+    volatile uint8_t emitPending[FX_BYPASS + 1] = {};
+    uint32_t lastEmitMs[FX_BYPASS + 1] = {};
+    void queueEmit(entity_id entityId, const uint8_t* packet, size_t length);
+    void flushEmits();
     volatile uint32_t restoreAtMs = 0;
     volatile uint32_t ignoreTouchUntil = 0;
+    volatile uint32_t looperHoldUntil = 0;
+    bool looperOutgoing = false;
     volatile uint32_t restoreCount = 0;
+    volatile uint32_t dumpGen = 0;
+    uint32_t lastDumpReqMs = 0;
+    uint8_t dumpTries = 0;
+    bool dumpLinkLive = false;
+    bool dumpLinkLost = false;
+    bool analogHoldPhonesFlag = true;
+    bool analogHoldLoopFlag = true;
+    bool analogHoldDirty = false;
+    struct AnalogRest {
+        float value = 0.0f;
+        int8_t dir = 0;
+        bool have = false;
+    };
+    AnalogRest phonesRest;
+    AnalogRest loopRest;
     void restoreMixerEntities();
-    void rememberMixerEntity(const uint8_t* packet, size_t length);
+    bool rememberMixerEntity(const uint8_t* packet, size_t length);
     bool mixerOwnsEntity(entity_id id) const;
+    bool looperHoldActive() const;
+    float snapFloat(entity_id entityId, float value) const;
+    bool analogHoldOn(entity_id entityId) const;
+    bool ignoreAnalogJitter(entity_id entityId, float value);
+    void loadAnalogHold();
+    void saveAnalogHold();
+    void armSnapshotDone(uint8_t action, uint8_t slot);
+    uint8_t snapshotPendingAction = 0;
+    uint8_t snapshotPendingSlot = 0;
+    uint32_t snapshotBusyUntil = 0;
+    uint8_t snapshotQueuedAction = 0;
+    uint8_t snapshotQueuedSlot = 0;
+    bool snapshotQueued = false;
     bool uartTaskRunning = false;
+    // Base-wedge recovery ladder state
+    uint32_t wedgeSinceMs = 0;
+    uint32_t wedgeLastAtMs = 0;
+    uint8_t wedgeStage = 0;
     UARTInterceptor interceptor;
     UARTInterceptor::Direction TO_MIXER = UARTInterceptor::DEVICE1_TO_DEVICE2;
     UARTInterceptor::Direction TO_BASE = UARTInterceptor::DEVICE2_TO_DEVICE1;

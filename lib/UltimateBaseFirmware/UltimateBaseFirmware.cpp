@@ -99,6 +99,25 @@ void UltimateBaseFirmware::tick() {
     if (_lanServicesUp) {
         ArduinoOTA.handle();
         if (!_customDebugSerial) {
+            // A telnet client whose peer vanished (laptop asleep, half-open PCB)
+            // makes every Debug print block in lwip_select and starves the main
+            // loop. The loop-stall detector quarantines telnet writes; while
+            // quarantined the stalled client is dropped and history stays
+            // buffered until it reconnects.
+            if (_telnetQuarantineUntil != 0) {
+                if ((int32_t)(millis() - _telnetQuarantineUntil) >= 0) {
+                    _telnetQuarantineUntil = 0;
+                    _telnetQuarantineDropped = false;
+                } else {
+                    if (!_telnetQuarantineDropped) {
+                        _remoteDebug.disconnect(true);
+                        _telnetQuarantineDropped = true;
+                    }
+                    Debug.setPrint2Live(false);
+                    _remoteDebugWasConnected = false;
+                    return;
+                }
+            }
             _remoteDebug.handle();
             bool connected = _remoteDebug.isConnected();
             Debug.setPrint2Live(connected);
@@ -121,6 +140,15 @@ void UltimateBaseFirmware::tick() {
             _remoteDebugWasConnected = connected;
         }
     }
+}
+
+void UltimateBaseFirmware::quarantineTelnet(uint32_t ms) {
+    _telnetQuarantineUntil = millis() + ms;
+    _telnetQuarantineDropped = false;
+}
+
+WiFiClient* UltimateBaseFirmware::telnetClient() {
+    return _remoteDebug.getTelnetClient();
 }
 
 void UltimateBaseFirmware::flushWifiLog() {
@@ -270,7 +298,7 @@ void UltimateBaseFirmware::enableWifiRadio() {
         initializeWifi();
         return;
     }
-    WiFi.mode(WIFI_STA);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.setSleep(false);
     WiFi.reconnect();
 }
@@ -320,17 +348,17 @@ void UltimateBaseFirmware::initializeWifi() {
         _wifiManager = new WiFiManager(Debug);  // Create a default WiFiManager instance if not set
     }
 
-    WiFi.mode(WIFI_STA);  // Explicitly set WiFi to station mode (STA)
+    WiFi.mode(WIFI_AP_STA);
     WiFi.hostname(_hostName);
-    _wifiManager->setHttpPort(8080);  // Set captive portal port to 8080
-    _wifiManager->setConfigPortalBlocking(false);  // Non-blocking captive portal
-    _wifiManager->setConfigPortalTimeout(0); // Disable portal timeout
+    _wifiManager->setHttpPort(8080);
+    _wifiManager->setConfigPortalBlocking(false);
+    _wifiManager->setConfigPortalTimeout(0);
+    _wifiManager->setEnableConfigPortal(false);
 
-    // Attempt to auto-connect to saved WiFi credentials, or start the captive portal
     if (_wifiManager->autoConnect("ShowboxExpansionModuleAP", "showbox")) {
         Debug.println("Connected to WiFi!");
     } else {
-        Debug.println("Failed to connect to WiFi. Captive portal running.");
+        Debug.println("Failed to connect to WiFi. Mixer hotspot will stay up.");
     }
 }
 

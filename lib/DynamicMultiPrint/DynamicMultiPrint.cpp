@@ -6,7 +6,7 @@ DynamicMultiPrint::DynamicMultiPrint()
     : _print1(nullptr), _print2(nullptr),
       _buffer1(false), _buffer2(false), _print2Live(false),
       _wifiBuf(nullptr), _wifiCap(0), _wifiHead(0), _wifiTail(0),
-      _wifiUsed(0), _wifiDropped(0),
+      _wifiUsed(0), _wifiDropped(0), _wifiSeq(0),
       _wifiMux(portMUX_INITIALIZER_UNLOCKED) {}
 
 DynamicMultiPrint::~DynamicMultiPrint() {
@@ -153,6 +153,57 @@ uint32_t DynamicMultiPrint::wifiDropped() const {
     return dropped;
 }
 
+uint32_t DynamicMultiPrint::wifiSeq() const {
+    portENTER_CRITICAL(&_wifiMux);
+    uint32_t seq = _wifiSeq;
+    portEXIT_CRITICAL(&_wifiMux);
+    return seq;
+}
+
+size_t DynamicMultiPrint::copyWifiSince(uint32_t since, uint8_t* out, size_t cap, uint32_t* next) {
+    if (out == nullptr || cap == 0) {
+        if (next != nullptr) {
+            *next = since;
+        }
+        return 0;
+    }
+    portENTER_CRITICAL(&_wifiMux);
+    uint32_t seq = _wifiSeq;
+    size_t used = _wifiUsed;
+    size_t tail = _wifiTail;
+    size_t ring = _wifiCap;
+    uint8_t* buf = _wifiBuf;
+    uint32_t oldest = seq - static_cast<uint32_t>(used);
+    if (since < oldest) {
+        since = oldest;
+    }
+    if (since > seq) {
+        since = seq;
+    }
+    size_t skip = static_cast<size_t>(since - oldest);
+    size_t avail = used > skip ? used - skip : 0;
+    size_t n = avail < cap ? avail : cap;
+    if (buf != nullptr && ring > 0 && n > 0) {
+        size_t start = (tail + skip) % ring;
+        size_t first = n;
+        size_t toEnd = ring - start;
+        if (first > toEnd) {
+            first = toEnd;
+        }
+        memcpy(out, buf + start, first);
+        if (n > first) {
+            memcpy(out + first, buf, n - first);
+        }
+    } else {
+        n = 0;
+    }
+    portEXIT_CRITICAL(&_wifiMux);
+    if (next != nullptr) {
+        *next = since + static_cast<uint32_t>(n);
+    }
+    return n;
+}
+
 void DynamicMultiPrint::clearWifi() {
     portENTER_CRITICAL(&_wifiMux);
     clearUnlocked();
@@ -171,6 +222,7 @@ void DynamicMultiPrint::pushUnlocked(const uint8_t* data, size_t n) {
         _wifiHead = 0;
         _wifiTail = 0;
         _wifiUsed = _wifiCap;
+        _wifiSeq += static_cast<uint32_t>(n);
         return;
     }
     size_t room = _wifiCap - _wifiUsed;
@@ -191,6 +243,7 @@ void DynamicMultiPrint::pushUnlocked(const uint8_t* data, size_t n) {
     }
     _wifiHead = (_wifiHead + n) % _wifiCap;
     _wifiUsed += n;
+    _wifiSeq += static_cast<uint32_t>(n);
 }
 
 size_t DynamicMultiPrint::popUnlocked(uint8_t* out, size_t maxBytes) {

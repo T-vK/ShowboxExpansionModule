@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "soc/interrupts.h"
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 
 static constexpr uint32_t kRxIntrMask =
     UART_INTR_RXFIFO_FULL | UART_INTR_RXFIFO_TOUT | UART_INTR_RXFIFO_OVF |
@@ -205,6 +206,10 @@ void UARTInterceptor::begin(int u1_rx, int u1_tx, int u2_rx, int u2_tx, uint32_t
     Serial2.setTxBufferSize(2048);
     Serial1.begin(u1_baud, SERIAL_8N1, u1_rx, u1_tx);
     Serial2.begin(u2_baud, SERIAL_8N1, u2_rx, u2_tx);
+    pinRx1 = u1_rx;
+    pinTx1 = u1_tx;
+    unplugActive = false;
+    unplugUntilMs = 0;
     Serial1.setRxTimeout(1);
     Serial2.setRxTimeout(1);
     buffer1MaxSize = u1_max_packet_size;
@@ -391,12 +396,27 @@ void UARTInterceptor::sendPacket(uint8_t* packet, size_t length, Direction direc
     if (packet == nullptr || length == 0) {
         return;
     }
+    bool took = false;
+    if (pumpLock != nullptr && xSemaphoreGetMutexHolder(pumpLock) != xTaskGetCurrentTaskHandle()) {
+        took = xSemaphoreTake(pumpLock, pdMS_TO_TICKS(8)) == pdTRUE;
+    }
     if (direction == DEVICE2_TO_DEVICE1) {
+        if (unplugActive) {
+            // Line is tri-stated toward the base; nothing in flight may leak
+            // out when the pins reattach mid-byte.
+            if (took) {
+                xSemaphoreGive(pumpLock);
+            }
+            return;
+        }
         Serial1.write(packet, length);
         lastTx1Ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
     } else if (direction == DEVICE1_TO_DEVICE2) {
         Serial2.write(packet, length);
         lastTx2Ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    }
+    if (took) {
+        xSemaphoreGive(pumpLock);
     }
 }
 
@@ -579,13 +599,64 @@ void UARTInterceptor::updateResyncPause(uint32_t now) {
 }
 
 void UARTInterceptor::flushToBase() {
+    if (unplugActive) {
+        return;
+    }
     flushPend(UART_NUM_1, pendTo1, lastTx1Ms);
+}
+
+void UARTInterceptor::wireUnplug(uint32_t ms) {
+    if (pinTx1 < 0 || pinRx1 < 0) {
+        return;
+    }
+    if (pumpLock != nullptr && xSemaphoreTake(pumpLock, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return;
+    }
+    // Detach both base-side pins: the base's RX floats, exactly like the
+    // physical unplug the user demonstrated clears a wedged base.
+    uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
+        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_ll_txfifo_rst(UART_LL_GET_HW(UART_NUM_1));
+    uart_ll_rxfifo_rst(UART_LL_GET_HW(UART_NUM_1));
+    pendTo1.head = 0;
+    pendTo1.used = 0;
+    buffer1Position = 0;
+    framerState1 = FramerState();
+    holdW1 = 0;
+    holdR1 = 0;
+    unplugUntilMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL) + ms;
+    unplugActive = true;
+    if (pumpLock != nullptr) {
+        xSemaphoreGive(pumpLock);
+    }
+}
+
+void UARTInterceptor::unplugTick() {
+    if (!unplugActive) {
+        return;
+    }
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if ((int32_t)(now - unplugUntilMs) < 0) {
+        return;
+    }
+    uart_set_pin(UART_NUM_1, pinTx1, pinRx1, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_ll_txfifo_rst(UART_LL_GET_HW(UART_NUM_1));
+    uart_ll_rxfifo_rst(UART_LL_GET_HW(UART_NUM_1));
+    pendTo1.head = 0;
+    pendTo1.used = 0;
+    buffer1Position = 0;
+    framerState1 = FramerState();
+    holdW1 = 0;
+    holdR1 = 0;
+    unplugActive = false;
+    unplugCount = unplugCount + 1;
 }
 
 void UARTInterceptor::tick() {
     if (pumpLock != nullptr && xSemaphoreTake(pumpLock, 0) != pdTRUE) {
         return;
     }
+    unplugTick();
     processPort(Serial1, Serial2, buffer1, buffer1Position, DEVICE1_TO_DEVICE2, rxCount1, cutCount1, dropCount1);
     processPort(Serial2, Serial1, buffer2, buffer2Position, DEVICE2_TO_DEVICE1, rxCount2, cutCount2, dropCount2);
     if (pumpLock != nullptr) {

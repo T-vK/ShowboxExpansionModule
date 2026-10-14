@@ -54,10 +54,6 @@ void TwoButtonLooper::sendButton(looper_button_action action) {
     showbox->sendLooperButtonAction(action);
 }
 
-bool TwoButtonLooper::looperIsPlay() const {
-    return showbox->getUint8EntityValue(entity_id::LOOPER_STATE) == (uint8_t)PLAY;
-}
-
 void TwoButtonLooper::runJob() {
     if (job == Job::None) {
         return;
@@ -69,35 +65,6 @@ void TwoButtonLooper::runJob() {
         if (jobStep == 0) {
             sendButton(looper_button_action::DOWN);
             jobStep = 1;
-            jobAt = millis() + kTapGapMs;
-            return;
-        }
-        sendButton(looper_button_action::UP);
-        job = Job::None;
-        return;
-    }
-    if (job == Job::EndRecThenOverdub) {
-        if (jobStep == 0) {
-            sendButton(looper_button_action::DOWN);
-            jobStep = 1;
-            jobAt = millis() + kTapGapMs;
-            return;
-        }
-        if (jobStep == 1) {
-            sendButton(looper_button_action::UP);
-            jobStep = 2;
-            jobAt = millis() + kOverdubMinMs;
-            Debug->println("Recording overdub after initial rec");
-            return;
-        }
-        if (jobStep == 2) {
-            bool ready = looperIsPlay();
-            bool timedOut = (int32_t)(millis() - jobAt) >= (int32_t)(kOverdubMaxMs - kOverdubMinMs);
-            if (!ready && !timedOut) {
-                return;
-            }
-            sendButton(looper_button_action::DOWN);
-            jobStep = 3;
             jobAt = millis() + kTapGapMs;
             return;
         }
@@ -125,29 +92,27 @@ void TwoButtonLooper::handleRecordOverdubPlay() {
     if (job != Job::None) {
         return;
     }
+    sendButton(looper_button_action::DOWN);
+    sendButton(looper_button_action::UP);
     switch (mode) {
         case Mode::Empty:
             mode = Mode::Recording;
-            queueJob(Job::Tap);
             Debug->println("Recording initial loop");
             break;
         case Mode::Recording:
-            mode = Mode::Overdub;
-            queueJob(Job::EndRecThenOverdub);
+            mode = Mode::Playing;
+            Debug->println("Play");
             break;
         case Mode::Overdub:
             mode = Mode::Playing;
-            queueJob(Job::Tap);
             Debug->println("Play");
             break;
         case Mode::Playing:
             mode = Mode::Overdub;
-            queueJob(Job::Tap);
             Debug->println("Recording overdub");
             break;
         case Mode::Stopped:
             mode = Mode::Playing;
-            queueJob(Job::Tap);
             Debug->println("Play");
             break;
     }
@@ -157,22 +122,19 @@ void TwoButtonLooper::handleStop() {
     if (actionRulesClaimTrs("1r", "shortRelease")) {
         return;
     }
-    if (job != Job::None || mode == Mode::Empty) {
+    if (mode == Mode::Empty) {
         return;
     }
     mode = (mode == Mode::Recording) ? Mode::Empty : Mode::Stopped;
-    queueJob(Job::Stop);
+    sendButton(looper_button_action::DOUBLE_PRESS);
 }
 
 void TwoButtonLooper::handleDelete() {
     if (actionRulesClaimTrs("1r", "long")) {
         return;
     }
-    if (job != Job::None) {
-        return;
-    }
     mode = Mode::Empty;
-    queueJob(Job::Delete);
+    sendButton(looper_button_action::LONG_PRESS);
 }
 
 void TwoButtonLooper::setDebugSerial(Print* serial) {

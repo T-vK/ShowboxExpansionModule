@@ -1,5 +1,6 @@
 #include "FrontPanel.h"
 
+#include "Actions/ActionRules.h"
 #include "Connections/Connections.h"
 #include "MultiMidi/UsbMidi.h"
 #include "MultiMidi/UsbMidiHost.h"
@@ -109,6 +110,10 @@ void FrontPanel::saveRadio() {
 }
 
 void FrontPanel::onBlueClick() {
+    if (actionRulesClaimPanel("blue", "press")) {
+        actionRulesOnPanel("blue", "press");
+        return;
+    }
     if (connections == nullptr) {
         return;
     }
@@ -124,10 +129,18 @@ void FrontPanel::onBlueClick() {
 }
 
 void FrontPanel::onBlueLong() {
+    if (actionRulesClaimPanel("blue", "long")) {
+        actionRulesOnPanel("blue", "long");
+        return;
+    }
     applyBluetooth(!btOn);
 }
 
 void FrontPanel::onRedClick() {
+    if (actionRulesClaimPanel("red", "press")) {
+        actionRulesOnPanel("red", "press");
+        return;
+    }
     if (connections == nullptr) {
         return;
     }
@@ -141,6 +154,10 @@ void FrontPanel::onRedClick() {
 }
 
 void FrontPanel::onRedLong() {
+    if (actionRulesClaimPanel("red", "long")) {
+        actionRulesOnPanel("red", "long");
+        return;
+    }
     if (connections == nullptr) {
         return;
     }
@@ -148,11 +165,22 @@ void FrontPanel::onRedLong() {
 }
 
 void FrontPanel::onGreenClick() {
+    if (actionRulesClaimPanel("green", "press")) {
+        actionRulesOnPanel("green", "press");
+        return;
+    }
     applyWifi(!wifiOn);
 }
 
 void FrontPanel::onGreenLong() {
-    applyWifi(false);
+    if (actionRulesClaimPanel("green", "long")) {
+        actionRulesOnPanel("green", "long");
+        return;
+    }
+    if (!wifiOn) {
+        applyWifi(true);
+    }
+    startWifiPortal();
 }
 
 void FrontPanel::applyBluetooth(bool on) {

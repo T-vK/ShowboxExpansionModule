@@ -16,7 +16,7 @@ std::unordered_map<packet_type, std::string> packet_type_to_string = {
     {SNAPSHOT_MENU, "SNAPSHOT_MENU"},
     {ALL_ENTITIES, "ALL_ENTITIES"},
     {DATA_REQUEST, "DATA_REQUEST"},
-    {UNKNOWN_15, "UNKNOWN_15"},
+    {UNKNOWN_15, "AUTOGAIN"},
     {BATTERY_LEVEL, "BATTERY_LEVEL"},
     {LOOPER_BUTTON, "LOOPER_BUTTON"},
     {TUNER_TOGGLE, "TUNER_TOGGLE"},

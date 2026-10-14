@@ -32,6 +32,12 @@ public:
     void setPacketFinderStartEndSig(uint8_t* start_sig, size_t start_sig_length, uint8_t* end_sig, size_t end_sig_length);
     void sendPacket(uint8_t* packet, size_t length, Direction direction);
     void tick();
+    // Software emulation of the physical unplug that clears a wedged base
+    // UART: tri-state the base-side pins, drop in-flight toward-base bytes,
+    // then reattach and re-sync after `ms`.
+    void wireUnplug(uint32_t ms);
+    bool wireUnplugActive() const { return unplugActive; }
+    uint32_t wireUnplugCount() const { return unplugCount; }
     uint32_t rxAgeMs(Direction fromDevice) const;
     uint32_t txAgeMs(Direction toDevice) const;
     bool bothSidesLive(uint32_t staleMs = 800) const;
@@ -118,6 +124,12 @@ private:
     volatile bool pauseTx1 = false;
     volatile uint32_t pauseCount = 0;
     volatile uint8_t alignTx1 = 0;
+    // Base-wedge wire unplug state
+    volatile bool unplugActive = false;
+    volatile uint32_t unplugCount = 0;
+    uint32_t unplugUntilMs = 0;
+    int pinTx1 = -1;
+    int pinRx1 = -1;
     uint16_t paceN = 0;
     uint16_t paceNeed = 0;
     uint32_t pauseUntilMs = 0;
@@ -184,6 +196,7 @@ private:
     void IRAM_ATTR pollHwIsr();
     void pollHwFromTask();
     void drainHoldFromTask();
+    void unplugTick();
     void pushHold(uint8_t* holdRing, volatile uint16_t& holdW, volatile uint16_t holdR,
         size_t holdCap, const uint8_t* data, size_t n, volatile uint32_t& drops);
     void armRx();

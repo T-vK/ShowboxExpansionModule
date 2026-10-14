@@ -1,7 +1,9 @@
 #include "MultiMidi.h"
+#include "../System/Diag.h"
 #include "UsbMidiHost.h"
 #include "MultiMidi/BleMidiDecode.h"
-#include "MultiMidi/MidiInbound.h"
+#include "MultiMidi/FullMidiParser.h"
+#include "Actions/ActionRules.h"
 #include "DebugLog.h"
 #include <BLE2902.h>
 #include <BLEDevice.h>
@@ -34,7 +36,7 @@ portMUX_TYPE appleQMux = portMUX_INITIALIZER_UNLOCKED;
 AsyncUDP appleControl;
 AsyncUDP appleData;
 uint16_t appleControlPort = 5004;
-midi::MidiParser appleParser;
+FullMidiParser appleParser;
 volatile bool appleParsing = false;
 volatile uint8_t appleInData = 0;
 const char* inboundSourceName = "ext";
@@ -137,7 +139,6 @@ bool listenAppleMidi(uint16_t port, midi::MidiAction* midiAction) {
     appleControl.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 0); });
     appleData.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 1); });
     applemidi_init(reinterpret_cast<void*>(appleMidiReceived), reinterpret_cast<void*>(appleMidiSend));
-    MDNS.addService("_apple-midi", "_udp", port);
     return true;
 }
 
@@ -184,6 +185,63 @@ const char* midiInboundSource() {
 
 void midiInboundSetSource(const char* name) {
     inboundSourceName = (name != nullptr && name[0] != '\0') ? name : "ext";
+}
+
+const char* midiKindFromStatus(uint8_t status) {
+    if (status >= 0xF0) {
+        switch (status) {
+            case 0xF0: return "sysex";
+            case 0xF1: return "timeCode";
+            case 0xF2: return "songPosition";
+            case 0xF3: return "songSelect";
+            case 0xF6: return "tuneRequest";
+            case 0xF8: return "clock";
+            case 0xFA: return "start";
+            case 0xFB: return "continue";
+            case 0xFC: return "stop";
+            case 0xFE: return "activeSense";
+            case 0xFF: return "reset";
+            default: return "system";
+        }
+    }
+    switch (status & 0xF0) {
+        case 0x80: return "noteOff";
+        case 0x90: return "noteOn";
+        case 0xA0: return "polyAftertouch";
+        case 0xB0: return "cc";
+        case 0xC0: return "pc";
+        case 0xD0: return "aftertouch";
+        case 0xE0: return "pitchBend";
+        default: return "raw";
+    }
+}
+
+void midiInboundDispatch(midi::MidiAction* action, uint8_t status, uint8_t p1, uint8_t p2) {
+    uint8_t kind = status >> 4;
+    uint8_t channel = status & 0x0F;
+    if (action != nullptr) {
+        if (kind == 0xB) {
+            action->onControlChange(channel, p1, p2);
+            return;
+        }
+        if (kind == 0x9) {
+            if (p2 == 0) {
+                action->onNoteOff(channel, p1, p2);
+            } else {
+                action->onNoteOn(channel, p1, p2);
+            }
+            return;
+        }
+        if (kind == 0x8) {
+            action->onNoteOff(channel, p1, p2);
+            return;
+        }
+        if (kind == 0xE) {
+            action->onPitchBend(channel, p1);
+            return;
+        }
+    }
+    actionRulesOnMidi(midiKindFromStatus(status), channel, p1, p2);
 }
 
 MultiMidi* MultiMidi::instance = nullptr;
@@ -660,30 +718,83 @@ void MultiMidi::sendAppleMidi(MidiMessage* msg, int len) {
 
 // writeData override
 void MultiMidi::writeData(MidiMessage *msg, int len){
+    writeData(msg, len, kMidiPortAll);
+}
+
+void MultiMidi::writeData(MidiMessage *msg, int len, uint16_t ports){
     if (msg == nullptr || len <= 0) {
         return;
     }
-    if (dinEnabled && serialStreamOut) {
+    diagNoteMidiOut((size_t)len + 1);
+    if (midiPortWanted(ports, kMidiPortDin) && dinEnabled && serialStreamOut) {
         serialStreamOut->write(msg, len);
     }
-    // if (bluetoothStreamOut) {
-    //     bluetoothStreamOut->writeData(msg, len);
-    // }
-    if (bleServer) {
+    if (midiPortWanted(ports, kMidiPortBle) && bleServer) {
         static_cast<ExposedMidiBleServer*>(bleServer)->writeMidi(msg, len);
     }
-    if (bleMidiEnabled) {
+    if (midiPortWanted(ports, kMidiPortBle) && bleMidiEnabled) {
         bleMidi.write(msg, len);
     }
-    sendAppleMidi(msg, len);
-    if (ethernetEnabled) {
+    if (midiPortWanted(ports, kMidiPortApple)) {
+        sendAppleMidi(msg, len);
+    }
+    if (midiPortWanted(ports, kMidiPortEth) && ethernetEnabled) {
         ethernet.write(msg, len);
     }
-    if (UsbMidi::running()) {
+    if (midiPortWanted(ports, kMidiPortUsb) && UsbMidi::running()) {
         UsbMidi::write(msg, len);
     }
-    if (UsbMidiHost::running()) {
+    if (midiPortWanted(ports, kMidiPortUsbHost) && UsbMidiHost::running()) {
         UsbMidiHost::write(msg, len);
+    }
+}
+
+void MultiMidi::writeRaw(uint8_t status, uint8_t d1, uint8_t d2, uint16_t ports) {
+    MidiMessage msg = {};
+    msg.status = status;
+    msg.arg1 = d1;
+    msg.arg2 = d2;
+    int len = 2;
+    uint8_t kind = status & 0xF0;
+    if (kind == 0xC0 || kind == 0xD0 || status >= 0xF8) {
+        len = 1;
+        if (status >= 0xF8 && status != 0xF1 && status != 0xF3) {
+            len = 0;
+        }
+    }
+    writeData(&msg, len == 0 ? 1 : len, ports);
+}
+
+void MultiMidi::writeBytes(const uint8_t* data, size_t n, uint16_t ports) {
+    if (data == nullptr || n == 0) {
+        return;
+    }
+    size_t i = 0;
+    while (i < n) {
+        MidiMessage msg = {};
+        msg.status = data[i];
+        size_t left = n - i;
+        int len = 1;
+        if (left >= 2) {
+            msg.arg1 = data[i + 1];
+            len = 1;
+        }
+        if (left >= 3) {
+            msg.arg2 = data[i + 2];
+            len = 2;
+        }
+        if (left == 1) {
+            uint8_t status = data[i];
+            if (status >= 0xF8 && status != 0xF1 && status != 0xF3) {
+                writeRaw(status, 0, 0, ports);
+                i += 1;
+                continue;
+            }
+            writeData(&msg, 1, ports);
+            break;
+        }
+        writeData(&msg, len, ports);
+        i += 1 + (size_t)len;
     }
 }
 

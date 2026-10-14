@@ -1,4 +1,5 @@
 #include "Connections.h"
+#include "FrontPanel/FrontPanel.h"
 #include "MultiMidi/MultiMidi.h"
 #include "MultiMidi/BleMidi.h"
 #include "MackieShowbox/MackieShowbox.h"
@@ -16,6 +17,8 @@
 #include <cstring>
 #include <cstdio>
 #include "DebugLog.h"
+#include "System/HttpsGate.h"
+#include "System/LanKeep.h"
 
 namespace {
 const char* jsonBool(bool value) {
@@ -142,6 +145,34 @@ bool incomingIs(const BleRadio::Incoming& incoming, const char* address) {
     return incoming.idAddress[0] != '\0' && strcasecmp(incoming.idAddress, address) == 0;
 }
 
+// Android posts the current RPA; NVS is often the IRK identity after rekey.
+bool resolveSavedPeer(BlePeers& peers, BleRadio* radio, const char* address, BlePeers::Peer* out) {
+    if (address == nullptr || address[0] == '\0') {
+        return false;
+    }
+    if (peers.find(address, out)) {
+        return true;
+    }
+    if (radio == nullptr) {
+        return false;
+    }
+    BleRadio::Incoming live[BleRadio::kMaxIncoming];
+    int liveCount = radio->copyIncoming(live, BleRadio::kMaxIncoming);
+    for (int i = 0; i < liveCount; i++) {
+        if (!incomingIs(live[i], address)) {
+            continue;
+        }
+        const char* ota = live[i].otaAddress[0] != '\0' ? live[i].otaAddress : nullptr;
+        if (peers.findMatch(live[i].address, ota, out)) {
+            return true;
+        }
+        if (live[i].idAddress[0] != '\0' && peers.find(live[i].idAddress, out)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool resolvablePrivate(const char* address) {
     if (address == nullptr || strlen(address) < 2) {
         return false;
@@ -221,6 +252,13 @@ void Connections::applyDebug() {
     }
 }
 
+void Connections::ensureHidGatt() {
+    if (!hidEnabled || hid == nullptr || hid->bleEnabled()) {
+        return;
+    }
+    hid->setBleEnabled(true);
+}
+
 void Connections::applyHidAdvertising() {
     if (radio == nullptr) {
         return;
@@ -247,6 +285,18 @@ void Connections::applyAdvertisingPolicy() {
         want = false;
     } else if (gIso == 11 || gIso == 13) {
         want = true;
+    }
+    bool pedal = multiMidi != nullptr && multiMidi->outgoingCount() > 0;
+    radio->setPedalShare(pedal);
+    // A live BLE central plus continuous ShowboxMod ads holds PTA so ARP/ICMP
+    // die. Keep ads off until a pairing window, then pulse from BleRadio::apply.
+    if (pedal && !pairingWindowOpen()) {
+        want = false;
+    }
+    // Boot ads plus the AIRSTEP connect is what left STA associated with no
+    // unicast. Wait for the pedal (or 20 s) before advertising for a laptop.
+    if (!pairingWindowOpen() && !pedal && !radio->hasIncoming() && millis() < 20000) {
+        want = false;
     }
     radio->setAdvertiseAllowed(want);
     radio->apply();
@@ -316,12 +366,19 @@ void Connections::startAfterBle() {
 
 void Connections::tick() {
     applyPending();
+    if (hidEnabled && hid != nullptr && !hid->bleEnabled()) {
+        bool pedal = multiMidi != nullptr && multiMidi->outgoingCount() > 0;
+        // ble_gatts_add_svcs while AIRSTEP is up returns HCI timeout 15
+        // and unicast dies. HID has to exist before the pedal connects.
+        if (!pedal && (pairingWindowOpen() || millis() > 20000)) {
+            ensureHidGatt();
+            applyHidAdvertising();
+        }
+    }
     if (pairingUntilMs != 0 && !pairingWindowOpen()) {
         pairingUntilMs = 0;
         noteLog("Pairing window closed");
-        if (radio != nullptr) {
-            radio->setAdvertiseAllowed(!radio->hasIncoming());
-        }
+        applyAdvertisingPolicy();
     }
     bool uartHot = showbox != nullptr && showbox->uartHot();
     // JSON walk lives in flash on core 1 with the UART ISR. When the mixer
@@ -402,11 +459,20 @@ void Connections::tick() {
     if (midiTestOffAt != 0 && (int32_t)(millis() - midiTestOffAt) >= 0) {
         midiTestOffAt = 0;
         if (multiMidi != nullptr) {
-            multiMidi->noteOff(0, 60, 0);
+            multiMidi->noteOff(midiTestNote, 0, midiTestChan);
         }
         noteLog("MIDI test note off");
     }
     if (rebootAt != 0 && (int32_t)(millis() - rebootAt) >= 0) {
+        rebootAt = 0;
+        // Drain the UART before restart: a blind reboot mid-transaction
+        // wedges the Showbox base's UART state machine (soft-brick).
+        if (showbox != nullptr) {
+            if (showbox->uartHot()) {
+                showbox->waitQuiet(40);
+            }
+        }
+        delay(50);
         ESP.restart();
     }
     BleRadio::Incoming incoming[BleRadio::kMaxIncoming];
@@ -416,6 +482,12 @@ void Connections::tick() {
             lastHostRememberMs = millis();
             for (int i = 0; i < incomingCount; i++) {
                 if (incomingIgnored(incoming[i])) {
+                    // Leftover tablet bonds reconnect when the pairing window
+                    // opens for the laptop. Skipping remember is not enough:
+                    // they still occupy the only host ACL slot.
+                    if (radio != nullptr) {
+                        radio->disconnectIncoming(incoming[i].address);
+                    }
                     continue;
                 }
                 if (!pairingWindowOpen() && !incomingSaved(incoming[i]) && !incoming[i].bonded) {
@@ -582,9 +654,7 @@ void Connections::onIncoming(const char* address, uint16_t connId, bool connecte
             hid->clearConnMix(connId);
         }
         applyPairingMixIfIdle();
-        if (radio != nullptr) {
-            radio->setAdvertiseAllowed(pairingWindowOpen() || !radio->hasIncoming());
-        }
+        applyAdvertisingPolicy();
         return;
     }
     if (radio != nullptr) {
@@ -597,15 +667,9 @@ void Connections::onIncoming(const char* address, uint16_t connId, bool connecte
             }
         }
     }
-    // "30 s or until something connects" — a live host does not need GAP
-    // advertising, and leaving it on is the extra radio load.
-    if (pairingUntilMs != 0) {
-        pairingUntilMs = 0;
-        noteLog("Pairing window closed");
-    }
-    if (radio != nullptr) {
-        radio->setAdvertiseAllowed(false);
-    }
+    // Do not close the pairing window on GAP-up. BlueZ and Android connect
+    // first, then run SMP. Stopping ads here drops that pairing, especially
+    // when the host is still on an RPA. Tick closes the window once bonded.
     if (hid == nullptr || address == nullptr) {
         return;
     }
@@ -697,6 +761,10 @@ void Connections::setBluetoothRadio(bool on) {
         noteLog("Bluetooth radio on");
     }
     scheduleReboot(on ? "Rebooting to start the Bluetooth radio." : "Rebooting to stop the Bluetooth radio.");
+}
+
+void Connections::setFrontPanel(FrontPanel* next) {
+    panel = next;
 }
 
 void Connections::saveHid() {
@@ -835,19 +903,40 @@ bool Connections::setBleHidPart(const String& name, bool enabled, String& error)
         error = "Choose at least one Bluetooth HID input for new hosts.";
         return false;
     }
+    Hid::Mix before = blePairMix;
     blePairMix = next;
     blePairDirty = true;
-    applyPairingMixIfIdle();
+    if (!before.asBleMap().same(next.asBleMap())) {
+        advertisePairingMix();
+    }
     return true;
+}
+
+void Connections::advertisePairingMix() {
+    if (hid == nullptr) {
+        return;
+    }
+    // Live incoming host: keep the map that host already cached.
+    if (radio != nullptr && radio->hasIncoming()) {
+        return;
+    }
+    if (hid->bleMix().asBleMap().same(blePairMix.asBleMap())) {
+        return;
+    }
+    hid->setBleMix(blePairMix);
 }
 
 void Connections::applyPairingMixIfIdle() {
     if (hid == nullptr) {
         return;
     }
-    BleRadio::Incoming incoming[BleRadio::kMaxIncoming];
-    int incomingCount = radio == nullptr ? 0 : radio->copyIncoming(incoming, BleRadio::kMaxIncoming);
-    if (incomingCount > 0) {
+    if (radio != nullptr && radio->hasIncoming()) {
+        return;
+    }
+    // A remembered HID host keeps the report map it last selected. Rewriting
+    // it to blePairMix on a transient drop makes BlueZ reconnect with a
+    // stale cache (abs after-reconnect would snap back to kb+mouse).
+    if (anyHostHid()) {
         return;
     }
     hid->setBleMix(blePairMix);
@@ -874,6 +963,13 @@ void Connections::rememberIncomingHost(const BleRadio::Incoming& incoming) {
         } else {
             key = existing.address;
         }
+        // One tablet can land as both IRK identity and a leftover RPA.
+        // findMatch hits identity first and leaves the RPA mix in NVS, so
+        // liveHidMix stays digitizer after a kb+mouse role POST.
+        if (id != nullptr && ota != nullptr && strcasecmp(ota, id) != 0) {
+            peers.rekey(ota, id);
+            peers.find(id, &existing);
+        }
         if (hostName[0] != '\0' && strcasecmp(existing.name, hostName) != 0) {
             peers.upsert(key, hostName, -1, -1, -1);
         }
@@ -896,6 +992,9 @@ void Connections::rememberIncomingHost(const BleRadio::Incoming& incoming) {
     }
     if (hidEnabled) {
         peers.setHidMix(key, blePairMix.keyboard, blePairMix.mouse, blePairMix.absPointer, blePairMix.digitizer);
+    }
+    if (id != nullptr && ota != nullptr && strcasecmp(ota, id) != 0) {
+        peers.rekey(ota, id);
     }
 }
 
@@ -1188,8 +1287,25 @@ void Connections::writeStatusJson(char* buf, size_t cap, size_t* outLen) {
     json.add(jsonBool(radio != nullptr && radio->advertiseAllowed()));
     json.add(",\"usbJtag\":");
     json.add(jsonBool(!usbDeviceEnabled && !usbHostEnabled && !usbHidEnabled));
+    json.add(",\"bluetoothRadio\":");
+    json.add(jsonBool(bluetoothRadioEnabled));
+    json.add(",\"wifiRadio\":");
+    json.add(jsonBool(panel != nullptr ? panel->wifiRadioOn() : true));
+    json.add(",\"https\":");
+    json.add(jsonBool(httpsWanted()));
+    json.add(",\"httpsListening\":");
+    json.add(jsonBool(httpsListening()));
+    json.add(",\"httpsHasCa\":");
+    json.add(jsonBool(httpsCaPem() != nullptr && httpsCaPem()[0] != '\0'));
+    json.add(",\"httpsUrl\":\"");
+    json.addEsc(httpsListening() ? "https://showbox.local/" : "");
+    json.add("\"");
     json.add(",\"scanning\":");
     json.add(jsonBool(multiMidi != nullptr && multiMidi->bleScanning()));
+    json.add(",\"wsLive\":");
+    json.add(jsonBool(lanWsLive()));
+    json.add(",\"holdMidi\":");
+    json.add(jsonBool(lanHoldMidi()));
     json.add(",\"hidReady\":");
     json.add(jsonBool(hid != nullptr && hid->ready()));
     json.add(",\"ip\":\"");
@@ -1549,6 +1665,21 @@ bool Connections::setOption(const String& name, bool enabled, String& error) {
         noteLog(enabled ? "Mixer interceptor parsing on" : "Mixer interceptor passthrough only");
         return true;
     }
+    if (name == "bluetooth" || name == "bluetoothRadio") {
+        setBluetoothRadio(enabled);
+        return true;
+    }
+    if (name == "wifiRadio") {
+        if (panel == nullptr) {
+            error = "Wi-Fi radio control is not available.";
+            return false;
+        }
+        panel->applyWifi(enabled);
+        return true;
+    }
+    if (name == "https") {
+        return httpsSetEnabled(enabled, error);
+    }
     if (multiMidi == nullptr) {
         error = "MIDI is not available.";
         return false;
@@ -1679,10 +1810,9 @@ bool Connections::queueForget(const String& address, String& error) {
     }
     strncpy(pendingForgetAddress, address.c_str(), sizeof(pendingForgetAddress) - 1);
     pendingForgetAddress[sizeof(pendingForgetAddress) - 1] = '\0';
-    BlePeers::Peer peer;
-    if (peers.find(address.c_str(), &peer) && peer.host) {
-        ignoreIncoming(address.c_str());
-    }
+    // Always ignore, even if the address is not in NVS yet. Android RPAs
+    // reconnect during the next pairing window and steal the host slot.
+    ignoreIncoming(address.c_str());
     pendingForget = true;
     return true;
 }
@@ -1770,16 +1900,12 @@ void Connections::openPairingWindow(uint32_t ms) {
     uint32_t now = millis();
     if (ms == 0) {
         pairingUntilMs = 0;
-        if (radio != nullptr) {
-            radio->setAdvertiseAllowed(!radio->hasIncoming());
-        }
+        applyAdvertisingPolicy();
         noteLog("Pairing window closed");
         return;
     }
     pairingUntilMs = now + ms;
-    if (radio != nullptr) {
-        radio->setAdvertiseAllowed(true);
-    }
+    applyAdvertisingPolicy();
     char line[48];
     snprintf(line, sizeof(line), "Pairing window %u s", (unsigned)((ms + 999) / 1000));
     noteLog(line);
@@ -1788,9 +1914,7 @@ void Connections::openPairingWindow(uint32_t ms) {
 void Connections::closePairingWindow() {
     bool wasOpen = pairingUntilMs != 0;
     pairingUntilMs = 0;
-    if (radio != nullptr) {
-        radio->setAdvertiseAllowed(!radio->hasIncoming());
-    }
+    applyAdvertisingPolicy();
     if (wasOpen) {
         noteLog("Pairing window closed");
     }
@@ -1843,12 +1967,14 @@ void Connections::applyForget(const char* address) {
             if (incomingIs(live[i], address)) {
                 peers.forget(live[i].address);
                 peers.forget(live[i].otaAddress);
+                peers.forget(live[i].idAddress);
                 unpairAddress(live[i].address);
                 unpairAddress(live[i].otaAddress);
                 unpairAddress(live[i].idAddress);
             }
         }
     }
+    applyPairingMixIfIdle();
 }
 
 bool Connections::forget(const String& address, String& error) {
@@ -1895,20 +2021,24 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
         return false;
     }
     BlePeers::Peer peer;
-    if (!peers.find(address.c_str(), &peer)) {
+    if (!resolveSavedPeer(peers, radio, address.c_str(), &peer)) {
         error = "That device is not saved.";
         return false;
     }
+    const char* key = peer.address;
     bool mixRequested = hidKeyboard >= 0 || hidMouse >= 0 || hidAbs >= 0 || hidDigitizer >= 0;
     if (!peer.host && (hidRole > 0 || mixRequested)) {
         error = "HID is for a computer in Remembered hosts.";
         return false;
     }
     int serialFlag = serialMidi == 0 ? 0 : -1;
-    if (!peers.upsert(address.c_str(), "", midi, hidRole, -1, serialFlag, -1)) {
+    if (!peers.upsert(key, "", midi, hidRole, -1, serialFlag, -1)) {
         error = "Could not save that device.";
         return false;
     }
+    auto incomingMatchesRole = [&](const BleRadio::Incoming& incoming) {
+        return incomingIs(incoming, address.c_str()) || incomingIs(incoming, key);
+    };
     if (mixRequested) {
         Hid::Mix before = peer.hid ? mixFromPeer(peer) : Hid::Mix::desktop();
         Hid::Mix mix = before;
@@ -1928,7 +2058,7 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
             error = "Choose at least one HID input.";
             return false;
         }
-        if (!peers.setHidMix(address.c_str(), mix.keyboard, mix.mouse, mix.absPointer, mix.digitizer)) {
+        if (!peers.setHidMix(key, mix.keyboard, mix.mouse, mix.absPointer, mix.digitizer)) {
             error = "Could not save that HID mix.";
             return false;
         }
@@ -1939,7 +2069,7 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
                 BleRadio::Incoming live[BleRadio::kMaxIncoming];
                 int liveCount = radio->copyIncoming(live, BleRadio::kMaxIncoming);
                 for (int i = 0; i < liveCount; i++) {
-                    if (incomingIs(live[i], address.c_str())) {
+                    if (incomingMatchesRole(live[i])) {
                         hid->setConnMix(live[i].connId, mix);
                     }
                 }
@@ -1953,7 +2083,7 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
             BleRadio::Incoming live[BleRadio::kMaxIncoming];
             int liveCount = radio->copyIncoming(live, BleRadio::kMaxIncoming);
             for (int i = 0; i < liveCount; i++) {
-                if (incomingIs(live[i], address.c_str())) {
+                if (incomingMatchesRole(live[i])) {
                     hid->setConnMix(live[i].connId, off);
                 }
             }
@@ -1962,7 +2092,7 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
     if (pinned >= 0) {
         bool wantPin = pinned != 0;
         BlePeers::Peer latest;
-        peers.find(address.c_str(), &latest);
+        peers.find(key, &latest);
         if (wantPin && !latest.pinned) {
             bool asHost = latest.host;
             int used = peers.pinnedCount(asHost);
@@ -1974,7 +2104,7 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
                 return false;
             }
         }
-        if (!peers.setPinned(address.c_str(), wantPin)) {
+        if (!peers.setPinned(key, wantPin)) {
             error = "Could not reserve that device.";
             return false;
         }
@@ -2002,7 +2132,14 @@ bool Connections::setPeerRoles(const String& address, int midi, int serialMidi, 
             if (hid != nullptr) {
                 hid->setBleEnabled(true);
             }
-            applyHidAdvertising();
+            // Restarting GAP ads while a host is already linked makes BlueZ
+            // drop HOGP, so the matrix loses evdev nodes and the next role
+            // change sees no host.
+            if (radio == nullptr || !radio->hasIncoming()) {
+                applyHidAdvertising();
+            } else {
+                radio->setHidPeripheral(true);
+            }
         }
     }
     if (hidRole == 0 && peer.host && !anyHostHid() && !bleIncomingOn()) {
@@ -2065,14 +2202,46 @@ void Connections::noteLog(const char* text) {
     }
 }
 
-bool Connections::queueMidiTest(String& error) {
+bool Connections::queueMidiTest(String& error, int note, int velocity, int channel, const char* kind) {
     if (multiMidi == nullptr) {
         error = "MIDI is not available.";
         return false;
     }
-    multiMidi->noteOn(0, 60, 100);
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+    if (velocity < 0) velocity = 0;
+    if (velocity > 127) velocity = 127;
+    if (channel < 1) channel = 1;
+    if (channel > 16) channel = 16;
+    midiTestOffAt = 0;
+    midiTestNote = static_cast<uint8_t>(note);
+    midiTestChan = static_cast<uint8_t>(channel);
+    const char* mode = (kind != nullptr && kind[0] != '\0') ? kind : "note";
+    char line[80];
+    if (strcmp(mode, "cc") == 0) {
+        multiMidi->controlChange(midiTestNote, static_cast<uint8_t>(velocity), midiTestChan);
+        snprintf(line, sizeof(line), "MIDI test CC %u val %d ch %u", midiTestNote, velocity, midiTestChan);
+        noteLog(line);
+        return true;
+    }
+    if (strcmp(mode, "pc") == 0) {
+        multiMidi->programChange(midiTestNote, midiTestChan);
+        snprintf(line, sizeof(line), "MIDI test PC %u ch %u", midiTestNote, midiTestChan);
+        noteLog(line);
+        return true;
+    }
+    if (strcmp(mode, "panic") == 0) {
+        multiMidi->controlChange(123, 0, midiTestChan);
+        multiMidi->controlChange(120, 0, midiTestChan);
+        snprintf(line, sizeof(line), "MIDI panic ch %u", midiTestChan);
+        noteLog(line);
+        return true;
+    }
+    if (velocity < 1) velocity = 1;
+    multiMidi->noteOn(midiTestNote, static_cast<uint8_t>(velocity), midiTestChan);
     midiTestOffAt = millis() + 250;
-    noteLog("MIDI test note on (C4)");
+    snprintf(line, sizeof(line), "MIDI test note %u vel %d ch %u", midiTestNote, velocity, midiTestChan);
+    noteLog(line);
     return true;
 }
 
@@ -2133,7 +2302,12 @@ bool Connections::queueKey(const char* name, String& error) {
     } keys[] = {
         {"pageup", 0x4B}, {"pagedown", 0x4E}, {"up", 0x52}, {"down", 0x51},
         {"left", 0x50}, {"right", 0x4F}, {"space", 0x2C}, {"enter", 0x28},
-        {"escape", 0x29}, {"tab", 0x2B},
+        {"escape", 0x29}, {"tab", 0x2B}, {"backspace", 0x2A}, {"delete", 0x4C},
+        {"home", 0x4A}, {"end", 0x4D}, {"insert", 0x49},
+        {"f1", 0x3A}, {"f2", 0x3B}, {"f3", 0x3C}, {"f4", 0x3D},
+        {"f5", 0x3E}, {"f6", 0x3F}, {"f7", 0x40}, {"f8", 0x41},
+        {"f9", 0x42}, {"f10", 0x43}, {"f11", 0x44}, {"f12", 0x45},
+        {"ctrl", 0xE0}, {"shift", 0xE1}, {"alt", 0xE2}, {"gui", 0xE3},
     };
     uint8_t usage = 0;
     if (name != nullptr) {

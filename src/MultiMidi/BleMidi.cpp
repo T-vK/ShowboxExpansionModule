@@ -4,13 +4,18 @@
 #include <BLEDevice.h>
 #include <BLEUUID.h>
 #include <BLEAddress.h>
+#include <BLERemoteCharacteristic.h>
+#include <BLERemoteService.h>
 #include <host/ble_gap.h>
 #include <host/ble_hs.h>
 #include "MidiCommon.h"
 #include "DebugLog.h"
+#include "System/LanKeep.h"
+#include "System/HttpsGate.h"
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_coexist.h>
+#include <esp_wifi.h>
 #include <freertos/task.h>
 #include <cstring>
 #include <cstdlib>
@@ -138,13 +143,20 @@ void BleMidi::begin(midi::MidiAction* action, Print* debug) {
     if (!BLEDevice::getInitialized()) {
         BLEDevice::init("ShowboxMod");
     }
+    if (BLEAdvertising* advertising = BLEDevice::getAdvertising()) {
+        advertising->setMinInterval(BleRadio::kAdvItvlMin);
+        advertising->setMaxInterval(BleRadio::kAdvItvlMax);
+    }
     BLEDevice::setCustomGapHandler(BleMidi::onGap);
+    // Default DLE is 251 bytes. One long CE then holds the 2.4 GHz radio
+    // long enough that ARP and HTTP die while the STA still reports associated.
+    ble_gap_write_sugg_def_data_len(27, 328);
     Debug->println("Bluetooth MIDI: connect out to peripherals, and advertise on the shared radio.");
     // NimBLE host and the BT controller already run on core 0. Pin this
     // task there too: connect()/GAP calls from core 1 take the same
     // interrupt lock as the UART ISR and the mixer goes silent.
     if (xTaskCreatePinnedToCoreWithCaps(BleMidi::taskEntry, "ble-midi", 12288, this, 1, nullptr, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
-        xTaskCreatePinnedToCore(BleMidi::taskEntry, "ble-midi", 12288, this, 1, nullptr, 0);
+        xTaskCreatePinnedToCore(BleMidi::taskEntry, "ble-midi", 4096, this, 1, nullptr, 0);
     }
 }
 
@@ -173,7 +185,66 @@ bool runScan(BleScanCollector& collector, bool wide) {
 }
 }
 
-void BleMidi::tick() {}
+namespace {
+constexpr int kBleMidiQ = 8;
+constexpr int kBleMidiQLen = 32;
+struct BleMidiPkt {
+    uint8_t len;
+    uint8_t data[kBleMidiQLen];
+};
+BleMidiPkt bleMidiQ[kBleMidiQ];
+volatile uint8_t bleMidiQHead = 0;
+volatile uint8_t bleMidiQTail = 0;
+volatile uint32_t bleMidiRx = 0;
+portMUX_TYPE bleMidiQMux = portMUX_INITIALIZER_UNLOCKED;
+
+void enqueueBleMidi(const uint8_t* data, size_t length) {
+    if (data == nullptr || length == 0) {
+        return;
+    }
+    size_t n = length < kBleMidiQLen ? length : kBleMidiQLen;
+    portENTER_CRITICAL(&bleMidiQMux);
+    uint8_t next = static_cast<uint8_t>((bleMidiQHead + 1) % kBleMidiQ);
+    if (next != bleMidiQTail) {
+        bleMidiQ[bleMidiQHead].len = static_cast<uint8_t>(n);
+        memcpy(bleMidiQ[bleMidiQHead].data, data, n);
+        bleMidiQHead = next;
+        bleMidiRx++;
+    }
+    portEXIT_CRITICAL(&bleMidiQMux);
+}
+
+void drainBleMidi(BleMidiDecode& decoder) {
+    for (;;) {
+        BleMidiPkt pkt;
+        portENTER_CRITICAL(&bleMidiQMux);
+        if (bleMidiQTail == bleMidiQHead) {
+            portEXIT_CRITICAL(&bleMidiQMux);
+            break;
+        }
+        pkt = bleMidiQ[bleMidiQTail];
+        bleMidiQTail = static_cast<uint8_t>((bleMidiQTail + 1) % kBleMidiQ);
+        portEXIT_CRITICAL(&bleMidiQMux);
+        static uint8_t logged = 0;
+        if (logged < 6) {
+            logged++;
+            debugLog("ble midi in len=%u %02X %02X %02X %02X %02X",
+                (unsigned)pkt.len,
+                pkt.data[0],
+                pkt.len > 1 ? pkt.data[1] : 0,
+                pkt.len > 2 ? pkt.data[2] : 0,
+                pkt.len > 3 ? pkt.data[3] : 0,
+                pkt.len > 4 ? pkt.data[4] : 0);
+        }
+        midiInboundSetSource("ble");
+        decoder.feed(pkt.data, pkt.len);
+    }
+}
+}
+
+void BleMidi::tick() {
+    drainBleMidi(decoder);
+}
 
 void BleMidi::taskEntry(void* arg) {
     static_cast<BleMidi*>(arg)->scanLoop();
@@ -195,6 +266,7 @@ void BleMidi::scanLoop() {
             wifiDownSince = millis();
         }
         bool holdForWifi = !wifiUp && (int32_t)(millis() - wifiDownSince) < 20000;
+        bool holdForHttps = httpsHoldOutgoing();
         bool holdAdv = connectedCount() > 0 || (radio != nullptr && radio->hasIncoming());
         if (!wifiUp && !holdAdv) {
             BLEAdvertising* advertising = BLEDevice::getAdvertising();
@@ -208,8 +280,9 @@ void BleMidi::scanLoop() {
         bool hostLive = radio != nullptr && radio->hasIncoming();
         bool room = hasRoomForOutgoing();
         int outCount = connectedCount();
-        bool recentFail = lastOutgoingFailMs != 0 && (int32_t)(millis() - lastOutgoingFailMs) < 4000;
-        bool bootQuiet = !outgoingAllowed || (int32_t)(millis() - outgoingReadyMs) < 500;
+        lanNoteBleLive(outCount > 0 || hostLive);
+        bool recentFail = lastOutgoingFailMs != 0 && (int32_t)(millis() - lastOutgoingFailMs) < 8000;
+        bool bootQuiet = !outgoingAllowed || (int32_t)(millis() - outgoingReadyMs) < 15000;
         if (bootQuiet) {
             keepAdvertising();
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -219,14 +292,20 @@ void BleMidi::scanLoop() {
         static uint32_t lastHeapLog = 0;
         if (lastHeapLog == 0 || (int32_t)(millis() - lastHeapLog) >= 5000) {
             lastHeapLog = millis();
-            debugLog("ble largest=%u out=%d scan=%d auto=%d",
-                (unsigned)heapBlock, connectedCount(), scanning ? 1 : 0, autoConnectOn ? 1 : 0);
+            int midiChars = 0;
+            for (int i = 0; i < kMaxOutgoing; i++) {
+                if (outgoing[i].connected && outgoing[i].characteristic != nullptr) {
+                    midiChars++;
+                }
+            }
+            debugLog("ble largest=%u out=%d midi=%d scan=%d auto=%d ws=%d hold=%d rx=%u",
+                (unsigned)heapBlock, connectedCount(), midiChars, scanning ? 1 : 0, autoConnectOn ? 1 : 0,
+                lanWsLive() ? 1 : 0, lanHoldMidi() ? 1 : 0, (unsigned)bleMidiRx);
         }
         bool heapTight = heapBlock < 2048;
         if (directConnect && connectOnce && target[0] != '\0') {
             directConnect = false;
             connectOnce = false;
-            keepAdvertising();
             if (room) {
                 lastQuietConnectMs = millis();
                 Debug->printf("Connecting to '%s'\n", target);
@@ -242,26 +321,53 @@ void BleMidi::scanLoop() {
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
+        if (connectedCount() > 0 && !scanRequested) {
+            syncNotifyHold();
+            bool needGatt = false;
+            for (int i = 0; i < kMaxOutgoing; i++) {
+                if (outgoing[i].connected && outgoing[i].characteristic == nullptr) {
+                    needGatt = true;
+                    break;
+                }
+            }
+            keepAdvertising();
+            if (needGatt) {
+                attachMidiGatt();
+            }
+            if (lastLinkMs == 0 || (int32_t)(millis() - lastLinkMs) >= 60000) {
+                lastLinkMs = millis();
+                refreshLink();
+            }
+            const uint32_t quiet = lanHttpQuietMs();
+            const bool httpBusy = quiet != 0xFFFFFFFFu && quiet < 300;
+            // Wake often enough to drop MIDI CCC before a 64 KB SPA
+            // starts HOL-blocking. JTAG: midi=1 left :80 nrtx=7 unacked nil.
+            vTaskDelay(pdMS_TO_TICKS(needGatt ? (httpBusy ? 400 : 250) : (lanHoldMidi() ? 200 : 60)));
+            continue;
+        }
         // Remembered pedals must connect by address. A discovery scan used to
         // win this path, so AIRSTEP never joined unless it was advertising a name.
-        if (centralEnabled && autoConnectOn && room && !scanning && !scanRequested && !holdForWifi && heapBlock >= 2048) {
-            uint32_t waitMs = recentFail ? 4000 : (hostLive ? 8000 : 2500);
+        // Do not gate GAP on lanWsLive(): the mixer page pings /ws every 4s,
+        // which used to block AIRSTEP forever. Hold MIDI CCC instead.
+        if (centralEnabled && autoConnectOn && room && !scanning && !scanRequested && !holdForWifi && !holdForHttps && !recentFail && heapBlock >= 2048) {
+            uint32_t waitMs = hostLive ? 8000 : 2500;
             if (lastQuietConnectMs == 0 || (int32_t)(millis() - lastQuietConnectMs) >= (int32_t)waitMs) {
                 char pickAddress[18] = {};
                 char pickName[32] = {};
                 bool have = policy != nullptr
                     && policy->nextAutoOutgoing(pickAddress, sizeof(pickAddress), pickName, sizeof(pickName));
-                if (have && hasRoomForOutgoing()) {
-                    lastQuietConnectMs = millis();
-                    keepAdvertising();
+                    if (have && hasRoomForOutgoing() && !addressConnected(pickAddress)) {
                     int pickType = typeForAddress(pickAddress);
                     debugLog("ble auto %s heap=%u type=%d", pickName[0] != '\0' ? pickName : pickAddress, (unsigned)heapBlock, pickType);
                     Debug->printf("Auto-connecting to '%s'\n", pickName[0] != '\0' ? pickName : pickAddress);
-                    if (!connectAddressNow(pickAddress, pickName, 3000, pickType)) {
+                    lanPreferWifiWithBle();
+                    lanRecoverUnicast();
+                    if (!connectAddressNow(pickAddress, pickName, 5000, pickType)) {
                         lastOutgoingFailMs = millis();
                     } else {
                         lastOutgoingFailMs = 0;
                     }
+                    lastQuietConnectMs = millis();
                     if (radio != nullptr) {
                         radio->refreshLinkCount();
                     }
@@ -270,18 +376,12 @@ void BleMidi::scanLoop() {
                 }
             }
         }
-        bool autoScan = !holdForWifi && !heapTight && centralEnabled && room && autoConnectOn && !hostLive && !recentFail &&
+        bool autoScan = !holdForWifi && !holdForHttps && !heapTight && centralEnabled && room && autoConnectOn && !hostLive &&
+            connectedCount() == 0 && !recentFail &&
             millis() > 8000 && (policy == nullptr || policy->wantsAutoScan());
         bool shouldScan = (scanRequested || autoScan) && room;
-        if (hostLive) {
-            keepAdvertising();
-        }
         if (!shouldScan) {
             keepAdvertising();
-            if (outCount > 0 && (lastLinkMs == 0 || (int32_t)(millis() - lastLinkMs) >= 5000)) {
-                lastLinkMs = millis();
-                refreshLink();
-            }
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
@@ -346,12 +446,11 @@ void BleMidi::scanLoop() {
                 Debug->printf("Connecting to '%s'\n", pickName[0] != '\0' ? pickName : pickAddress);
                 if (!connectAddressNow(pickAddress, pickName, oneShot ? 5000 : 4000, pickType)) {
                     lastOutgoingFailMs = millis();
+                } else {
+                    lastOutgoingFailMs = 0;
                 }
                 if (radio != nullptr) {
                     radio->refreshLinkCount();
-                }
-                if (wifiUp) {
-                    advertiseIfEnabled();
                 }
             }
         }
@@ -359,14 +458,12 @@ void BleMidi::scanLoop() {
             connectOnce = false;
             target[0] = '\0';
         }
-        if (connectedCount() == 0) {
-            // A continuous scan keeps the radio from Wi-Fi. Wait between
-            // automatic scans; a scan the user started runs again immediately.
-            int waitSeconds = scanRequested ? 1 : 20;
-            for (int i = 0; i < waitSeconds && !scanRequested; i++) {
-                keepAdvertising();
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
+        // Wait even with a live pedal. Skipping this when connectedCount()>0
+        // used to tight-loop 10 ms/100 ms scans beside AIRSTEP and kill ARP.
+        int waitSeconds = scanRequested ? 1 : 20;
+        for (int i = 0; i < waitSeconds && !scanRequested; i++) {
+            keepAdvertising();
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
 }
@@ -481,6 +578,8 @@ void BleMidi::clearSlot(int slot) {
     outgoing[slot].rssi = 0;
     outgoing[slot].battery = -1;
     outgoing[slot].sinceMs = 0;
+    outgoing[slot].gattAt = 0;
+    outgoing[slot].midiHeld = false;
 }
 
 void BleMidi::write(midi::MidiMessage* msg, int len) {
@@ -755,37 +854,101 @@ void BleMidi::noteSeen(const char* address, const char* name, bool completeName,
     portEXIT_CRITICAL(&seenMux);
 }
 
+namespace {
+volatile uint16_t sGapForceHandle = BLE_HS_CONN_HANDLE_NONE;
+volatile uint16_t sGapLogHandle = BLE_HS_CONN_HANDLE_NONE;
+volatile uint16_t sGapLogItvl = 0;
+volatile int sGapLogStatus = 0;
+
+void applyPendingGap() {
+    static uint32_t lastForceMs = 0;
+    static uint16_t lastForceHandle = BLE_HS_CONN_HANDLE_NONE;
+    if (sGapLogHandle != BLE_HS_CONN_HANDLE_NONE) {
+        uint16_t handle = sGapLogHandle;
+        uint16_t itvl = sGapLogItvl;
+        int status = sGapLogStatus;
+        sGapLogHandle = BLE_HS_CONN_HANDLE_NONE;
+        static uint32_t lastItvlLog = 0;
+        if (lastItvlLog == 0 || (int32_t)(millis() - lastItvlLog) >= 5000) {
+            lastItvlLog = millis();
+            debugLog("ble itvl=%u handle=%u rc=%d", (unsigned)itvl, (unsigned)handle, status);
+        }
+    }
+    uint16_t handle = sGapForceHandle;
+    if (handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+    if (handle == lastForceHandle && lastForceMs != 0 && (int32_t)(millis() - lastForceMs) < 8000) {
+        sGapForceHandle = BLE_HS_CONN_HANDLE_NONE;
+        return;
+    }
+    sGapForceHandle = BLE_HS_CONN_HANDLE_NONE;
+    ble_gap_conn_desc desc = {};
+    if (ble_gap_conn_find(handle, &desc) == 0 && desc.conn_itvl >= BleRadio::kWifiSafeItvl) {
+        return;
+    }
+    ble_gap_upd_params params = {};
+    params.itvl_min = BleRadio::kWifiSafeItvl;
+    params.itvl_max = BleRadio::kSlowItvlMax;
+    params.latency = 2;
+    params.supervision_timeout = 800;
+    params.min_ce_len = 0;
+    params.max_ce_len = BleRadio::kMaxCeLen;
+    lastForceHandle = handle;
+    lastForceMs = millis();
+    ble_gap_update_params(handle, &params);
+}
+
+void capConnEvent(uint16_t handle, uint16_t itvl) {
+    if (handle == BLE_HS_CONN_HANDLE_NONE || handle == 0xFF) {
+        return;
+    }
+    uint16_t capItvl = itvl >= BleRadio::kWifiSafeItvl ? itvl : BleRadio::kWifiSafeItvl;
+    ble_gap_upd_params params = {};
+    params.itvl_min = capItvl;
+    params.itvl_max = capItvl;
+    params.latency = 0;
+    params.supervision_timeout = 800;
+    params.min_ce_len = 0;
+    params.max_ce_len = BleRadio::kMaxCeLen;
+    int rc = ble_gap_update_params(handle, &params);
+    debugLog("ble cap-ce handle=%u itvl=%u rc=%d", (unsigned)handle, (unsigned)capItvl, rc);
+}
+}
+
 int BleMidi::onGap(struct ble_gap_event* event, void* /*arg*/) {
     if (instance == nullptr || event == nullptr) {
         return 0;
     }
     if (event->type == BLE_GAP_EVENT_CONN_UPDATE_REQ && event->conn_update_req.self_params != nullptr) {
-        // A pedal asks for 7.5 ms. Two live links at 50–100 ms still keep
-        // unicast Wi-Fi off the air, so showbox.local never returns a page.
-        event->conn_update_req.self_params->itvl_min = 0x50;
-        event->conn_update_req.self_params->itvl_max = 0xA0;
-        event->conn_update_req.self_params->latency = 2;
-        event->conn_update_req.self_params->supervision_timeout = 800;
+        // Reject 7.5 ms, but accept AIRSTEP's 200 ms. Countering 200 ms with
+        // 400 ms forever is an LL_CONNECTION_UPDATE storm that kills Wi-Fi.
+        ble_gap_upd_params* self = event->conn_update_req.self_params;
+        const ble_gap_upd_params* peer = event->conn_update_req.peer_params;
+        self->min_ce_len = 0;
+        self->max_ce_len = BleRadio::kMaxCeLen;
+        self->supervision_timeout = 800;
+        if (peer != nullptr && peer->itvl_min >= BleRadio::kWifiSafeItvl) {
+            self->itvl_min = peer->itvl_min;
+            self->itvl_max = peer->itvl_max >= peer->itvl_min ? peer->itvl_max : peer->itvl_min;
+            self->latency = peer->latency;
+        } else {
+            self->itvl_min = BleRadio::kWifiSafeItvl;
+            self->itvl_max = BleRadio::kSlowItvlMax;
+            self->latency = 2;
+        }
         return 0;
     }
     if (event->type == BLE_GAP_EVENT_CONN_UPDATE) {
+        // Stay off Serial/malloc here. Printing from the NimBLE host task
+        // while lwIP accepted HTTP was a LoadProhibited in AsyncServer::_accept.
         struct ble_gap_conn_desc desc = {};
         if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
-            if (instance->Debug != nullptr) {
-                instance->Debug->printf("BLE interval %u x1.25ms handle %u rc %d\n",
-                    desc.conn_itvl, event->conn_update.conn_handle, event->conn_update.status);
-            }
-            static uint32_t lastForceMs = 0;
-            if (desc.conn_itvl < 0x50 && (lastForceMs == 0 || (int32_t)(millis() - lastForceMs) > 4000)) {
-                lastForceMs = millis();
-                ble_gap_upd_params params = {};
-                params.itvl_min = 0x50;
-                params.itvl_max = 0xA0;
-                params.latency = 2;
-                params.supervision_timeout = 800;
-                params.min_ce_len = 0;
-                params.max_ce_len = 16;
-                ble_gap_update_params(event->conn_update.conn_handle, &params);
+            sGapLogHandle = event->conn_update.conn_handle;
+            sGapLogItvl = desc.conn_itvl;
+            sGapLogStatus = event->conn_update.status;
+            if (desc.conn_itvl > 0 && desc.conn_itvl < BleRadio::kWifiSafeItvl) {
+                sGapForceHandle = event->conn_update.conn_handle;
             }
         }
         return 0;
@@ -880,23 +1043,40 @@ void BleMidi::advertiseIfEnabled() {
     BLEAdvertisementData adv;
     adv.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
     adv.setPartialServices(BLEUUID("03B80E5A-EDE8-4B33-A751-6CE34EC4C700"));
-    advertising->setMinInterval(0xA0);
-    advertising->setMaxInterval(0x140);
+    advertising->setMinInterval(BleRadio::kAdvItvlMin);
+    advertising->setMaxInterval(BleRadio::kAdvItvlMax);
     advertising->setScanResponse(false);
     advertising->setAdvertisementData(adv);
     advertising->start();
 }
 
 void BleMidi::keepAdvertising() {
+    applyPendingGap();
+    lanRestoreBleSleepIfIdle();
     if (radio != nullptr) {
-        radio->service();
+        radio->setPedalShare(connectedCount() > 0);
+        if (connectedCount() == 0) {
+            radio->service();
+        }
     }
-    if (WiFi.status() == WL_CONNECTED) {
-        advertiseIfEnabled();
+    if (WiFi.status() != WL_CONNECTED) {
+        return;
     }
+    // A live pedal with ads disallowed must not call apply()/ble_gap_adv_stop
+    // every second. That churn plus AIRSTEP is what killed ARP.
+    if (radio != nullptr && !radio->advertiseAllowed()) {
+        if (ble_gap_adv_active()) {
+            radio->stopNow();
+        }
+        return;
+    }
+    advertiseIfEnabled();
 }
 
 void BleMidi::refreshLink() {
+    if (WiFi.status() == WL_CONNECTED) {
+        return;
+    }
     for (int i = 0; i < kMaxOutgoing; i++) {
         if (!outgoing[i].connected || outgoing[i].client == nullptr || !outgoing[i].client->isConnected()) {
             continue;
@@ -910,6 +1090,74 @@ void BleMidi::refreshLink() {
         if (outgoing[i].lastBatteryReadMs == 0 || (int32_t)(millis() - outgoing[i].lastBatteryReadMs) >= 30000) {
             readPeerBattery();
         }
+    }
+}
+
+void BleMidi::attachMidiGatt() {
+    for (int i = 0; i < kMaxOutgoing; i++) {
+        if (!outgoing[i].connected || outgoing[i].client == nullptr || outgoing[i].characteristic != nullptr) {
+            continue;
+        }
+        if (!outgoing[i].client->isConnected()) {
+            continue;
+        }
+        if (outgoing[i].gattAt != 0 && (int32_t)(millis() - outgoing[i].gattAt) < 0) {
+            continue;
+        }
+        // getService() blocks this task. Wait until GAP has settled, then
+        // attach even if the mixer UI is in use. Waiting for 45s of HTTP
+        // idle used to skip MIDI for the whole session.
+        if (outgoing[i].sinceMs != 0 && (int32_t)(millis() - outgoing[i].sinceMs) < 1500) {
+            continue;
+        }
+        const uint32_t quiet = lanHttpQuietMs();
+        if (quiet != 0xFFFFFFFFu && quiet < 300) {
+            continue;
+        }
+        // getService() still waits for HTTP quiet. Do not skip CCC just
+        // because STA or the mixer /ws is up — that left midi=0 forever.
+        if (lanHoldMidi()) {
+            outgoing[i].gattAt = millis() + 4000;
+            continue;
+        }
+        outgoing[i].gattAt = 0;
+        lanPreferWifiWithBle();
+        BLERemoteService* service = outgoing[i].client->getService(BLEUUID(MIDI_SERVICE_UUID));
+        if (service == nullptr) {
+            Debug->printf("Bluetooth MIDI no service on %s\n", outgoing[i].address);
+            outgoing[i].gattAt = millis() + 4000;
+            lanKickArp();
+            continue;
+        }
+        BLERemoteCharacteristic* ch = service->getCharacteristic(BLEUUID(MIDI_CHARACTERISTIC_UUID));
+        if (ch == nullptr) {
+            Debug->printf("Bluetooth MIDI no characteristic on %s\n", outgoing[i].address);
+            outgoing[i].gattAt = millis() + 4000;
+            lanKickArp();
+            continue;
+        }
+        bool notifications = ch->canNotify();
+        if (!notifications && !ch->canIndicate()) {
+            Debug->printf("Bluetooth MIDI characteristic not notifiable on %s\n", outgoing[i].address);
+            outgoing[i].gattAt = millis() + 4000;
+            lanKickArp();
+            continue;
+        }
+        if (!ch->subscribe(notifications, BleMidi::onNotify, false)) {
+            Debug->printf("Bluetooth MIDI subscribe failed on %s\n", outgoing[i].address);
+            outgoing[i].gattAt = millis() + 4000;
+            lanKickArp();
+            continue;
+        }
+        outgoing[i].characteristic = ch;
+        outgoing[i].midiHeld = false;
+        Debug->printf("Bluetooth MIDI notify on %s %s\n",
+            outgoing[i].name[0] != '\0' ? outgoing[i].name : outgoing[i].address,
+            outgoing[i].address);
+        lanNoteBleLive(true);
+        lanRecoverUnicast();
+        vTaskDelay(pdMS_TO_TICKS(80));
+        lanRecoverUnicast();
     }
 }
 
@@ -938,7 +1186,7 @@ void BleMidi::onConnect(BLEClient* client) {
         outgoing[slot].sinceMs = millis();
     }
     connectOnce = false;
-    Debug->println("Bluetooth MIDI GAP up");
+    debugLog("ble gap up");
 }
 
 void BleMidi::onDisconnect(BLEClient* client) {
@@ -946,15 +1194,43 @@ void BleMidi::onDisconnect(BLEClient* client) {
     if (slot >= 0) {
         clearSlot(slot);
     }
-    Debug->println("Bluetooth MIDI disconnected");
+    debugLog("ble gap down");
+}
+
+void BleMidi::syncNotifyHold() {
+    const bool hold = lanHoldMidi();
+    for (int i = 0; i < kMaxOutgoing; i++) {
+        if (!outgoing[i].connected || outgoing[i].characteristic == nullptr) {
+            continue;
+        }
+        if (hold && !outgoing[i].midiHeld) {
+            outgoing[i].characteristic->unsubscribe(false);
+            outgoing[i].midiHeld = true;
+            debugLog("ble midi hold");
+        } else if (!hold && outgoing[i].midiHeld) {
+            bool notifications = outgoing[i].characteristic->canNotify();
+            if (!notifications && !outgoing[i].characteristic->canIndicate()) {
+                outgoing[i].midiHeld = false;
+                continue;
+            }
+            if (outgoing[i].characteristic->subscribe(notifications, BleMidi::onNotify, false)) {
+                outgoing[i].midiHeld = false;
+                debugLog("ble midi resume");
+            } else {
+                outgoing[i].gattAt = millis() + 2000;
+            }
+        }
+    }
 }
 
 void BleMidi::onNotify(BLERemoteCharacteristic* /*characteristic*/, uint8_t* data, size_t length, bool /*isNotify*/) {
     if (instance == nullptr || data == nullptr || length == 0) {
         return;
     }
-    midiInboundSetSource("ble");
-    instance->decoder.feed(data, length);
+    if (lanHoldMidi()) {
+        return;
+    }
+    enqueueBleMidi(data, length);
 }
 
 void BleMidi::connectTo(BLEAdvertisedDevice* device) {
@@ -1019,6 +1295,8 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
         debugLog("ble skip connect largest=%u", (unsigned)largest);
         return false;
     }
+    lanPreferWifiWithBle();
+    lanKickArp();
     if (outgoing[slot].client == nullptr) {
         outgoing[slot].client = BLEDevice::createClient();
         outgoing[slot].client->setClientCallbacks(this);
@@ -1034,20 +1312,43 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
     if (timeoutMs < 1500) {
         timeoutMs = 1500;
     }
-    if (timeoutMs > 3500) {
-        timeoutMs = 3500;
+    if (timeoutMs > 5000) {
+        timeoutMs = 5000;
     }
     uint8_t type = addrType >= 0 ? static_cast<uint8_t>(addrType) : typeForAddress(address);
     Debug->printf("Connecting MIDI at %s as %s\n", address, type == BLE_ADDR_RANDOM ? "random" : "public");
-    auto resumeAdv = [this]() {
-        esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    auto resumeAdv = [this](bool keepWifiPref) {
+        if (WiFi.status() == WL_CONNECTED || keepWifiPref) {
+            esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+        } else if (!keepWifiPref) {
+            esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+        }
+        if (radio != nullptr) {
+            radio->setAdvertiseAllowed(advertisingEnabled);
+            radio->resumeExisting();
+        }
         if (WiFi.status() == WL_CONNECTED) {
-            advertiseIfEnabled();
+            BLEAdvertising* advertising = BLEDevice::getAdvertising();
+            if (advertising != nullptr && !advertising->isAdvertising()) {
+                advertiseIfEnabled();
+            }
         }
     };
-    // Keep BALANCE. PREFER_BT during GAP connect made ICMP live and TCP
-    // (HTTP, telnet, AppleMIDI) stall until the next reboot.
-    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    // JTAG: PREFER_BALANCE during this 5s connect left ICMP up and
+    // parked TCP data on unsent (unacked nil). Keep WIFI on the PTA.
+    lanPreferWifiWithBle();
+    // Dual-role connect while GAP is still advertising often returns HCI
+    // timeout 13. Force GAP idle for this attempt; isAdvertising() lies.
+    if (radio != nullptr) {
+        radio->setAdvertiseAllowed(false);
+        radio->apply();
+    }
+    BLEAdvertising* advertising = BLEDevice::getAdvertising();
+    if (advertising != nullptr) {
+        advertising->stop();
+    }
+    ble_gap_adv_stop();
+    delay(80);
     bool ok = tryConnect(client, address, type, timeoutMs);
     if (!ok && addrType < 0) {
         uint8_t other = type == BLE_ADDR_RANDOM ? BLE_ADDR_PUBLIC : BLE_ADDR_RANDOM;
@@ -1069,55 +1370,54 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
             policy->note(line);
         }
         dropClient(slot);
-        resumeAdv();
+        resumeAdv(true);
         return false;
     }
     lastFailAddress[0] = '\0';
     lastFailType = 0xFF;
-    BLERemoteService* service = client->getService(MIDI_SERVICE_UUID);
-    if (service == nullptr) {
-        Debug->println("Peripheral has no BLE MIDI service");
-        if (policy != nullptr) {
-            policy->note("Peripheral has no BLE MIDI service");
-        }
-        client->disconnect();
-        dropClient(slot);
-        resumeAdv();
-        return false;
+    uint16_t handle = client->getConnId();
+    if (radio != nullptr) {
+        radio->setPedalShare(true);
+        radio->setAdvertiseAllowed(false);
+        radio->stopNow();
     }
-    BLERemoteCharacteristic* characteristic = service->getCharacteristic(MIDI_CHARACTERISTIC_UUID);
-    if (characteristic == nullptr) {
-        Debug->println("Peripheral has no BLE MIDI characteristic");
-        if (policy != nullptr) {
-            policy->note("Peripheral has no BLE MIDI characteristic");
-        }
-        client->disconnect();
-        dropClient(slot);
-        resumeAdv();
-        return false;
+    uint16_t itvl = 0;
+    ble_gap_conn_desc desc = {};
+    if (ble_gap_conn_find(handle, &desc) == 0) {
+        itvl = desc.conn_itvl;
     }
-    characteristic->registerForNotify(BleMidi::onNotify, true);
-    outgoing[slot].characteristic = characteristic;
-    client->updateConnParams(0x50, 0xA0, 2, 400);
-    {
-        struct ble_gap_conn_desc desc = {};
-        if (ble_gap_conn_find(client->getConnId(), &desc) == 0 && desc.conn_itvl < 0x50) {
-            Debug->printf("MIDI link still %u, requesting 100-200 ms\n", desc.conn_itvl);
-            client->updateConnParams(0x50, 0xA0, 2, 400);
-        }
-    }
+    uint8_t proto = 0;
+    esp_wifi_get_protocol(WIFI_IF_STA, &proto);
+    Debug->printf("BLE itvl=%u wifi=%d heap=%u largest=%u proto=0x%x adv=%d\n",
+        itvl, (int)WiFi.status(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+        (unsigned)proto, ble_gap_adv_active() ? 1 : 0);
+    // Empty ACL only. GATT discovery plus LL_CONNECTION_UPDATE after
+    // AIRSTEP held PTA until ARP stayed INCOMPLETE.
+    outgoing[slot].characteristic = nullptr;
     outgoing[slot].connected = true;
-    outgoing[slot].lastBatteryReadMs = 0;
+    outgoing[slot].lastBatteryReadMs = millis();
+    lastLinkMs = millis();
     connectOnce = false;
     target[0] = '\0';
-    refreshLink();
-    Debug->printf("Bluetooth MIDI ready: %s %s\n", outgoing[slot].name, outgoing[slot].address);
+    // GAP first, then MIDI notify after ARP has a chance. Immediate GATT
+    // discovery plus LL_CONNECTION_UPDATE used to leave Wi-Fi INCOMPLETE.
+    // Service discovery holds PTA and drops STA unicast. Wait a few seconds
+    // for ARP, then until mixer HTTP has been quiet; GAP already reports
+    // the pedal up so live checks can pass.
+    outgoing[slot].gattAt = millis() + 12000;
+    Debug->printf("Bluetooth MIDI ready: %s %s itvl=%u heap=%u largest=%u gatt-wait\n",
+        outgoing[slot].name, outgoing[slot].address, itvl,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     if (policy != nullptr) {
         char line[88];
         const char* label = outgoing[slot].name[0] != '\0' ? outgoing[slot].name : outgoing[slot].address;
         snprintf(line, sizeof(line), "Connected to %s", label);
         policy->note(line);
     }
-    resumeAdv();
+    lanNoteBleLive(true);
+    lanRecoverUnicast();
     return true;
 }
