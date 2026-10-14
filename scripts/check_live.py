@@ -14,6 +14,7 @@ Checks, every second:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import socket
 import struct
@@ -413,7 +414,13 @@ def main() -> int:
             if attempt:
                 time.sleep(2.0)
             code, body = http_get(url, timeout=8.0, ua="Mozilla/5.0", host=host)
-            ok = code == 200 and len(body) > 10000
+            raw = body
+            if raw[:2] == b"\x1f\x8b":
+                try:
+                    raw = gzip.decompress(raw)
+                except OSError:
+                    pass
+            ok = code == 200 and (len(raw) > 10000 or (b"ShowboxMod" in raw and b"/assets/" in raw))
             print(f"  mixer {label:<16} try {attempt + 1} {code} {len(body)} bytes {'ok' if ok else 'FAIL'}")
             if ok:
                 break

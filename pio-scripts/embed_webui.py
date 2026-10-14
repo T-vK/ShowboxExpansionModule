@@ -99,6 +99,72 @@ def make_icon(size):
     return png_rgb(size, size, pix)
 
 
+ASSET_TYPES = {
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".svg": "image/svg+xml",
+    ".json": "application/json",
+    ".woff2": "font/woff2",
+}
+
+
+def write_asset_table(dist_dir, header_path):
+    """Embed every dist file (gzipped) with its path so the firmware can
+    serve the split build: many small bodies survive the BLE-coex radio
+    far better than one 71 KB single file, and each caches separately."""
+    files = sorted(
+        p for p in dist_dir.rglob("*")
+        if p.is_file() and "__CLIENT__" not in p.name
+    )
+    lines = [
+        "#pragma once",
+        "#include <Arduino.h>",
+        "",
+        "struct WebUiAsset {",
+        "    const char* path;",
+        "    const char* type;",
+        "    const uint8_t* gz;",
+        "    const size_t len;",
+        "};",
+        "",
+    ]
+    count = 0
+    for path in files:
+        rel = path.relative_to(dist_dir).as_posix()
+        if rel == "index.html":
+            continue  # served as WEBUI_INDEX_GZ
+        if rel in ("manifest.webmanifest", "sw.js"):
+            continue  # embedded separately in PwaAssets.h with its own caching
+        ext = path.suffix.lower()
+        mime = ASSET_TYPES.get(ext)
+        if mime is None:
+            print("Skipping asset without a mime type: %s" % rel)
+            continue
+        raw = path.read_bytes()
+        gz = gzip.compress(raw, compresslevel=9)
+        if len(gz) >= len(raw):
+            gz = raw  # tiny files: serve raw
+        var = "WEBUI_FILE_%d" % count
+        lines.append("static const uint8_t %s[] PROGMEM = {" % var)
+        for i in range(0, len(gz), 16):
+            lines.append("  " + ", ".join("0x%02x" % b for b in gz[i:i + 16]) + ",")
+        lines.append("};")
+        lines.append('static const WebUiAsset WEBUI_ASSET_%d = {"/%s", "%s", %s, %d};'
+                     % (count, rel, mime, var, len(gz)))
+        lines.append("")
+        count += 1
+    lines.append("static const WebUiAsset* const WEBUI_ASSETS[] = {")
+    for i in range(count):
+        lines.append("    &WEBUI_ASSET_%d," % i)
+    lines.append("};")
+    lines.append("static const size_t WEBUI_ASSETS_N = %d;" % count)
+    if header_path.parent and not header_path.parent.is_dir():
+        header_path.parent.mkdir(parents=True, exist_ok=True)
+    header_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("Embedded %d Web UI asset files -> %s" % (count, header_path))
+
+
 def write_header(gz_bytes):
     HEADER.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -181,6 +247,7 @@ def build_ui():
     subprocess.check_call([npm, "run", "build"], cwd=UI, env=env_local)
     html = DIST_HTML.read_bytes()
     write_header(gzip.compress(html, compresslevel=9))
+    write_asset_table(UI / "dist", ROOT / "src" / "WebUi" / "WebAssets.h")
     return True
 
 
