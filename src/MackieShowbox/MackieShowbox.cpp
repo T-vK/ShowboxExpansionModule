@@ -136,6 +136,18 @@ MackieShowbox::MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, ui
 }
 
 void MackieShowbox::begin() {
+    // The parse queue is ~18 KB of internal DRAM as a static array — on the
+    // S3 that is the difference between "heap plateau at 4 KB, every task
+    // allocation fails" and a healthy floor. It is only touched in task
+    // context, so PSRAM is fine. Fall back to DRAM if PSRAM is absent.
+    parseQ = static_cast<ParseItem*>(
+        heap_caps_calloc(kParseQ, sizeof(ParseItem), MALLOC_CAP_SPIRAM));
+    if (parseQ == nullptr) {
+        parseQ = static_cast<ParseItem*>(calloc(kParseQ, sizeof(ParseItem)));
+    }
+    if (parseQ == nullptr) {
+        debugLog("uart parse queue alloc failed");
+    }
     loadAnalogHold();
     uint8_t startSig[] = {0xBE, 0xEF};
     uint8_t endSig[] = {0xEF, 0xBE};
@@ -1086,7 +1098,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
 }
 
 void MackieShowbox::enqueueParse(uint8_t* packet, size_t length, UARTInterceptor::Direction direction) {
-    if (packet == nullptr || length == 0) {
+    if (packet == nullptr || length == 0 || parseQ == nullptr) {
         return;
     }
     portENTER_CRITICAL(&parseMux);
@@ -1106,6 +1118,9 @@ void MackieShowbox::enqueueParse(uint8_t* packet, size_t length, UARTInterceptor
 }
 
 void MackieShowbox::drainParse() {
+    if (parseQ == nullptr) {
+        return;
+    }
     int n = 0;
     for (;;) {
         ParseItem item;
@@ -1288,18 +1303,27 @@ void MackieShowbox::tick() {
     // base's UART state machine; packets never fixed it, but the user proved
     // a physical unplug of the base-side wires does. Emulate that: after a
     // silence threshold, nudge with packets, then tri-state the base-side
-    // pins for 3 s and let the normal re-handshake run.
-    if (uartStarted && interceptor.rxFrom1() > 0) {
+    // pins for 3 s and let the normal re-handshake run. The base normally
+    // heartbeats within a second of module boot, so "silent 20 s after
+    // boot" is also a wedge (a panic reboot cuts the UART mid-transaction
+    // without draining), not just "silent after having been heard".
+    if (uartStarted) {
+        if (uartUpSinceMs == 0) {
+            uartUpSinceMs = millis();
+        }
+        const bool gracePassed = (int32_t)(millis() - uartUpSinceMs) > 20000;
         const bool baseSilent = baseAgeMs() > 8000;
         if (wedgeStage == 0) {
-            if (baseSilent) {
+            if (gracePassed && baseSilent && wedgeUnplugs < 3) {
                 wedgeSinceMs = now;
                 wedgeStage = 1;
-                diagEvent("uart", "wedge suspected, base silent %u ms", (unsigned)baseAgeMs());
+                diagEvent("uart", "wedge suspected, base silent %u ms",
+                    baseAgeMs() == 0xFFFFFFFFu ? 0u : (unsigned)baseAgeMs());
             }
         } else if (baseAgeMs() < 2000) {
             wedgeStage = 0;
-            diagEvent("uart", "wedge cleared after stage %u", (unsigned)wedgeStage);
+            wedgeUnplugs = 0;
+            diagEventForce("uart", "wedge cleared after stage %u", (unsigned)wedgeStage);
         } else {
             const uint32_t held = now - wedgeSinceMs;
             if (wedgeStage == 1 && held >= 6000) {
@@ -1314,16 +1338,25 @@ void MackieShowbox::tick() {
                 && (wedgeLastAtMs == 0 || (int32_t)(now - wedgeLastAtMs) > 25000)) {
                 wedgeStage = 3;
                 wedgeLastAtMs = now;
+                wedgeUnplugs = static_cast<uint8_t>(wedgeUnplugs + 1);
                 wireUnplug(3000);
             }
             if (wedgeStage == 3 && !interceptor.wireUnplugActive()
                 && baseAgeMs() > 4000
                 && (int32_t)(now - wedgeLastAtMs) > 20000) {
-                // Unplug done and base still silent: re-arm the ladder.
-                wedgeStage = 1;
-                wedgeSinceMs = now;
+                if (wedgeUnplugs >= 3) {
+                    diagEventForce("uart", "wire unplug failed %u times, giving up until reboot", (unsigned)wedgeUnplugs);
+                    wedgeStage = 0;
+                    wedgeUnplugs = 4;
+                } else {
+                    // Unplug done and base still silent: re-arm the ladder.
+                    wedgeStage = 1;
+                    wedgeSinceMs = now;
+                }
             }
         }
+    } else {
+        uartUpSinceMs = 0;
     }
     if (lastLog == 0 || (int32_t)(now - lastLog) >= 5000) {
         lastLog = now;

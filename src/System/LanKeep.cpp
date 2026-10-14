@@ -6,6 +6,7 @@
 #include "WiredNet/WiredNet.h"
 #include "DebugLog.h"
 #include "System/Diag.h"
+#include "MultiMidi/MultiMidi.h"
 
 // UART-safe restart: the Showbox base wedges when the module reboots
 // mid-transaction (blind watchdog reboots soft-bricked it repeatedly on
@@ -573,6 +574,68 @@ static volatile uint32_t sGwRttMs = 0;
 static volatile int sGwMisses = 0;
 static volatile int sGwZombieRejoins = 0;
 
+// BLE-host yield for association: AIRSTEP's 200 ms connection events starve
+// the WiFi association handshake (fresh boots associate because BLE only
+// connects ~20 s later; a later drop never re-associates while the pedal is
+// connected). When association keeps failing, drop the pedal link and gate
+// outgoing BLE until the WiFi is back, then lift the gate and let
+// autoConnect re-establish the pedal.
+//
+// NEVER combine the yield with WiFi.disconnect()/reconnect(): under coex
+// that crashes the driver (LoadProhibited in _do_wifi_start ->
+// wifi_softap_start -> ieee80211_hostap_attach, ppTask, Core 0 —
+// reproduced twice 2026-10-14). Yielding alone is the cure: the one-way
+// zombie mode is coex starvation, and with the pedal gone the gateway
+// answers again without any re-association.
+static MultiMidi* sMultiMidi = nullptr;
+static int assocFails = 0;
+static uint32_t lastAssocTryMs = 0;
+static bool bleYieldForWifi = false;
+static uint32_t bleYieldHealthyMs = 0;
+
+void lanSetMultiMidi(MultiMidi* mm) {
+    sMultiMidi = mm;
+}
+
+static void lanYieldBleForAssoc(const char* why, int failCount) {
+    if (bleYieldForWifi || sMultiMidi == nullptr) {
+        return;
+    }
+    if (!sMultiMidi->hostConnected()) {
+        return;
+    }
+    bleYieldForWifi = true;
+    bleYieldHealthyMs = 0;
+    sMultiMidi->dropHostLink();
+    sMultiMidi->allowOutgoing(false);
+    diagEventForce("wifi", "%s: yielded BLE host for association (fail=%d)", why, failCount);
+    debugLog("wifi %s: yielded BLE host for association (fail=%d)", why, failCount);
+}
+
+static void lanBleYieldTick() {
+    if (!bleYieldForWifi) {
+        return;
+    }
+    const bool healthy = WiFi.status() == WL_CONNECTED && sGwPing != nullptr && sGwMisses == 0;
+    if (!healthy) {
+        bleYieldHealthyMs = 0;
+        return;
+    }
+    if (bleYieldHealthyMs == 0) {
+        bleYieldHealthyMs = millis();
+        return;
+    }
+    if ((int32_t)(millis() - bleYieldHealthyMs) >= 30000) {
+        bleYieldForWifi = false;
+        bleYieldHealthyMs = 0;
+        if (sMultiMidi != nullptr) {
+            sMultiMidi->allowOutgoing(true);
+        }
+        diagEventForce("wifi", "gateway healthy 30 s: BLE host yield lifted");
+        debugLog("wifi healthy 30s: BLE host yield lifted, pedal will reconnect");
+    }
+}
+
 static void gwPingStart(uint32_t ip) {
     if (sGwPing != nullptr) {
         esp_ping_stop(sGwPing);
@@ -626,15 +689,72 @@ void lanGwPingTick() {
         }
         return;
     }
-    if (gw != sGwTargetIp || sGwPing == nullptr) {
+    if (gw != sGwTargetIp) {
         gwPingStart(gw);
+        return;
     }
+    if (sGwPing == nullptr) {
+        // Session creation failed (xTaskCreate with no contiguous task
+        // memory). Retrying every tick flooded the console and reset the
+        // miss counter forever, so nothing ever recovered. Rate-limit the
+        // retries and, while creation keeps failing, force the zombie
+        // ladder so the heap-guarded rejoin / UART-safe restart can act.
+        static uint32_t lastPingStartMs = 0;
+        static uint32_t lastForcedZombieMs = 0;
+        if (lastPingStartMs == 0 || (int32_t)(millis() - lastPingStartMs) >= 15000) {
+            lastPingStartMs = millis();
+            gwPingStart(gw);
+        }
+        if (sGwPing == nullptr && (int32_t)(millis() - lastForcedZombieMs) >= 30000) {
+            lastForcedZombieMs = millis();
+            diagEventForce("wifi", "ping task create failing, forcing zombie ladder");
+            debugLog("wifi ping task create failing, forcing zombie ladder");
+            sGwMisses = 3;
+        }
+        lanBleYieldTick();
+        return;
+    }
+    lanBleYieldTick();
     // Zombie check: the stack claims associated but the gateway stopped
-    // answering. Re-associate. If repeated rejoins fail, the last resort is
-    // a UART-safe reboot (drained first — see uartSafeRestart).
+// answering. Re-associate. If repeated rejoins fail, the last resort is
+// a UART-safe reboot (drained first — see uartSafeRestart).
+//
+// With a BLE host (AIRSTEP) connected, gateway RTT spikes and loss bursts
+// are expected coex behavior, NOT a dead STA — measured 2026-10-14:
+// pedal on = RTT 23-96 ms with loss, pedal off = 0/731 loss. Tearing the
+// STA down in that state is what turns "degraded" into "dead": the STA
+// cannot re-associate under the pedal's coex load (association only ever
+// succeeds on fresh boots, before BLE connects). So while a BLE host holds
+// the link, ride out the degradation; only if it persists for a long
+// window do we yield the pedal and rejoin. Without a host, rejoin quickly.
+    const bool hostUp = sMultiMidi != nullptr && sMultiMidi->hostConnected();
+    static uint32_t zombieSinceMs = 0;
+    uint32_t now = millis();
+    if (hostUp) {
+        // BLE host connected: gateway RTT spikes are expected coex behavior.
+        // Only act if the degradation persists way beyond any burst.
+        if (sGwMisses < 3) {
+            zombieSinceMs = 0;
+            return;
+        }
+        if (zombieSinceMs == 0) {
+            zombieSinceMs = now;
+            diagEvent("wifi", "gateway loss with BLE host, riding out coex degradation");
+            return;
+        }
+        if ((int32_t)(now - zombieSinceMs) > 120000) {
+            // Degradation stuck for 2 minutes: yield the pedal. No WiFi
+            // churn here — the one-way zombie is coex starvation and heals
+            // once the pedal is down (and disconnect+reconnect under coex
+            // crashes the driver, see lanYieldBleForAssoc).
+            sGwMisses = 0;
+            zombieSinceMs = 0;
+            lanYieldBleForAssoc("long zombie", 1);
+        }
+        return;
+    }
     if (sGwMisses >= 3) {
         static uint32_t lastZombieMs = 0;
-        uint32_t now = millis();
         if (lastZombieMs != 0 && (int32_t)(now - lastZombieMs) < 12000) {
             return;
         }
@@ -646,6 +766,20 @@ void lanGwPingTick() {
         if (n >= 3) {
             uartSafeRestart("gateway unreachable, rejoins failed");
             return;
+        }
+        // Low heap makes WiFi.disconnect crash the driver (LoadProhibited in
+        // _do_wifi_start -> wifi_softap_start: allocation failure inside the
+        // mode process). Only rejoin with enough heap; below that, the
+        // ping-session recreation / BLE yield / last-resort restart handle it.
+        if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < 20480) {
+            diagEvent("wifi", "rejoin skipped, heap largest too small");
+            debugLog("wifi rejoin skipped, low heap");
+            return;
+        }
+        if (n >= 2) {
+            // No esp_wifi_stop/start — crashes the WiFi driver (see the
+            // assoc path). The BLE yield frees the airtime instead.
+            lanYieldBleForAssoc("zombie rejoin", n);
         }
         WiFi.disconnect(false, false);
         delay(80);
@@ -761,6 +895,8 @@ void lanKeepWifi(const FrontPanel& panel) {
         if (wifiWasDown) {
             wifiWasDown = false;
             upLogs = 0;
+            assocFails = 0;
+            lastAssocTryMs = 0;
             debugLog("wifi back ip=%s rssi=%d n=%u heap=%u largest=%u",
                 WiFi.localIP().toString().c_str(), haveAp ? ap.rssi : 0, haveAp ? (unsigned)ap.phy_11n : 0,
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -812,15 +948,30 @@ void lanKeepWifi(const FrontPanel& panel) {
         return;
     }
     misses = 0;
+    const uint32_t nowFix = millis();
+    const uint32_t backoff = assocFails < 4 ? 5000 : 15000;
+    if (lastAssocTryMs != 0 && (int32_t)(nowFix - lastAssocTryMs) < (int32_t)backoff) {
+        return;
+    }
+    lastAssocTryMs = nowFix;
+    assocFails++;
     if (Debug != nullptr) {
-        Debug->printf("[ INFO ] WiFi link is down (status %d rssi %d). Reconnecting.\n", (int)st, WiFi.RSSI());
+        Debug->printf("[ INFO ] WiFi link is down (status %d rssi %d). Reconnecting (attempt %d).\n",
+            (int)st, WiFi.RSSI(), assocFails);
+    }
+    if (assocFails >= 3) {
+        lanYieldBleForAssoc("assoc", assocFails);
     }
     if (st == WL_CONNECTED) {
         WiFi.disconnect(false, false);
     }
+    // NOTE: no esp_wifi_stop()/start() here — calling that outside the
+    // Arduino WiFi layer crashed in _do_wifi_start/wifi_softap_start
+    // (LoadProhibited, Core 0, backtrace via ppTask). The BLE yield above
+    // is what actually frees airtime for the association handshake.
     bool ok = WiFi.reconnect();
-    debugLog("wifi reconnect=%d status=%d rssi=%d ip=%s",
-        ok ? 1 : 0, (int)WiFi.status(), WiFi.RSSI(), WiFi.localIP().toString().c_str());
+    debugLog("wifi reconnect=%d fails=%d status=%d rssi=%d ip=%s",
+        ok ? 1 : 0, assocFails, (int)WiFi.status(), WiFi.RSSI(), WiFi.localIP().toString().c_str());
 }
 
 void lanTickIsoReboot(MackieShowbox& showbox) {

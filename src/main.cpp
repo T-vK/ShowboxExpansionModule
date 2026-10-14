@@ -214,6 +214,7 @@ void setup() {
     multiMidi.setDebugSerial(Debug);
     multiMidi.setRadio(&bleRadio);
     multiMidi.setEthernetPins(W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_nSS, W5500_nRESET);
+    lanSetMultiMidi(&multiMidi);
     connections.attach(&multiMidi, &bleRadio, &hid);
     connections.setShowbox(&showbox);
     connections.setDebugSettingsHandler(applyDebugSettings);

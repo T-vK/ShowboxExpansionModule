@@ -199,7 +199,7 @@ private:
         uint8_t direction;
     };
     TaskHandle_t uartTaskHandle = nullptr;
-    ParseItem parseQ[kParseQ] = {};
+    ParseItem* parseQ = nullptr;
     volatile uint8_t parseQHead = 0;
     volatile uint8_t parseQTail = 0;
     portMUX_TYPE parseMux = portMUX_INITIALIZER_UNLOCKED;
@@ -297,7 +297,9 @@ private:
     // Base-wedge recovery ladder state
     uint32_t wedgeSinceMs = 0;
     uint32_t wedgeLastAtMs = 0;
+    uint32_t uartUpSinceMs = 0;
     uint8_t wedgeStage = 0;
+    uint8_t wedgeUnplugs = 0;
     UARTInterceptor interceptor;
     UARTInterceptor::Direction TO_MIXER = UARTInterceptor::DEVICE1_TO_DEVICE2;
     UARTInterceptor::Direction TO_BASE = UARTInterceptor::DEVICE2_TO_DEVICE1;
