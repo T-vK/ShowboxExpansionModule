@@ -158,7 +158,10 @@ void sendWebUi(AsyncWebServerRequest* request) {
             return n;
         });
     response->addHeader("Content-Encoding", "gzip");
-    response->addHeader("Cache-Control", "public, max-age=600");
+    // no-cache, never max-age: a cached shell can reference asset hashes
+    // that no longer exist after an update — that deadlock kept browsers on
+    // 'Loading mixer…' forever. The shell is ~2 KB; always revalidate it.
+    response->addHeader("Cache-Control", "no-cache");
     response->addHeader("Connection", "close");
     request->send(response);
 }
@@ -257,6 +260,9 @@ static void sendFlashRange(
         response->addHeader("Accept-Ranges", "bytes");
         response->addHeader("Cache-Control", cache);
     }
+    // Stale cached shells load us with crossorigin tags (cors mode) and
+    // Chromium's private-network policy blocks them without this.
+    response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
 }
 
@@ -316,4 +322,28 @@ void registerWebUiRoutes(AsyncWebServer* server) {
                 "public, max-age=31536000, immutable");
         });
     }
+}
+
+bool serveWebAsset(AsyncWebServerRequest* request, const char* path) {
+    // Update-deadlock breaker: a stale cached shell references asset hashes
+    // that no longer exist (the old shell pointed at index-BDP4IidH.js; the
+    // new build ships index-CXzm662G.js). Serving the shell HTML for those
+    // paths made the browser parse HTML as a JS module — the stale browser
+    // could never reach the new UI. Match by extension instead: any
+    // /assets/*.js gets the current bundle, any /assets/*.css the current
+    // stylesheet, so every old shell can always reach the current app.
+    const char* dotReq = strrchr(path, '.');
+    if (dotReq == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < WEBUI_ASSETS_N; i++) {
+        const WebUiAsset* asset = WEBUI_ASSETS[i];
+        const char* dot = strrchr(asset->path, '.');
+        if (dot == nullptr || strcmp(dot, dotReq) != 0) {
+            continue;
+        }
+        sendFlashRange(request, asset->type, asset->gz, asset->len, "no-cache");
+        return true;
+    }
+    return false;
 }

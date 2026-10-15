@@ -1961,6 +1961,29 @@ void RestApiRouter::setup() {
     }
 
     _server->onNotFound([this](AsyncWebServerRequest* request) {
+        if (request->url().startsWith("/assets/")) {
+            if (request->method() == HTTP_OPTIONS) {
+                // CORS/PNA preflight from crossorigin-tag loads in stale
+                // cached shells.
+                AsyncWebServerResponse* pre = request->beginResponse(204);
+                pre->addHeader("Access-Control-Allow-Origin", "*");
+                pre->addHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+                pre->addHeader("Access-Control-Allow-Headers", "Range");
+                pre->addHeader("Access-Control-Allow-Private-Network", "true");
+                pre->addHeader("Access-Control-Max-Age", "600");
+                request->send(pre);
+                return;
+            }
+            if (request->method() != HTTP_GET) {
+                request->send(404);
+                return;
+            }
+            if (serveWebAsset(request, request->url().c_str())) {
+                return;
+            }
+            request->send(404);
+            return;
+        }
         if (request->method() != HTTP_GET || request->url().startsWith("/api/") || request->url().startsWith("/ws")) {
             request->send(404);
             return;
