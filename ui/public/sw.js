@@ -1,4 +1,4 @@
-const CACHE = "showboxmod-v16";
+const CACHE = "showboxmod-v17";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -46,6 +46,12 @@ self.addEventListener("fetch", (event) => {
   }
   const path = url.pathname;
   if (path.startsWith("/api/") || path === "/ws" || path.startsWith("/ws")) {
+    return;
+  }
+  // Range/resume fetches (the shell's stall-proof loader) must hit the
+  // network directly — sliced bodies are raw gzip and must not be decoded
+  // or cached individually.
+  if (req.headers.has("range")) {
     return;
   }
   // Hashed build assets are immutable: cache-first, so repeat loads never

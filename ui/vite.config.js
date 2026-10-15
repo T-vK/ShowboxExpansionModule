@@ -224,19 +224,8 @@ export default defineConfig({
   plugins: [preact(), mockShowbox()],
   build: {
     cssCodeSplit: false,
-    // The firmware serves the dist files from flash; keep the set small:
-    // one vendor chunk, one app chunk, one css. Small bodies survive the
-    // BLE-coex radio window far better than one ~71 KB single file, and the
-    // service worker caches each file after the first good fetch.
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes("node_modules")) {
-            return "vendor";
-          }
-        }
-      }
-    },
+    // One JS chunk: the bootstrap loads it via HTTP Range resume and imports
+    // it from a blob URL, which cannot resolve relative imports (vendor).
     minify: "esbuild"
   }
 });

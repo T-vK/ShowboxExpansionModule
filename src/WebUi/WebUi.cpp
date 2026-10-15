@@ -198,6 +198,68 @@ static void sendFlashBytes(
     request->send(response);
 }
 
+// Resume support for the BLE-coex radio: big TCP bodies stall mid-flight for
+// tens of seconds (data+ACK interleaving starves; plain ping of any size
+// still flows). The webui shell therefore streams each asset and resumes
+// with HTTP Range after an inactivity abort. 206 slices carry raw gzip
+// bytes (no Content-Encoding — each slice must not be decoded alone).
+static void sendFlashRange(
+    AsyncWebServerRequest* request,
+    const char* type,
+    const uint8_t* data,
+    size_t len,
+    const char* cache
+) {
+    size_t start = 0;
+    bool ranged = false;
+    const AsyncWebHeader* range = request->getHeader("Range");
+    if (range != nullptr && len > 0) {
+        const char* v = range->value().c_str();
+        if (strncmp(v, "bytes=", 6) == 0) {
+            long s = strtol(v + 6, nullptr, 10);
+            if (s >= 0 && (size_t)s < len) {
+                start = (size_t)s;
+                ranged = true;
+            }
+        }
+    }
+    const size_t remain = len - start;
+    lanNoteHttp();
+    if (remain >= 4096) {
+        lanNoteBigHttp(true);
+    } else {
+        lanNoteHttpBody(true);
+    }
+    const size_t cap = spaChunkCap();
+    AsyncWebServerResponse* response = request->beginResponse(
+        type, remain,
+        [data, len, start, remain, cap](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+            if (index >= remain) {
+                if (remain >= 4096) {
+                    lanNoteBigHttp(false);
+                } else {
+                    lanNoteHttpBody(false);
+                }
+                return 0;
+            }
+            return fillFlash(data, len, buffer, maxLen > cap ? cap : maxLen, start + index);
+        });
+    if (ranged) {
+        response->setCode(206);
+        char cr[64];
+        snprintf(cr, sizeof(cr), "bytes %u-%u/%u",
+            (unsigned)start, (unsigned)(len - 1), (unsigned)len);
+        response->addHeader("Content-Range", cr);
+        response->addHeader("Accept-Ranges", "bytes");
+        response->addHeader("Cache-Control", "no-store");
+    } else {
+        response->addHeader("Content-Encoding", "gzip");
+        response->addHeader("Accept-Ranges", "bytes");
+        response->addHeader("Cache-Control", cache);
+    }
+    request->send(response);
+}
+
 static void sendTextAsset(AsyncWebServerRequest* request, const char* type, const char* text, const char* cache) {
     lanNoteHttp();
     lanNoteHttpBody(true);
@@ -245,14 +307,13 @@ void registerWebUiRoutes(AsyncWebServer* server) {
     server->on("/icon-180.png", HTTP_GET, [](AsyncWebServerRequest* request) {
         sendFlashBytes(request, "image/png", PWA_ICON_180, PWA_ICON_180_LEN, "public, max-age=86400");
     });
-    // Split-build assets (hashed names, immutable): many small gz bodies
-    // survive the BLE-coex radio window far better than one 71 KB file, and
-    // the service worker caches each after the first good fetch.
+    // Split-build assets (hashed names): served with Range/resume support
+    // so the shell can continue stalled transfers from the exact byte.
     for (size_t i = 0; i < WEBUI_ASSETS_N; i++) {
         const WebUiAsset* asset = WEBUI_ASSETS[i];
         server->on(asset->path, HTTP_GET, [asset](AsyncWebServerRequest* request) {
-            sendFlashBytes(request, asset->type, asset->gz, asset->len,
-                "public, max-age=31536000, immutable", true);
+            sendFlashRange(request, asset->type, asset->gz, asset->len,
+                "public, max-age=31536000, immutable");
         });
     }
 }

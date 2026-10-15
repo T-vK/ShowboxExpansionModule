@@ -180,59 +180,138 @@ BOOTSTRAP = """<script>
     var lead = box.querySelector(".lead");
     if (lead) lead.textContent = msg || "Load failed — the radio link dropped it.";
   }
-  // A hung transfer produces no error event; show a way out after 12 s.
   setTimeout(function () {
     if (!window.__uiBooted && !window.__uiFailed) {
       fail("Still loading — the radio link is busy. Tap Retry.");
     }
   }, 12000);
-  function importWithRetry(src, tries) {
-    var attempt = 0;
-    function go() {
-      attempt++;
-      var mod = import(src);
-      var watchdog = new Promise(function (_, rej) {
-        setTimeout(function () { rej(new Error("import timeout")); }, 20000);
+  // The BLE-coex radio stalls big TCP bodies mid-flight for tens of seconds
+  // (ping of any size still flows; sustained data+ACK starves). Stream the
+  // body, abort on inactivity, and resume from the exact byte via Range
+  // until the whole file is here.
+  function readChunk(reader, ms, signal) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () { reject(new Error("read stall")); }, ms);
+      signal.addEventListener("abort", function () {
+        clearTimeout(t); reject(new Error("aborted"));
+      }, { once: true });
+      reader.read().then(function (v) {
+        clearTimeout(t); resolve(v);
+      }, function (e) {
+        clearTimeout(t); reject(e);
       });
-      return Promise.race([mod, watchdog]).then(function () {
-        window.__uiBooted = true;
-      }, function (err) {
-        if (attempt < tries) {
-          return new Promise(function (r) { setTimeout(r, 900); }).then(go);
-        }
-        throw err;
-      });
+    });
+  }
+  function fetchResumable(url) {
+    return new Promise(function (resolve, reject) {
+      var chunks = [];
+      var got = 0;
+      var total = 0;
+      var attempt = 0;
+      function go() {
+        attempt++;
+        if (attempt > 40) { reject(new Error("too many stalls")); return; }
+        var ctrl = new AbortController();
+        // Always range: a plain 200 carries Content-Encoding: gzip, which the
+        // browser decodes transparently — our byte accounting must run on the
+        // raw gzip bytes, and a 206 slice is exactly that.
+        var headers = { Range: "bytes=" + got + "-" };
+        var total0 = total;
+        // Header stall: the server can accept the connection and never answer
+        // (AsyncTCP event stall under coex). 8 s, not 60.
+        var hdrTimer = setTimeout(function () { ctrl.abort(); }, 8000);
+        fetch(url, { headers: headers, signal: ctrl.signal, cache: "no-store" })
+          .then(function (res) {
+            if (res.status !== 200 && res.status !== 206) {
+              throw new Error("http " + res.status);
+            }
+            if (res.status === 200 && got > 0) {
+              chunks = []; got = 0;  // server ignored Range: start over
+            }
+            var cr = res.headers.get("Content-Range");
+            if (cr) {
+              var slash = cr.lastIndexOf("/");
+              total = parseInt(cr.slice(slash + 1), 10) || 0;
+            } else {
+              total = parseInt(res.headers.get("Content-Length") || "0", 10) || 0;
+            }
+            var reader = res.body.getReader();
+            function pump() {
+              return readChunk(reader, 5000, ctrl.signal).then(function (r) {
+                if (r.done) {
+                  clearTimeout(ctrl.__k);
+                  if (total && got !== total) { throw new Error("short body"); }
+                  resolve(new Blob(chunks));
+                  return;
+                }
+                chunks.push(r.value);
+                got += r.value.length;
+                return pump();
+              });
+            }
+            ctrl.__k = setTimeout(function () { ctrl.abort(); }, 60000);
+            return pump();
+          })
+          .catch(function () {
+            clearTimeout(ctrl.__k);
+            setTimeout(go, 700);
+          });
+      }
+      go();
+    });
+  }
+  function blobUrl(blob, type) {
+    return URL.createObjectURL(new Blob([blob], { type: type }));
+  }
+  function gunzipText(blob) {
+    if (!("DecompressionStream" in window)) {
+      throw new Error("no DecompressionStream");
     }
-    return go();
+    return new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text();
   }
-  if (!MODS.length) {
-    document.querySelectorAll('script[type=module][src]').forEach(function (s) {
-      MODS.push(s.getAttribute("src"));
-      s.remove();
-    });
-  } else {
-    document.querySelectorAll('script[type=module][src]').forEach(function (s) { s.remove(); });
+  // Take over from any stale service worker immediately; ranged fetches
+  // bypass it anyway.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(function () {});
   }
-  document.querySelectorAll('link[rel=modulepreload]').forEach(function (l) { l.remove(); });
-  if (!STYLES.length) {
-    document.querySelectorAll('link[rel=stylesheet][href]').forEach(function (l) {
-      STYLES.push(l.getAttribute("href"));
-      l.remove();
-    });
-  } else {
-    document.querySelectorAll('link[rel=stylesheet][href]').forEach(function (l) { l.remove(); });
-  }
-  STYLES.forEach(function (href) {
-    var l = document.createElement("link");
-    l.rel = "stylesheet";
-    l.href = href;
-    document.head.appendChild(l);
-  });
   var chain = Promise.resolve();
-  MODS.forEach(function (src) {
-    chain = chain.then(function () { return importWithRetry(src, 8); });
+  STYLES.forEach(function (href) {
+    chain = chain.then(function () {
+      if (!("DecompressionStream" in window)) {
+        var l = document.createElement("link");
+        l.rel = "stylesheet";
+        l.href = href;
+        document.head.appendChild(l);
+        return;
+      }
+      return fetchResumable(href)
+        .then(function (blob) { return gunzipText(blob); })
+        .then(function (text) {
+          var l = document.createElement("link");
+          l.rel = "stylesheet";
+          l.href = blobUrl(text, "text/css");
+          document.head.appendChild(l);
+        })
+        .catch(function () {
+          var l = document.createElement("link");
+          l.rel = "stylesheet";
+          l.href = href;
+          document.head.appendChild(l);
+        });
+    });
   });
-  chain.catch(function () { fail(); });
+  MODS.forEach(function (src) {
+    chain = chain.then(function () {
+      return fetchResumable(src)
+        .then(function (blob) { return gunzipText(blob); })
+        .then(function (text) {
+          var u = blobUrl(text, "text/javascript");
+          return import(u);
+        });
+    });
+  });
+  chain.then(function () { window.__uiBooted = true; })
+       .catch(function () { fail(); });
 })();
 </script>"""
 
@@ -241,7 +320,7 @@ def transform_shell(html):
     """Vite injects <script type=module> / <link rel=stylesheet> tags. A tag
     whose transfer hangs never fires an error event, and the BLE-coex radio
     stalls bodies for tens of seconds — the page would sit at 'Loading'
-    forever. Strip the tags and dynamic-import the bundles with retries
+    forever. Strip the tags and load the bundles with byte-resuming fetches
     instead; the URLs are baked into the bootstrap at build time."""
     mods = re.findall(r'<script type="module"[^>]*src="([^"]*)"', html)
     styles = re.findall(r'<link rel="stylesheet"[^>]*href="([^"]*)"', html)
