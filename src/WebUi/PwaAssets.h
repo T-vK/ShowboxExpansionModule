@@ -45,7 +45,7 @@ static const char PWA_MANIFEST[] = R"MAN({
 }
 )MAN";
 
-static const char PWA_SW[] = R"SJS(const CACHE = "showboxmod-v17";
+static const char PWA_SW[] = R"SJS(const CACHE = "showboxmod-v18";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();

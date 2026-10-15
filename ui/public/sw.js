@@ -1,4 +1,4 @@
-const CACHE = "showboxmod-v17";
+const CACHE = "showboxmod-v18";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
