@@ -1,4 +1,4 @@
-const CACHE = "showboxmod-v15";
+const CACHE = "showboxmod-v16";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -58,7 +58,9 @@ self.addEventListener("fetch", (event) => {
         return hit;
       }
       let last = null;
-      for (let i = 0; i < 4; i++) {
+      // The BLE-coex radio has dead windows of several seconds; spread the
+      // attempts across ~15 s so one window cannot exhaust them.
+      for (let i = 0; i < 8; i++) {
         try {
           const res = await fetchWhole(req);
           if (res && res.ok) {
@@ -70,7 +72,7 @@ self.addEventListener("fetch", (event) => {
         } catch (err) {
           last = null;
         }
-        await new Promise((r) => setTimeout(r, 700));
+        await new Promise((r) => setTimeout(r, 1500 + 500 * i));
       }
       return last || fetch(req);
     })());
