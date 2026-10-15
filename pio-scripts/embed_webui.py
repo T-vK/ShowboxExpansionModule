@@ -3,6 +3,7 @@ Import("env")
 from pathlib import Path
 import gzip
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -12,6 +13,7 @@ ROOT = Path(env["PROJECT_DIR"])
 UI = ROOT / "ui"
 PUBLIC = UI / "public"
 HEADER = ROOT / "src" / "WebUi" / "Page.h"
+ASSET_HEADER = ROOT / "src" / "WebUi" / "WebAssets.h"
 PWA_HEADER = ROOT / "src" / "WebUi" / "PwaAssets.h"
 DIST_HTML = UI / "dist" / "index.html"
 
@@ -165,6 +167,92 @@ def write_asset_table(dist_dir, header_path):
     print("Embedded %d Web UI asset files -> %s" % (count, header_path))
 
 
+BOOTSTRAP = """<script>
+(function () {
+  var box = document.getElementById("bootbox");
+  var MODS = __MODS__;
+  var STYLES = __STYLES__;
+  function fail(msg) {
+    if (window.__uiFailed) return;
+    window.__uiFailed = true;
+    if (!box) return;
+    box.classList.add("boot-failed");
+    var lead = box.querySelector(".lead");
+    if (lead) lead.textContent = msg || "Load failed — the radio link dropped it.";
+  }
+  // A hung transfer produces no error event; show a way out after 12 s.
+  setTimeout(function () {
+    if (!window.__uiBooted && !window.__uiFailed) {
+      fail("Still loading — the radio link is busy. Tap Retry.");
+    }
+  }, 12000);
+  function importWithRetry(src, tries) {
+    var attempt = 0;
+    function go() {
+      attempt++;
+      var mod = import(src);
+      var watchdog = new Promise(function (_, rej) {
+        setTimeout(function () { rej(new Error("import timeout")); }, 20000);
+      });
+      return Promise.race([mod, watchdog]).then(function () {
+        window.__uiBooted = true;
+      }, function (err) {
+        if (attempt < tries) {
+          return new Promise(function (r) { setTimeout(r, 900); }).then(go);
+        }
+        throw err;
+      });
+    }
+    return go();
+  }
+  if (!MODS.length) {
+    document.querySelectorAll('script[type=module][src]').forEach(function (s) {
+      MODS.push(s.getAttribute("src"));
+      s.remove();
+    });
+  } else {
+    document.querySelectorAll('script[type=module][src]').forEach(function (s) { s.remove(); });
+  }
+  document.querySelectorAll('link[rel=modulepreload]').forEach(function (l) { l.remove(); });
+  if (!STYLES.length) {
+    document.querySelectorAll('link[rel=stylesheet][href]').forEach(function (l) {
+      STYLES.push(l.getAttribute("href"));
+      l.remove();
+    });
+  } else {
+    document.querySelectorAll('link[rel=stylesheet][href]').forEach(function (l) { l.remove(); });
+  }
+  STYLES.forEach(function (href) {
+    var l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = href;
+    document.head.appendChild(l);
+  });
+  var chain = Promise.resolve();
+  MODS.forEach(function (src) {
+    chain = chain.then(function () { return importWithRetry(src, 8); });
+  });
+  chain.catch(function () { fail(); });
+})();
+</script>"""
+
+
+def transform_shell(html):
+    """Vite injects <script type=module> / <link rel=stylesheet> tags. A tag
+    whose transfer hangs never fires an error event, and the BLE-coex radio
+    stalls bodies for tens of seconds — the page would sit at 'Loading'
+    forever. Strip the tags and dynamic-import the bundles with retries
+    instead; the URLs are baked into the bootstrap at build time."""
+    mods = re.findall(r'<script type="module"[^>]*src="([^"]*)"', html)
+    styles = re.findall(r'<link rel="stylesheet"[^>]*href="([^"]*)"', html)
+    html = re.sub(r'<script type="module"[^>]*src="[^"]*"[^>]*></script>\s*', "", html)
+    html = re.sub(r'<link rel="modulepreload"[^>]*>\s*', "", html)
+    html = re.sub(r'<link rel="stylesheet"[^>]*>\s*', "", html)
+    bootstrap = BOOTSTRAP.replace("__MODS__", repr(list(mods))).replace("__STYLES__", repr(list(styles)))
+    html = html.replace("</body>", bootstrap + "\n</body>")
+    return html
+
+
 def write_header(gz_bytes):
     HEADER.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -234,8 +322,14 @@ def build_ui():
         UI / "index.html",
         UI / "src",
         UI / "public",
+        Path(env["PROJECT_DIR"]) / "pio-scripts" / "embed_webui.py",
     ])
-    if HEADER.is_file() and HEADER.stat().st_mtime >= sources_mtime and sources_mtime > 0:
+    if (
+        HEADER.is_file()
+        and ASSET_HEADER.is_file()
+        and HEADER.stat().st_mtime >= sources_mtime
+        and sources_mtime > 0
+    ):
         print("Web UI header is current")
         return True
     env_local = os.environ.copy()
@@ -245,9 +339,9 @@ def build_ui():
         subprocess.check_call([npm, "ci" if (UI / "package-lock.json").is_file() else "install"], cwd=UI, env=env_local)
     print("Building Web UI")
     subprocess.check_call([npm, "run", "build"], cwd=UI, env=env_local)
-    html = DIST_HTML.read_bytes()
-    write_header(gzip.compress(html, compresslevel=9))
-    write_asset_table(UI / "dist", ROOT / "src" / "WebUi" / "WebAssets.h")
+    html = transform_shell(DIST_HTML.read_text(encoding="utf-8"))
+    write_header(gzip.compress(html.encode("utf-8"), compresslevel=9))
+    write_asset_table(UI / "dist", ASSET_HEADER)
     return True
 
 

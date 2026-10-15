@@ -40,23 +40,6 @@
       </header>
     </div>
   </div>
-  <script>
-    // If the app bundle (or its css) dies mid-transfer on the BLE-coex
-    // radio, show a retry button instead of a blank page.
-    window.addEventListener("error", (e) => {
-      if (window.__uiBooted || window.__uiFailed) return;
-      const tag = e.target && e.target.tagName;
-      if (tag === "SCRIPT" || tag === "LINK") {
-        window.__uiFailed = true;
-        const box = document.getElementById("bootbox");
-        if (box) {
-          box.classList.add("boot-failed");
-          const lead = box.querySelector(".lead");
-          if (lead) lead.textContent = "Load failed — the radio link dropped it.";
-        }
-      }
-    }, true);
-  </script>
   <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>
