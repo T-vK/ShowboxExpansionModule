@@ -93,6 +93,7 @@ let hardFailures = 0;
 for (let round = 1; round <= rounds; round++) {
   const engine = pickEngine(round);
   const useStale = staleShell && (engineName === "both" ? engine === "firefox" : round % 2 === 0);
+  const targetUrl = pickUrl(engine);
   const browser = await launchEngine(engine);
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -138,9 +139,9 @@ for (let round = 1; round <= rounds; round++) {
   const started = Date.now();
   let booted = false;
   let shellText = "";
-  let reloaded = false;
-  const reloadAtMs = timeoutMs / 3;
-  const targetUrl = pickUrl(engine);
+  let reloads = 0;
+  let lastReload = started;
+  const reloadEveryMs = timeoutMs / 3;
   try {
     await page.goto(targetUrl, { waitUntil: "commit", timeout: 30000 });
     const deadline = started + timeoutMs;
@@ -152,10 +153,12 @@ for (let round = 1; round <= rounds; round++) {
       }
       // A user taps reload when the page sits at 'Loading': on reload, "/"
       // goes to the network (network-first SW, no-cache shell) and gets the
-      // current shell with the resumable bootstrap.
-      if (!reloaded && Date.now() - started > reloadAtMs) {
-        reloaded = true;
-        await withTimeout(page.reload({ waitUntil: "commit", timeout: 30000 }), 32000, "reload");
+      // current shell with the resumable bootstrap. Fire-and-forget: a hung
+      // reload must never block the boot polling.
+      if (Date.now() - lastReload > reloadEveryMs) {
+        lastReload = Date.now();
+        reloads++;
+        page.reload({ waitUntil: "commit", timeout: 30000 }).catch(() => {});
       }
       shellText = (await withTimeout(
         page
@@ -177,10 +180,10 @@ for (let round = 1; round <= rounds; round++) {
   const non200 = requests.filter((r) => r.state !== "FAILED" && !r.state.startsWith("2"));
 
   if (booted) {
-    console.log(`round ${round} [${engine}${useStale ? ", stale-shell" : ""}${reloaded ? ", reloaded" : ""}]: PASS in ${elapsed}s`);
+    console.log(`round ${round} [${engine}${useStale ? ", stale-shell" : ""}${reloads ? `, ${reloads} reloads` : ""}]: PASS in ${elapsed}s`);
   } else {
     hardFailures++;
-    console.log(`round ${round} [${engine}${useStale ? ", stale-shell" : ""}${reloaded ? ", reloaded" : ""}]: FAIL after ${elapsed}s  shell="${shellText}"`);
+    console.log(`round ${round} [${engine}${useStale ? ", stale-shell" : ""}${reloads ? `, ${reloads} reloads` : ""}]: FAIL after ${elapsed}s  shell="${shellText}"`);
     console.log(`  requests: ${requests.length} (failed ${failed.length}, non-200 ${non200.length})`);
     for (const r of requests.slice(-12)) {
       console.log(`    ${r.state} ${r.url} ${r.err ?? r.mime ?? ""}`);

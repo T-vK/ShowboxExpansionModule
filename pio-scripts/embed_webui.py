@@ -210,7 +210,7 @@ BOOTSTRAP = """<script>
       var attempt = 0;
       function go() {
         attempt++;
-        if (attempt > 40) { reject(new Error("too many stalls")); return; }
+        if (attempt > 150) { reject(new Error("too many stalls")); return; }
         var ctrl = new AbortController();
         // Always range: a plain 200 carries Content-Encoding: gzip, which the
         // browser decodes transparently — our byte accounting must run on the
@@ -237,7 +237,7 @@ BOOTSTRAP = """<script>
             }
             var reader = res.body.getReader();
             function pump() {
-              return readChunk(reader, 5000, ctrl.signal).then(function (r) {
+              return readChunk(reader, 3500, ctrl.signal).then(function (r) {
                 if (r.done) {
                   clearTimeout(ctrl.__k);
                   if (total && got !== total) { throw new Error("short body"); }

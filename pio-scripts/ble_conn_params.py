@@ -21,8 +21,8 @@ old_scan = """  m_pConnParams.scan_itvl = 16;                                   
 
 new_scan = """  m_pConnParams.scan_itvl = 48;                                             // 30 ms. 100 ms missed AIRSTEP ads (HCI 13).
   m_pConnParams.scan_window = 16;                                           // 10 ms. Longer than the 128-byte UART FIFO (~11 ms) drops mixer↔base.
-  m_pConnParams.itvl_min = 0xA0;                                            // 200 ms. 100 ms offers fight AIRSTEP and storm LL_CONNECTION_UPDATE.
-  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms"""
+  m_pConnParams.itvl_min = 0x140;                                          // 400 ms. 200 ms BLE events + coex starve sustained TCP (ping any size flows, TCP dies); 400 ms halves the airtime tax.
+  m_pConnParams.itvl_max = 0x140;                                          // 400 ms"""
 
 old_ce = """  m_pConnParams.min_ce_len = BLE_GAP_INITIAL_CONN_MIN_CE_LEN;               // Minimum length of connection event in 0.625ms units
   m_pConnParams.max_ce_len = BLE_GAP_INITIAL_CONN_MAX_CE_LEN;               // Maximum length of connection event in 0.625ms units"""
@@ -81,13 +81,13 @@ if old_update_uncapped in updated:
 old_scan_mid = """  m_pConnParams.scan_itvl = 160;                                            // 100 ms. A 10 ms window equal to the interval starves Wi-Fi.
   m_pConnParams.scan_window = 32;                                           // 20 ms
   m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.
-  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms"""
+  m_pConnParams.itvl_max = 0x140;                                          // 400 ms"""
 if old_scan_mid in updated:
     updated = updated.replace(old_scan_mid, new_scan, 1)
 old_scan_160 = """  m_pConnParams.scan_itvl = 160;                                            // 100 ms. A 10 ms window equal to the interval starves Wi-Fi.
   m_pConnParams.scan_window = 16;                                           // 10 ms. Longer than the 128-byte UART FIFO (~11 ms) drops mixer↔base.
   m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.
-  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms"""
+  m_pConnParams.itvl_max = 0x140;                                          // 400 ms"""
 if old_scan_160 in updated:
     updated = updated.replace(old_scan_160, new_scan, 1)
 updated = updated.replace(
@@ -100,8 +100,8 @@ updated = updated.replace(
 )
 updated = updated.replace("  m_pConnParams.max_ce_len = 16;\n", "  m_pConnParams.max_ce_len = 8;\n")
 updated = updated.replace(
-    "  m_pConnParams.itvl_min = 0x50;                                            // 100 ms. Shorter than this starves HTTP.\n  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms",
-    "  m_pConnParams.itvl_min = 0xA0;                                            // 200 ms. 100 ms offers fight AIRSTEP and storm LL_CONNECTION_UPDATE.\n  m_pConnParams.itvl_max = 0xA0;                                            // 200 ms",
+    "  m_pConnParams.itvl_min = 0x50;\n  m_pConnParams.itvl_max = 0x140",
+    "  m_pConnParams.itvl_min = 0x140;\n  m_pConnParams.itvl_max = 0x140",
 )
 old_update_req = """      if (!rc && event->type == BLE_GAP_EVENT_CONN_UPDATE_REQ) {
         event->conn_update_req.self_params->itvl_min = client->m_pConnParams.itvl_min;
@@ -119,13 +119,13 @@ new_update_req = """      if (!rc && event->type == BLE_GAP_EVENT_CONN_UPDATE_RE
         self->supervision_timeout = peer != nullptr && peer->supervision_timeout != 0
           ? peer->supervision_timeout
           : client->m_pConnParams.supervision_timeout;
-        if (peer != nullptr && peer->itvl_min >= 0xA0) {
+        if (peer != nullptr && peer->itvl_min >= 0x140) {
           self->itvl_min = peer->itvl_min;
           self->itvl_max = peer->itvl_max >= peer->itvl_min ? peer->itvl_max : peer->itvl_min;
           self->latency = peer->latency;
         } else {
-          self->itvl_min = 0xA0;
-          self->itvl_max = 0xA0;
+          self->itvl_min = 0x140;
+          self->itvl_max = 0x140;
           self->latency = client->m_pConnParams.latency;
         }
       }"""
