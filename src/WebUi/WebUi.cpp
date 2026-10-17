@@ -36,9 +36,12 @@ static size_t fillFlash(const uint8_t* data, size_t len, uint8_t* buffer, size_t
     if (n > maxLen) {
         n = maxLen;
     }
-    // JTAG: 1024 B SPA chunks + AIRSTEP MIDI left :80 unacked (nrtx=7).
-    // 256 B still ACKs while BLE is live; 1 KB is fine after MIDI CCC drops.
-    const size_t cap = lanBleLive() ? 256 : 1024;
+    // JTAG-era note said 256 B still ACKs while BLE is live; that was the
+    // broken-coex era (reboot storms, 200 ms AIRSTEP). The resumable webui
+    // shell now recovers stalled transfers, so a full TCP segment per push
+    // is strictly better: 1460 B needs ~6x fewer event-loop round trips for
+    // the SPA bundle than 256 B.
+    const size_t cap = 1460;
     if (n > cap) {
         n = cap;
     }
@@ -58,7 +61,9 @@ static size_t tcpBodyChunk(size_t remain, size_t maxLen, size_t cap) {
 }
 
 static size_t spaChunkCap() {
-    return lanBleLive() ? 256 : 1024;
+    // Full TCP segment; see fillFlash. The resumable shell makes stalls
+    // recoverable, so big pushes no longer risk permanent mid-body death.
+    return 1460;
 }
 
 void sendJsonChunked(AsyncWebServerRequest* request, const char* json, size_t len) {
