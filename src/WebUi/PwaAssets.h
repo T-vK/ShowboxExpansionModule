@@ -45,7 +45,7 @@ static const char PWA_MANIFEST[] = R"MAN({
 }
 )MAN";
 
-static const char PWA_SW[] = R"SJS(const CACHE = "showboxmod-v18";
+static const char PWA_SW[] = R"SJS(const CACHE = "showboxmod-v19";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -62,19 +62,75 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Read the whole body before handing it over: a transfer that dies mid-body
-// (the BLE-coex radio stalls big HTTP responses partway) rejects here
-// instead of silently delivering a broken asset.
-async function fetchWhole(req) {
-  const res = await fetch(req);
-  if (!res || !res.ok) {
-    return res;
+// The BLE-coex radio stalls sustained TCP bodies mid-flight (ping of any
+// size flows; data+ACK interleaving dies for tens of seconds). Stream the
+// body, abort on inactivity, and resume from the exact byte with HTTP
+// Range until the whole file is here. Range slices are raw gzip bytes, so
+// the assembled response keeps the original Content-Encoding for the
+// browser to decode once, at the end.
+async function fetchResumable(req, startAt) {
+  let got = startAt;
+  let total = 0;
+  // Accumulate across resume attempts: `got` is the resume offset, the
+  // chunk list must hold every byte from the very first attempt.
+  const chunks = [];
+  for (let i = 0; i < 80; i++) {
+    const ctrl = new AbortController();
+    const headers = { Range: "bytes=" + got + "-" };
+    const killer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(req, { headers, signal: ctrl.signal, cache: "no-store" });
+      clearTimeout(killer);
+      if (res.status !== 200 && res.status !== 206) {
+        return res;
+      }
+      if (res.status === 200 && got > startAt) {
+        chunks.length = 0;
+        got = startAt; // server ignored Range: start over
+      }
+      const cr = res.headers.get("Content-Range");
+      total = cr
+        ? parseInt(cr.slice(cr.lastIndexOf("/") + 1), 10) || 0
+        : parseInt(res.headers.get("Content-Length") || "0", 10) || 0;
+      const reader = res.body.getReader();
+      const enc = new Headers(res.headers);
+      let mime = enc.get("Content-Type") || "application/octet-stream";
+      let isGzip = !!enc.get("Content-Encoding");
+      while (true) {
+        const t = setTimeout(() => ctrl.abort(), 3500);
+        let r;
+        try {
+          r = await reader.read();
+        } finally {
+          clearTimeout(t);
+        }
+        if (r.done) {
+          break;
+        }
+        chunks.push(r.value);
+        got += r.value.length;
+      }
+      if (total && got !== total) {
+        throw new Error("short body " + got + "/" + total);
+      }
+      const out = new Response(new Blob(chunks), {
+        status: 200,
+        headers: {
+          "Content-Type": mime,
+          "Content-Length": String(got),
+          "Content-Encoding": isGzip ? "gzip" : "identity",
+          "Cache-Control": "no-cache",
+        },
+      });
+      const copy = out.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+      return out;
+    } catch (err) {
+      clearTimeout(killer);
+      await new Promise((r) => setTimeout(r, 600));
+    }
   }
-  const buf = await res.arrayBuffer();
-  const headers = new Headers(res.headers);
-  headers.delete("Content-Encoding");
-  headers.delete("Content-Length");
-  return new Response(buf, { status: res.status, statusText: res.statusText, headers });
+  return fetch(req);
 }
 
 self.addEventListener("fetch", (event) => {
@@ -95,39 +151,23 @@ self.addEventListener("fetch", (event) => {
   if (path.startsWith("/api/") || path === "/ws" || path.startsWith("/ws")) {
     return;
   }
-  // Range/resume fetches (the shell's stall-proof loader) must hit the
-  // network directly — sliced bodies are raw gzip and must not be decoded
-  // or cached individually.
-  if (req.headers.has("range")) {
-    return;
-  }
-  // Hashed build assets are immutable: cache-first, so repeat loads never
-  // touch the radio. On a fetch that fails or dies mid-body, retry a few
-  // times before giving up.
+  // Hashed build assets (including module imports and stylesheets): resume
+  // across radio stalls, then cache-first forever (names are immutable).
   if (path.startsWith("/assets/")) {
     event.respondWith((async () => {
       const hit = await caches.match(req);
       if (hit) {
         return hit;
       }
-      let last = null;
-      // The BLE-coex radio has dead windows of several seconds; spread the
-      // attempts across ~15 s so one window cannot exhaust them.
-      for (let i = 0; i < 8; i++) {
-        try {
-          const res = await fetchWhole(req);
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(req, copy));
-            return res;
-          }
-          last = res;
-        } catch (err) {
-          last = null;
+      let startAt = 0;
+      const rm = req.headers.get("range");
+      if (rm && rm.startsWith("bytes=")) {
+        const s = parseInt(rm.slice(6), 10);
+        if (s > 0 && !isNaN(s)) {
+          startAt = s;
         }
-        await new Promise((r) => setTimeout(r, 1500 + 500 * i));
       }
-      return last || fetch(req);
+      return fetchResumable(req, startAt);
     })());
     return;
   }
@@ -142,8 +182,7 @@ self.addEventListener("fetch", (event) => {
       })
       .catch(() => caches.match(req).then((hit) => hit || caches.match("/")))
   );
-});
-)SJS";
+});)SJS";
 
 static const uint8_t PWA_ICON_192[] PROGMEM = {
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
