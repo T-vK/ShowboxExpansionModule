@@ -276,13 +276,14 @@ static void lanStaPhy() {
     // module hit the gateway-death cycle ~every 40 s and the watchdog reboot
     // looped (boot #275->#295). Reverted to 11b until the root cause is
     // understood — the 11g experiment remains documented in git history.
-    // 2026-10-17 re-test of 11g/54M with everything else fixed (400 ms
-    // AIRSTEP interval, 22 KB heap floor, resumable webui): transfers flew
-    // (<1 s for the 37 KB bundle) but the gateway-death cycle returned and
-    // the module reboot-looped (boot #54+ reset=SW within minutes) — same
-    // verdict as 2026-10-13. The coex scheduler cannot hold the link on
-    // OFDM rates. Stay on 11b; evening congestion is handled by the
-    // resumable webui loader instead of the PHY.
+    // 2026-10-17 re-test of 11g/54M fixed rate with everything else fixed:
+    // transfers flew (<1 s for the 37 KB bundle) but the gateway-death cycle
+    // returned and the module reboot-looped (boot #54+ reset=SW within
+    // minutes) — same verdict as 2026-10-13. That test FORCED 54M; a fixed
+    // rate with no adaptation turns every congestion dip into retransmit
+    // storms. 2026-10-18: retry 11g with AUTO rate adaptation — if the death
+    // cycle still appears, the coex scheduler simply cannot hold OFDM and we
+    // stay on 11b for good.
     const uint8_t proto = WIFI_PROTOCOL_11B;
     if (staProto == proto) {
         return;

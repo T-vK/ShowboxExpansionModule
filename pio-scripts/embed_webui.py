@@ -219,17 +219,28 @@ BOOTSTRAP = r"""<script>
     return go();
   }
   swReady.then(function () {
-    STYLES.forEach(function (href) {
-      var l = document.createElement("link");
-      l.rel = "stylesheet";
-      l.href = href;
-      document.head.appendChild(l);
+    // Strictly serialize: two concurrent transfers to the module stall one
+    // of them (AsyncTCP under coex). Load the stylesheet first, then the
+    // entry module, then the lazy chunks on demand.
+    var cssDone = Promise.resolve();
+    if (STYLES.length) {
+      cssDone = new Promise(function (resolve) {
+        var l = document.createElement("link");
+        l.rel = "stylesheet";
+        l.href = STYLES[0];
+        l.onload = function () { setTimeout(resolve, 300); };
+        l.onerror = function () { setTimeout(resolve, 300); };
+        document.head.appendChild(l);
+        setTimeout(resolve, 8000); // never wait forever for css
+      });
+    }
+    cssDone.then(function () {
+      var chain = Promise.resolve();
+      MODS.forEach(function (src) {
+        chain = chain.then(function () { return importWithRetry(src, 3); });
+      });
+      chain.catch(function () { fail(); });
     });
-    var chain = Promise.resolve();
-    MODS.forEach(function (src) {
-      chain = chain.then(function () { return importWithRetry(src, 3); });
-    });
-    chain.catch(function () { fail(); });
   });
 })();
 </script>"""

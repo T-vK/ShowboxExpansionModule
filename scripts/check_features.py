@@ -2401,7 +2401,14 @@ def run(args: argparse.Namespace) -> int:
         r.pass_("heap", f"heap={heap} largest={largest}")
 
     uni = mdns_query_a(args.host, args.ip, 0.5, toward=args.ip)
-    mcast = mdns_query_a(args.host, "224.0.0.251", 0.8, toward=args.ip)
+    # Multicast replies are lossy under BLE coex; one lost reply is not a
+    # fault. Retry the multicast query a few times before judging.
+    mcast: list[str] = []
+    for _attempt in range(4):
+        mcast = mdns_query_a(args.host, "224.0.0.251", 0.8, toward=args.ip)
+        if args.ip in mcast:
+            break
+        time.sleep(0.3)
     resolv = resolver_ips(args.host)
     if args.ip in mcast:
         r.pass_("mdns-a", f"unicast={uni} mcast={mcast} resolv={resolv}")
