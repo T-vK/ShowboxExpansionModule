@@ -97,7 +97,6 @@ void sendJsonChunked(AsyncWebServerRequest* request, const char* json, size_t le
             return n;
         });
     response->addHeader("Cache-Control", "no-store");
-    response->addHeader("Connection", "close");
     request->send(response);
 }
 
@@ -117,7 +116,6 @@ void sendHealthHtml(AsyncWebServerRequest* request) {
             return n;
         });
     response->addHeader("Cache-Control", "no-store");
-    response->addHeader("Connection", "close");
     request->send(response);
 }
 
@@ -167,7 +165,6 @@ void sendWebUi(AsyncWebServerRequest* request) {
     // that no longer exist after an update — that deadlock kept browsers on
     // 'Loading mixer…' forever. The shell is ~2 KB; always revalidate it.
     response->addHeader("Cache-Control", "no-cache");
-    response->addHeader("Connection", "close");
     request->send(response);
 }
 
@@ -292,7 +289,6 @@ static void sendTextAsset(AsyncWebServerRequest* request, const char* type, cons
             return n;
         });
     response->addHeader("Cache-Control", cache);
-    response->addHeader("Connection", "close");
     request->send(response);
 }
 
