@@ -167,7 +167,7 @@ def write_asset_table(dist_dir, header_path):
     print("Embedded %d Web UI asset files -> %s" % (count, header_path))
 
 
-BOOTSTRAP = """<script>
+BOOTSTRAP = r"""<script>
 (function () {
   var box = document.getElementById("bootbox");
   var MODS = __MODS__;
@@ -180,138 +180,57 @@ BOOTSTRAP = """<script>
     var lead = box.querySelector(".lead");
     if (lead) lead.textContent = msg || "Load failed — the radio link dropped it.";
   }
+  // A hung transfer produces no error event; show a way out after 12 s.
   setTimeout(function () {
     if (!window.__uiBooted && !window.__uiFailed) {
       fail("Still loading — the radio link is busy. Tap Retry.");
     }
   }, 12000);
-  // The BLE-coex radio stalls big TCP bodies mid-flight for tens of seconds
-  // (ping of any size still flows; sustained data+ACK starves). Stream the
-  // body, abort on inactivity, and resume from the exact byte via Range
-  // until the whole file is here.
-  function readChunk(reader, ms, signal) {
-    return new Promise(function (resolve, reject) {
-      var t = setTimeout(function () { reject(new Error("read stall")); }, ms);
-      signal.addEventListener("abort", function () {
-        clearTimeout(t); reject(new Error("aborted"));
-      }, { once: true });
-      reader.read().then(function (v) {
-        clearTimeout(t); resolve(v);
-      }, function (e) {
-        clearTimeout(t); reject(e);
-      });
-    });
-  }
-  function fetchResumable(url) {
-    return new Promise(function (resolve, reject) {
-      var chunks = [];
-      var got = 0;
-      var total = 0;
-      var attempt = 0;
-      function go() {
-        attempt++;
-        if (attempt > 150) { reject(new Error("too many stalls")); return; }
-        var ctrl = new AbortController();
-        // Always range: a plain 200 carries Content-Encoding: gzip, which the
-        // browser decodes transparently — our byte accounting must run on the
-        // raw gzip bytes, and a 206 slice is exactly that.
-        var headers = { Range: "bytes=" + got + "-" };
-        var total0 = total;
-        // Header stall: the server can accept the connection and never answer
-        // (AsyncTCP event stall under coex). 8 s, not 60.
-        var hdrTimer = setTimeout(function () { ctrl.abort(); }, 8000);
-        fetch(url, { headers: headers, signal: ctrl.signal, cache: "no-store" })
-          .then(function (res) {
-            if (res.status !== 200 && res.status !== 206) {
-              throw new Error("http " + res.status);
-            }
-            if (res.status === 200 && got > 0) {
-              chunks = []; got = 0;  // server ignored Range: start over
-            }
-            var cr = res.headers.get("Content-Range");
-            if (cr) {
-              var slash = cr.lastIndexOf("/");
-              total = parseInt(cr.slice(slash + 1), 10) || 0;
-            } else {
-              total = parseInt(res.headers.get("Content-Length") || "0", 10) || 0;
-            }
-            var reader = res.body.getReader();
-            function pump() {
-              return readChunk(reader, 3500, ctrl.signal).then(function (r) {
-                if (r.done) {
-                  clearTimeout(ctrl.__k);
-                  if (total && got !== total) { throw new Error("short body"); }
-                  resolve(new Blob(chunks));
-                  return;
-                }
-                chunks.push(r.value);
-                got += r.value.length;
-                return pump();
-              });
-            }
-            ctrl.__k = setTimeout(function () { ctrl.abort(); }, 60000);
-            return pump();
-          })
-          .catch(function () {
-            clearTimeout(ctrl.__k);
-            setTimeout(go, 700);
-          });
-      }
-      go();
-    });
-  }
-  function blobUrl(blob, type) {
-    return URL.createObjectURL(new Blob([blob], { type: type }));
-  }
-  function gunzipText(blob) {
-    if (!("DecompressionStream" in window)) {
-      throw new Error("no DecompressionStream");
-    }
-    return new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text();
-  }
-  // Take over from any stale service worker immediately; ranged fetches
-  // bypass it anyway.
+  // The service worker resumes stalled asset transfers with HTTP Range
+  // (streaming read, inactivity abort, byte-exact resume). Once it controls
+  // the page, a plain module import or stylesheet link cannot stall forever,
+  // so no blob assembly and no specifier rewriting are needed here — every
+  // chunk shares one module graph and one preact instance.
+  var swReady = Promise.resolve();
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(function () {});
+    swReady = navigator.serviceWorker.register("/sw.js").then(function () {
+      return Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise(function (r) { setTimeout(r, 2500); }),
+      ]);
+    }).catch(function () {});
   }
-  var chain = Promise.resolve();
-  STYLES.forEach(function (href) {
-    chain = chain.then(function () {
-      if (!("DecompressionStream" in window)) {
-        var l = document.createElement("link");
-        l.rel = "stylesheet";
-        l.href = href;
-        document.head.appendChild(l);
-        return;
-      }
-      return fetchResumable(href)
-        .then(function (blob) { return gunzipText(blob); })
-        .then(function (text) {
-          var l = document.createElement("link");
-          l.rel = "stylesheet";
-          l.href = blobUrl(text, "text/css");
-          document.head.appendChild(l);
-        })
-        .catch(function () {
-          var l = document.createElement("link");
-          l.rel = "stylesheet";
-          l.href = href;
-          document.head.appendChild(l);
-        });
+  function importWithRetry(src, tries) {
+    var attempt = 0;
+    function go() {
+      attempt++;
+      if (attempt > tries) { throw new Error("import kept failing: " + src); }
+      var mod = import(src);
+      var watchdog = new Promise(function (_, rej) {
+        setTimeout(function () { rej(new Error("import timeout")); }, 150000);
+      });
+      return Promise.race([mod, watchdog]).then(function (v) {
+        window.__uiBooted = true;
+        return v;
+      }, function () {
+        return new Promise(function (r) { setTimeout(r, 900); }).then(function () { return go(); });
+      });
+    }
+    return go();
+  }
+  swReady.then(function () {
+    STYLES.forEach(function (href) {
+      var l = document.createElement("link");
+      l.rel = "stylesheet";
+      l.href = href;
+      document.head.appendChild(l);
     });
-  });
-  MODS.forEach(function (src) {
-    chain = chain.then(function () {
-      return fetchResumable(src)
-        .then(function (blob) { return gunzipText(blob); })
-        .then(function (text) {
-          var u = blobUrl(text, "text/javascript");
-          return import(u);
-        });
+    var chain = Promise.resolve();
+    MODS.forEach(function (src) {
+      chain = chain.then(function () { return importWithRetry(src, 3); });
     });
+    chain.catch(function () { fail(); });
   });
-  chain.then(function () { window.__uiBooted = true; })
-       .catch(function () { fail(); });
 })();
 </script>"""
 

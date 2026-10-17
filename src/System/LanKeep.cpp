@@ -94,7 +94,12 @@ static bool lanPcbTxZombie(const struct tcp_pcb* pcb) {
     // JTAG 2026-10-11 reload: ESTABLISHED :80 nrtx=7 unsent set
     // unacked nil while AIRSTEP MIDI notifies. Small HTTP still
     // ACKed. nrtx>=2 on ESTABLISHED was too eager (killed /services).
-    return pcb->state == ESTABLISHED && pcb->nrtx >= 8;
+    // nrtx>=8 (2026-10-15) let dead transfer PCBs sit for minutes
+    // draining internal RAM and starving later transfers — the browser
+    // saw ~100% mid-body stalls while clean single transfers passed.
+    // The webui shell now resumes aborted transfers via Range, so an
+    // aggressive abort costs the client one resume, not the page.
+    return pcb->state == ESTABLISHED && pcb->nrtx >= 4;
 }
 
 static bool lanUnicastTxStuck() {
@@ -271,6 +276,13 @@ static void lanStaPhy() {
     // module hit the gateway-death cycle ~every 40 s and the watchdog reboot
     // looped (boot #275->#295). Reverted to 11b until the root cause is
     // understood — the 11g experiment remains documented in git history.
+    // 2026-10-17 re-test of 11g/54M with everything else fixed (400 ms
+    // AIRSTEP interval, 22 KB heap floor, resumable webui): transfers flew
+    // (<1 s for the 37 KB bundle) but the gateway-death cycle returned and
+    // the module reboot-looped (boot #54+ reset=SW within minutes) — same
+    // verdict as 2026-10-13. The coex scheduler cannot hold the link on
+    // OFDM rates. Stay on 11b; evening congestion is handled by the
+    // resumable webui loader instead of the PHY.
     const uint8_t proto = WIFI_PROTOCOL_11B;
     if (staProto == proto) {
         return;

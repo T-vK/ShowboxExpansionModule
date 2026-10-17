@@ -114,6 +114,13 @@ for (let round = 1; round <= rounds; round++) {
   const requests = [];
   const consoleErrors = [];
   const unfinished = new Set();
+  let sawWebsocket = false;
+  // The live socket only opens after the app has mounted — a stronger boot
+  // signal than polling a variable across reloads and radio churn.
+  page.on("websocket", () => {
+    sawWebsocket = true;
+    unfinished.delete("ws");
+  });
   page.on("requestfailed", (req) => {
     unfinished.delete(req.url());
     requests.push({ url: req.url(), state: "FAILED", err: req.failure()?.errorText });
@@ -148,14 +155,15 @@ for (let round = 1; round <= rounds; round++) {
     while (Date.now() < deadline) {
       booted = (await withTimeout(
         page.evaluate(() => window.__uiBooted === true), 5000, "boot-poll")) === true;
-      if (booted) {
+      if (booted || sawWebsocket) {
         break;
       }
       // A user taps reload when the page sits at 'Loading': on reload, "/"
       // goes to the network (network-first SW, no-cache shell) and gets the
       // current shell with the resumable bootstrap. Fire-and-forget: a hung
-      // reload must never block the boot polling.
-      if (Date.now() - lastReload > reloadEveryMs) {
+      // reload must never block the boot polling, and it must not interrupt
+      // a boot that is still making progress (the live socket proves one).
+      if (Date.now() - lastReload > reloadEveryMs && !sawWebsocket) {
         lastReload = Date.now();
         reloads++;
         page.reload({ waitUntil: "commit", timeout: 30000 }).catch(() => {});

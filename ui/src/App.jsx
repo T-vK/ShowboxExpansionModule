@@ -1,17 +1,21 @@
+import { lazy, Suspense } from "preact/compat";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { MixerBoard } from "./mixer/MixerBoard.jsx";
-import { Connections } from "./pages/Connections.jsx";
-import { ActionsPanel } from "./actions/ActionsPanel.jsx";
-import { ConsolePanel } from "./console/ConsolePanel.jsx";
-import { DebugPanel } from "./debug/DebugPanel.jsx";
-import { DiagnosticsPanel } from "./diag/DiagnosticsPanel.jsx";
 import { LiveProvider } from "./live/LiveContext.jsx";
 import { StatusCluster } from "./status/StatusCluster.jsx";
 import { Nav } from "./Nav.jsx";
 import { Pad } from "./mixer/Controls.jsx";
 import { IconBars, IconCompress, IconExpand } from "./mixer/Icons.jsx";
-import { PwaInstallNavButton } from "./pwa/Install.jsx";
 import { pathOf } from "./route.js";
+
+// Tools are only needed when the user opens them; keep them out of the
+// first-load bundle that crosses the BLE-coex radio.
+const ActionsPanel = lazy(() => import("./actions/ActionsPanel.jsx").then((m) => ({ default: m.ActionsPanel })));
+const Connections = lazy(() => import("./pages/Connections.jsx").then((m) => ({ default: m.Connections })));
+const ConsolePanel = lazy(() => import("./console/ConsolePanel.jsx").then((m) => ({ default: m.ConsolePanel })));
+const DebugPanel = lazy(() => import("./debug/DebugPanel.jsx").then((m) => ({ default: m.DebugPanel })));
+const DiagnosticsPanel = lazy(() => import("./diag/DiagnosticsPanel.jsx").then((m) => ({ default: m.DiagnosticsPanel })));
+const PwaInstallNavButton = lazy(() => import("./pwa/Install.jsx").then((m) => ({ default: m.PwaInstallNavButton })));
 
 function tabOf(path) {
   if (path === "/actions") return "actions";
@@ -134,11 +138,13 @@ export function App() {
             onToggleStage={toggleStage}
           />
           <div class="page-body">
-            {tab === "actions" ? <ActionsPanel /> : null}
-            {tab === "system" ? <Connections embedded page={page} /> : null}
-            {tab === "diag" ? <DiagnosticsPanel /> : null}
-            {tab === "console" ? <ConsolePanel /> : null}
-            {tab === "debug" ? <DebugPanel /> : null}
+            <Suspense fallback={<div class="lead">Loading…</div>}>
+              {tab === "actions" ? <ActionsPanel /> : null}
+              {tab === "system" ? <Connections embedded page={page} /> : null}
+              {tab === "diag" ? <DiagnosticsPanel /> : null}
+              {tab === "console" ? <ConsolePanel /> : null}
+              {tab === "debug" ? <DebugPanel /> : null}
+            </Suspense>
           </div>
         </>
       )}
@@ -147,7 +153,9 @@ export function App() {
           <div class="nav-drawer-panel" onClick={(event) => event.stopPropagation()}>
             <h2>ShowboxMod</h2>
             <Nav current={path} />
-            <PwaInstallNavButton />
+            <Suspense fallback={null}>
+              <PwaInstallNavButton />
+            </Suspense>
             <button type="button" class="ghost" onClick={() => setMenuOpen(false)}>Close</button>
           </div>
         ) : null}
