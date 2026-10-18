@@ -27,7 +27,7 @@ function flag(name) {
 
 const rounds = parseInt(arg("--rounds", "3"), 10);
 const timeoutMs = parseInt(arg("--timeout", "120000"), 10);
-const url = arg("--url", "http://showbox.local/");
+const url = arg("--url", "http://192.168.3.55/");
 const staleShell = flag("--stale-shell") || flag("--all-scenarios");
 const engineName = arg("--engine", flag("--all-scenarios") ? "both" : "chromium");
 

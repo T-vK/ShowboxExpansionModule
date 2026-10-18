@@ -298,6 +298,7 @@ private:
     uint32_t wedgeSinceMs = 0;
     uint32_t wedgeLastAtMs = 0;
     uint32_t uartUpSinceMs = 0;
+    uint32_t lastUartRebootMs = 0;
     uint8_t wedgeStage = 0;
     uint8_t wedgeUnplugs = 0;
     UARTInterceptor interceptor;

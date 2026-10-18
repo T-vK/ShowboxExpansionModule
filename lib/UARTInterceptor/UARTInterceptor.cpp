@@ -2,6 +2,7 @@
 #include <cstring>
 #include "soc/uart_reg.h"
 #include "hal/uart_ll.h"
+#include "driver/gpio.h"
 #include "esp_intr_alloc.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -614,8 +615,14 @@ void UARTInterceptor::wireUnplug(uint32_t ms) {
     }
     // Detach both base-side pins: the base's RX floats, exactly like the
     // physical unplug the user demonstrated clears a wedged base.
-    uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
-        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    // NOTE: uart_set_pin with UART_PIN_NO_CHANGE keeps pins ATTACHED — it
+    // never floats the wire (the first implementation was a silent no-op,
+    // which is why three software unplug rounds achieved nothing while the
+    // user's physical unplug worked). gpio_reset_pin returns the pad to
+    // plain GPIO input — the UART peripheral keeps clocking into the void.
+    // unplugTick re-matrixes the UART signals back via uart_set_pin.
+    gpio_reset_pin(static_cast<gpio_num_t>(pinTx1));
+    gpio_reset_pin(static_cast<gpio_num_t>(pinRx1));
     uart_ll_txfifo_rst(UART_LL_GET_HW(UART_NUM_1));
     uart_ll_rxfifo_rst(UART_LL_GET_HW(UART_NUM_1));
     pendTo1.head = 0;

@@ -322,6 +322,8 @@ bool UltimateBaseFirmware::startSetupPortal(uint32_t timeoutMs) {
     if (_wifiManager == nullptr) {
         return false;
     }
+    // Provisioning needs the AP interface back (freed after boot connect).
+    WiFi.mode(WIFI_AP_STA);
     _wifiManager->setConfigPortalTimeout((timeoutMs + 999) / 1000);
     _wifiManager->startConfigPortal("ShowboxExpansionModuleAP", "showbox");
     return _wifiManager->getConfigPortalActive();
@@ -357,6 +359,10 @@ void UltimateBaseFirmware::initializeWifi() {
 
     if (_wifiManager->autoConnect("ShowboxExpansionModuleAP", "showbox")) {
         Debug.println("Connected to WiFi!");
+        // Free the AP interface's buffers before BLE/HID init: the HID
+        // device creation needs several KB of internal RAM and the AP
+        // (provisioning only) eats ~10 KB. startSetupPortal re-enables it.
+        WiFi.mode(WIFI_STA);
     } else {
         Debug.println("Failed to connect to WiFi. Mixer hotspot will stay up.");
     }
