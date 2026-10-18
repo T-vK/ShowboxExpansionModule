@@ -181,7 +181,21 @@ new_task = """static bool customTaskCreateUniversal(
 #endif
 }"""
 tcp_updated = tcp_text
-if "__task_psram_patched__" not in tcp_updated and "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS" not in tcp_updated:
+if "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS" not in tcp_updated:
+    old_compact = """static bool customTaskCreateUniversal(
+  TaskFunction_t pxTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority,
+  TaskHandle_t *const pxCreatedTask, const BaseType_t xCoreID
+) {
+#ifndef CONFIG_FREERTOS_UNICORE
+  if (xCoreID >= 0 && xCoreID < 2) {
+    return xTaskCreatePinnedToCore(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask, xCoreID);
+  } else {
+#endif
+    return xTaskCreate(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask);
+#ifndef CONFIG_FREERTOS_UNICORE
+  }
+#endif
+}"""
     old_multi = """static bool customTaskCreateUniversal(
   TaskFunction_t pxTaskCode,
   const char* const pcName,
@@ -200,30 +214,192 @@ if "__task_psram_patched__" not in tcp_updated and "MALLOC_CAP_SPIRAM | MALLOC_C
   }
 #endif
 }"""
-    old_compact = """static bool customTaskCreateUniversal(
-  TaskFunction_t pxTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority,
-  TaskHandle_t *const pxCreatedTask, const BaseType_t xCoreID
-) {
-#ifndef CONFIG_FREERTOS_UNICORE
-  if (xCoreID >= 0 && xCoreID < 2) {
-    return xTaskCreatePinnedToCore(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask, xCoreID);
-  } else {
-#endif
-    return xTaskCreate(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask);
-#ifndef CONFIG_FREERTOS_UNICORE
-  }
-#endif
-}"""
     if old_compact in tcp_updated:
         tcp_updated = tcp_updated.replace(old_compact, new_task, 1)
     elif old_multi in tcp_updated:
         tcp_updated = tcp_updated.replace(old_multi, new_task, 1)
     else:
-        raise SystemExit("ble_conn_params.py: AsyncTCP customTaskCreateUniversal layout changed and the PSRAM task-stack patch no longer matches — re-port it (src: %s)" % tcp)
-    if "#include <esp_heap_caps.h>" not in tcp_updated:
+        raise SystemExit("ble_conn_params.py: AsyncTCP customTaskCreateUniversal layout changed — re-port the PSRAM task patch (src: %s)" % tcp)
+    if "#include <esp_heap_caps.h>" not in tcp_updated and tcp_updated:
         tcp_updated = tcp_updated.replace('#include "AsyncTCP.h"\n', '#include "AsyncTCP.h"\n#include <esp_heap_caps.h>\n', 1)
     open(tcp, "w", encoding="utf-8").write(tcp_updated)
     print("async_tcp: PSRAM task-stack patch applied to %s" % tcp)
+
+def skip_mtu_on_connect(path):
+    try:
+        source = open(path, encoding="utf-8").read()
+    except OSError:
+        return
+    olds = [
+        """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+        // The pedal starts this exchange itself. Already-running means the
+        // completion event is still coming; releasing early signals the
+        // waiter twice and reboots the module.
+        if (rc == BLE_HS_EALREADY) {
+          return 0;
+        }
+        if (rc != 0) {
+          log_e("BLEClient", "MTU exchange error; rc=%d %s", rc, BLEUtils::returnCodeToString(rc));
+          break;
+        }
+
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }""",
+        """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+        // The pedal may start this exchange itself. Already-running means
+        // the completion event is still coming.
+        if (rc == BLE_HS_EALREADY) {
+          return 0;
+        }
+        if (rc != 0) {
+          log_e("BLEClient", "MTU exchange error; rc=%d %s", rc, BLEUtils::returnCodeToString(rc));
+          break;
+        }
+
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }""",
+        """        rc = ble_gattc_exchange_mtu(client->m_conn_id, nullptr, nullptr);
+        if (rc != 0) {
+          log_e("BLEClient", "MTU exchange error; rc=%d %s", rc, BLEUtils::returnCodeToString(rc));
+          break;
+        }
+
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }""",
+    ]
+    new = """        // Skip ATT MTU exchange. Default 23-byte PDUs keep AIRSTEP CEs
+        // short; MTU 256 / DLE 251 held PTA until ARP died.
+        if (BLESecurity::m_securityEnabled && BLESecurity::m_forceSecurity) {
+          BLESecurity::startSecurity(client->m_conn_id);
+        }
+        rc = 0;
+        break;"""
+    updated = source
+    for old in olds:
+        if old in updated:
+            updated = updated.replace(old, new, 1)
+            break
+    if updated != source:
+        open(path, "w", encoding="utf-8").write(updated)
+
+skip_mtu_on_connect(client)
+
+# NimBLE memset's advertising params to 0. A 0 interval is HCI 20–40 ms, and
+# start() is a no-op if GAP is already active, so setMinInterval never lands.
+# Put 200–400 ms on the first start so showbox.local can finish TCP.
+adv = join(
+    env.PioPlatform().get_package_dir("framework-arduinoespressif32"),
+    "libraries", "BLE", "src", "BLEAdvertising.cpp",
+)
+try:
+    adv_text = open(adv, encoding="utf-8").read()
+except OSError:
+    adv_text = ""
+old_nimble_reset = """  m_advParams.conn_mode = BLE_GAP_CONN_MODE_UND;
+  m_advParams.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  m_customAdvData = false;"""
+new_nimble_reset = """  m_advParams.conn_mode = BLE_GAP_CONN_MODE_UND;
+  m_advParams.disc_mode = BLE_GAP_DISC_MODE_GEN;
+  m_advParams.itvl_min = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.
+  m_advParams.itvl_max = 0x1400;  // 3200 ms
+  m_customAdvData = false;"""
+old_blue_int = """  m_advParams.adv_int_min = 0x20;
+  m_advParams.adv_int_max = 0x40;"""
+new_blue_int = """  m_advParams.adv_int_min = 0x400;
+  m_advParams.adv_int_max = 0x800;"""
+if old_nimble_reset in adv_text:
+    adv_text = adv_text.replace(old_nimble_reset, new_nimble_reset, 1)
+if old_blue_int in adv_text:
+    adv_text = adv_text.replace(old_blue_int, new_blue_int, 1)
+adv_text = adv_text.replace(
+    "  m_advParams.itvl_min = 0x400;  // 640 ms. Library 0 means HCI 20 ms and starves HTTP.\n  m_advParams.itvl_max = 0x800;  // 1280 ms",
+    "  m_advParams.itvl_min = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.\n  m_advParams.itvl_max = 0x1400;  // 3200 ms",
+)
+adv_text = adv_text.replace(
+    "  m_advParams.itvl_min = 0x800;  // 1280 ms. Library 0 means HCI 20 ms and starves HTTP.\n  m_advParams.itvl_max = 0xC00;  // 1920 ms",
+    "  m_advParams.itvl_min = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.\n  m_advParams.itvl_max = 0x1400;  // 3200 ms",
+)
+# Do not stop a live advert to apply intervals. stop/start every second plus
+# AIRSTEP held the PTA on BLE until ARP died.
+adv_text = adv_text.replace(
+    """  if (ble_gap_adv_active()) {
+    ble_gap_adv_stop();
+  }""",
+    """  if (ble_gap_adv_active()) {
+    return true;
+  }""",
+)
+# Central connect can host-reset. The library then restarts forever-ads by
+# itself, which is the dual-role PTA lock that kills ARP/ICMP.
+adv_text = adv_text.replace(
+    """void BLEAdvertising::onHostSync() {
+  log_v("Host re-synced");
+
+  m_advDataSet = false;
+  // If we were advertising forever, restart it now
+  if (m_duration == 0) {
+    start(m_duration, m_advCompCB);
+  } else {
+    // Otherwise we should tell the app that advertising stopped.
+    advCompleteCB();
+  }
+}  // onHostSync""",
+    """void BLEAdvertising::onHostSync() {
+  log_v("Host re-synced");
+
+  m_advDataSet = false;
+  advCompleteCB();
+}  // onHostSync""",
+)
+if adv_text:
+    open(adv, "w", encoding="utf-8").write(adv_text)
+
+# Arduino-ESP32 NimBLE is built with CE_LENGTH_TYPE_ORIG and modem sleep off.
+# nimble_port_init() applies those baked defaults. Init the controller ourselves
+# with HCI CE length + modem sleep, then start only the NimBLE host.
+dev = join(
+    env.PioPlatform().get_package_dir("framework-arduinoespressif32"),
+    "libraries", "BLE", "src", "BLEDevice.cpp",
+)
+try:
+    dev_text = open(dev, encoding="utf-8").read()
+except OSError:
+    dev_text = ""
+old_nimble_init = """#if defined(CONFIG_NIMBLE_ENABLED)
+  errRc = nimble_port_init();
+  if (errRc != ESP_OK) {
+    log_e("nimble_port_init: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+    return false;
+  }"""
+new_nimble_init = """#if defined(CONFIG_NIMBLE_ENABLED)
+  {
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    bt_cfg.sleep_mode = ESP_BT_SLEEP_MODE_1;
+    bt_cfg.sleep_clock = ESP_BT_SLEEP_CLOCK_MAIN_XTAL;
+    bt_cfg.ce_len_type = ESP_BLE_CE_LEN_TYPE_CE;
+    bt_cfg.ble_ping_en = 0;
+    errRc = esp_bt_controller_init(&bt_cfg);
+    if (errRc != ESP_OK && errRc != ESP_ERR_INVALID_STATE) {
+      log_e("esp_bt_controller_init: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+      return false;
+    }
+    errRc = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    if (errRc != ESP_OK && errRc != ESP_ERR_INVALID_STATE) {
+      log_e("esp_bt_controller_enable: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+      return false;
+    }
+  }
+  errRc = esp_nimble_init();
+  if (errRc != ESP_OK) {
+    log_e("esp_nimble_init: rc=%d %s", errRc, GeneralUtils::errorToString(errRc));
+    return false;
+  }"""
+if old_nimble_init in dev_text:
+    dev_text = dev_text.replace(old_nimble_init, new_nimble_init, 1)
+    open(dev, "w", encoding="utf-8").write(dev_text)
 
 # HTTP responses malloc the whole TCP window in internal RAM. After dual-role
 # BLE that allocation fails, so / and /services come back empty or hang.
@@ -423,3 +599,24 @@ new_dup = """  // HOGP uses several 0x2A4D Report characteristics (keyboard, mou
   }"""
 if old_dup in svc_text:
     open(svc_path, "w", encoding="utf-8").write(svc_text.replace(old_dup, new_dup, 1))
+
+# Loud post-verification: a framework upgrade that restructures the BLE
+# library would silently revert the coex-critical patches (400 ms interval,
+# MTU 23, capped connection events, modem-sleep init) and reintroduce the
+# gateway-death regime. Refuse to build without them.
+def _ble_marker_check():
+    import os as _os
+    base = join(env.PioPlatform().get_package_dir("framework-arduinoespressif32"), "libraries", "BLE", "src")
+    checks = [
+        (join(base, "BLEClient.cpp"), ["0x140", "Default 23-byte PDUs"]),
+        (join(base, "BLEDevice.cpp"), ["ble_ping_en = 0", "ESP_BLE_CE_LEN_TYPE_CE"]),
+        (join(base, "BLEAdvertising.cpp"), ["itvl_min = 0x1000"]),
+    ]
+    for path, markers in checks:
+        if not _os.path.isfile(path):
+            continue
+        text = open(path, encoding="utf-8").read()
+        for marker in markers:
+            if marker not in text:
+                raise SystemExit("ble_conn_params.py: BLE marker %r missing in %s — the framework changed and the coex-critical patch no longer applies. Re-port ble_conn_params.py before flashing." % (marker, path))
+_ble_marker_check()
