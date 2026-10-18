@@ -4,9 +4,10 @@
 #include <esp_bt.h>
 #include <esp_wifi.h>
 
-// NimBLE is built with CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL, so every
-// host buffer lands in DIRAM and HTTP/ICMP starve. Controller DMA still uses
-// bt_osi_mem_*_internal; those symbols are not wrapped.
+// Newer IDF (55.03.312 framework) removed the S3 bt_osi_mem_* allocator —
+// NimBLE host buffers are allocated by the port itself, so the malloc/calloc
+// PSRAM wraps are gone. What remains is the coex-critical controller config
+// and the AMPDU-off wifi init.
 extern "C" {
 
 static volatile uint32_t sHits = 0;
@@ -33,40 +34,8 @@ void wifi_init_wrap_stats(int* called) {
     }
 }
 
-void* __real_bt_osi_mem_malloc(size_t size);
-void* __real_bt_osi_mem_calloc(size_t n, size_t size);
 esp_err_t __real_esp_bt_controller_init(esp_bt_controller_config_t* cfg);
 esp_err_t __real_esp_wifi_init(const wifi_init_config_t* cfg);
-
-static void* allocPsram(size_t size, bool zero) {
-    void* p = zero
-        ? heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-        : heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (p != nullptr) {
-        sHits++;
-        sBytes += (uint32_t)size;
-        return p;
-    }
-    sMisses++;
-    return nullptr;
-}
-
-void* __wrap_bt_osi_mem_malloc(size_t size) {
-    void* p = allocPsram(size, false);
-    if (p != nullptr) {
-        return p;
-    }
-    return __real_bt_osi_mem_malloc(size);
-}
-
-void* __wrap_bt_osi_mem_calloc(size_t n, size_t size) {
-    size_t bytes = n * size;
-    void* p = allocPsram(bytes, true);
-    if (p != nullptr) {
-        return p;
-    }
-    return __real_bt_osi_mem_calloc(n, size);
-}
 
 // Arduino-ESP32's NimBLE blob is built with CE_LENGTH_TYPE_ORIG and
 // MODEM_SLEEP off, so max_ce_len is ignored and the controller never
