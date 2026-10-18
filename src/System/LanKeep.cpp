@@ -276,7 +276,7 @@ static void lanStaPhy() {
     // the gaps (Espressif's coexistence model). lanKeepWifi also forces
     // PS_NONE on every associate — changed there too (search WIFI_PS_NONE).
     WiFi.setSleep(false);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    esp_wifi_set_ps(WIFI_PS_NONE);
     // History: 11n + AMPDU-off flapped this AP; 11g+b re-tested 2026-10-13
     // (channel fixed to 6, watchdogs live): RTT improved 45->30 ms but the
     // module hit the gateway-death cycle ~every 40 s and the watchdog reboot
@@ -941,7 +941,7 @@ void lanKeepWifi(const FrontPanel& panel) {
     if (associated) {
         misses = 0;
         WiFi.setSleep(false);
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        esp_wifi_set_ps(WIFI_PS_NONE);
         esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
         static int upLogs = 0;
         if (wifiWasDown) {
