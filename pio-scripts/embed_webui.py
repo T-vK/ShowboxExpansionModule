@@ -169,37 +169,120 @@ def write_asset_table(dist_dir, header_path):
 
 BOOTSTRAP = r"""<script>
 (function () {
-  var box = document.getElementById("bootbox");
+  var CACHE = "showboxmod-v19";
+  var fill = document.getElementById("boot-fill");
+  var status = document.getElementById("boot-status");
+  var card = document.getElementById("boot");
   var MODS = __MODS__;
   var STYLES = __STYLES__;
+
+  function status(msg) {
+    if (status) status.textContent = msg;
+  }
+  function progress(frac, indeterminate) {
+    if (!fill) return;
+    if (indeterminate) {
+      fill.classList.add("indeterminate");
+      fill.style.width = "38%";
+    } else {
+      fill.classList.remove("indeterminate");
+      fill.style.width = Math.max(0, Math.min(100, Math.round(frac * 100))) + "%";
+    }
+  }
   function fail(msg) {
     if (window.__uiFailed) return;
     window.__uiFailed = true;
-    if (!box) return;
-    box.classList.add("boot-failed");
-    var lead = box.querySelector(".lead");
-    if (lead) lead.textContent = msg || "Load failed — the radio link dropped it.";
+    card.classList.add("boot-failed");
+    status.textContent = msg || "Load failed — the radio link dropped it.";
   }
-  // A hung transfer produces no error event; show a way out after 12 s.
   setTimeout(function () {
     if (!window.__uiBooted && !window.__uiFailed) {
       fail("Still loading — the radio link is busy. Tap Retry.");
+      progress(1, true);
     }
   }, 12000);
-  // The service worker resumes stalled asset transfers with HTTP Range
-  // (streaming read, inactivity abort, byte-exact resume). Once it controls
-  // the page, a plain module import or stylesheet link cannot stall forever,
-  // so no blob assembly and no specifier rewriting are needed here — every
-  // chunk shares one module graph and one preact instance.
+
+  function kb(n) { return (n / 1024).toFixed(0) + " KB"; }
+  // Resumable, stall-proof fetch with live byte progress. Range slices are
+  // raw gzip bytes; the assembled response keeps Content-Encoding so the
+  // browser decodes it exactly once. Warm the service worker cache as we go
+  // so the module import afterwards is instant.
+  function fetchWithProgress(url, label) {
+    var got = 0;
+    return new Promise(function (resolve, reject) {
+      var attempt = 0;
+      function go() {
+        attempt++;
+        if (attempt > 150) { reject(new Error("too many stalls: " + url)); return; }
+        var ctrl = new AbortController();
+        var killer = setTimeout(function () { ctrl.abort(); }, 8000);
+        var done = false;
+        fetch(url, { headers: { Range: "bytes=" + got + "-" }, signal: ctrl.signal, cache: "no-store" })
+          .then(function (res) {
+            if (res.status !== 200 && res.status !== 206) { throw new Error("http " + res.status); }
+            var cr = res.headers.get("Content-Range");
+            var total = cr ? parseInt(cr.slice(cr.lastIndexOf("/") + 1), 10) || 0
+                           : parseInt(res.headers.get("Content-Length") || "0", 10) || 0;
+            var reader = res.body.getReader();
+            var pieces = [];
+            function pump() {
+              var t = setTimeout(function () { ctrl.abort(); }, 3500);
+              return reader.read().then(function (r) {
+                clearTimeout(t);
+                if (r.done) {
+                  if (total && got !== total) { throw new Error("short body " + got + "/" + total); }
+                  done = true;
+                  return;
+                }
+                got += r.value.length;
+                pieces.push(r.value);
+                if (total) {
+                  progress(got / total);
+                  status(label + " " + kb(got) + " / " + kb(total) + " (" + Math.round(got / total * 100) + "%)");
+                }
+                return pump();
+              }, function (e) { clearTimeout(t); throw e; });
+            }
+            return pump().then(function () {
+              var head = new Headers();
+              head.set("Content-Type", res.headers.get("Content-Type") || "application/octet-stream");
+              head.set("Content-Encoding", res.headers.get("Content-Encoding") || "identity");
+              head.set("Content-Length", String(got));
+              var out = new Response(new Blob(pieces), { status: 200, headers: head });
+              if (window.caches && caches.open) {
+                caches.open(CACHE).then(function (c) { c.put(url, out.clone()); }).catch(function () {});
+              }
+              return out.blob();
+            });
+          })
+          .then(function (blob) {
+            clearTimeout(killer);
+            resolve(blob);
+          })
+          .catch(function () {
+            clearTimeout(killer);
+            if (!done) { setTimeout(go, 600); }
+          });
+      }
+      go();
+    });
+  }
+  function blobUrl(blob, type) {
+    return URL.createObjectURL(new Blob([blob], { type: type }));
+  }
+
+  // The service worker handles any direct fetches we miss; wait briefly for
+  // it to take control, then everything is cached as it arrives.
   var swReady = Promise.resolve();
   if ("serviceWorker" in navigator) {
     swReady = navigator.serviceWorker.register("/sw.js").then(function () {
       return Promise.race([
         navigator.serviceWorker.ready,
-        new Promise(function (r) { setTimeout(r, 2500); }),
+        new Promise(function (r) { setTimeout(r, 2000); }),
       ]);
     }).catch(function () {});
   }
+
   function importWithRetry(src, tries) {
     var attempt = 0;
     function go() {
@@ -207,10 +290,12 @@ BOOTSTRAP = r"""<script>
       if (attempt > tries) { throw new Error("import kept failing: " + src); }
       var mod = import(src);
       var watchdog = new Promise(function (_, rej) {
-        setTimeout(function () { rej(new Error("import timeout")); }, 150000);
+        setTimeout(function () { rej(new Error("import timeout")); }, 60000);
       });
       return Promise.race([mod, watchdog]).then(function (v) {
         window.__uiBooted = true;
+        progress(1);
+        status("Ready");
         return v;
       }, function () {
         return new Promise(function (r) { setTimeout(r, 900); }).then(function () { return go(); });
@@ -218,29 +303,36 @@ BOOTSTRAP = r"""<script>
     }
     return go();
   }
+
   swReady.then(function () {
-    // Strictly serialize: two concurrent transfers to the module stall one
-    // of them (AsyncTCP under coex). Load the stylesheet first, then the
-    // entry module, then the lazy chunks on demand.
-    var cssDone = Promise.resolve();
-    if (STYLES.length) {
-      cssDone = new Promise(function (resolve) {
-        var l = document.createElement("link");
-        l.rel = "stylesheet";
-        l.href = STYLES[0];
-        l.onload = function () { setTimeout(resolve, 300); };
-        l.onerror = function () { setTimeout(resolve, 300); };
-        document.head.appendChild(l);
-        setTimeout(resolve, 8000); // never wait forever for css
+    var chain = Promise.resolve();
+    STYLES.forEach(function (href, i) {
+      chain = chain.then(function () {
+        progress(undefined, true);
+        status("Loading stylesheet…");
+        return fetchWithProgress(href, "stylesheet").then(function (blob) {
+          var l = document.createElement("link");
+          l.rel = "stylesheet";
+          l.href = blobUrl(blob, "text/css");
+          document.head.appendChild(l);
+        }).catch(function () {
+          var l = document.createElement("link");
+          l.rel = "stylesheet";
+          l.href = href;
+          document.head.appendChild(l);
+        });
       });
-    }
-    cssDone.then(function () {
-      var chain = Promise.resolve();
-      MODS.forEach(function (src) {
-        chain = chain.then(function () { return importWithRetry(src, 3); });
-      });
-      chain.catch(function () { fail(); });
     });
+    MODS.forEach(function (src) {
+      chain = chain.then(function () {
+        return fetchWithProgress(src, "app bundle").then(function (blob) {
+          status("Starting mixer…");
+          progress(1, true);
+          return importWithRetry(src, 3);
+        });
+      });
+    });
+    chain.catch(function () { fail(); });
   });
 })();
 </script>"""
