@@ -269,8 +269,14 @@ static void lanStaPhy() {
     // pattern. Keeping PS_NONE: the pedal link is essential, the webui
     // degrades during BLE-heavy periods, and the gateway-zombie rejoin
     // (when gDiagWatch is enabled) recovers the link automatically.
+    // 2026-10-18 RE-TEST on the new framework (IDF coex blob + 400 ms BLE
+    // interval + PSRAM NimBLE): the old PS_MIN_MODEM verdict (2026-10-14)
+    // predates ALL of that — retesting the documented-correct coex config:
+    // modem sleeps between DTIMs and the scheduler slots BLE events into
+    // the gaps (Espressif's coexistence model). lanKeepWifi also forces
+    // PS_NONE on every associate — changed there too (search WIFI_PS_NONE).
     WiFi.setSleep(false);
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     // History: 11n + AMPDU-off flapped this AP; 11g+b re-tested 2026-10-13
     // (channel fixed to 6, watchdogs live): RTT improved 45->30 ms but the
     // module hit the gateway-death cycle ~every 40 s and the watchdog reboot
@@ -903,7 +909,7 @@ void lanKeepWifi(const FrontPanel& panel) {
     if (associated) {
         misses = 0;
         WiFi.setSleep(false);
-        esp_wifi_set_ps(WIFI_PS_NONE);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
         static int upLogs = 0;
         if (wifiWasDown) {
@@ -918,7 +924,6 @@ void lanKeepWifi(const FrontPanel& panel) {
             if (Debug != nullptr) {
                 Debug->printf("[ INFO ] WiFi back at %s\n", WiFi.localIP().toString().c_str());
             }
-            WiFi.setSleep(false);
             staProto = 0;
             lanPreferWifiAirtime();
             if (gMdnsUp) {

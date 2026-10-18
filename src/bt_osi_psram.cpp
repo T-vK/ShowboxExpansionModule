@@ -17,6 +17,10 @@ static volatile uint32_t sBytes = 0;
 void* __real_nimble_mem_malloc(size_t size);
 void* __real_nimble_mem_calloc(size_t n, size_t size);
 
+// PSRAM-first is REQUIRED: the new framework's boot leaves ~1.3 KB internal
+// at HID creation (verified 2026-10-18) — internal-first re-triggers the
+// xSemaphoreCreateBinary OOM assert and the 10 s boot loop. The BLE host on
+// PSRAM ran stable for the entire 49-min validation window.
 static void* psramAlloc(size_t size, bool zero) {
     void* p = zero
         ? heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
