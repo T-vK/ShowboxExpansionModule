@@ -1345,9 +1345,23 @@ void MackieShowbox::tick() {
                 && baseAgeMs() > 4000
                 && (int32_t)(now - wedgeLastAtMs) > 20000) {
                 if (wedgeUnplugs >= 3) {
-                    diagEventForce("uart", "wire unplug failed %u times, giving up until reboot", (unsigned)wedgeUnplugs);
-                    wedgeStage = 0;
-                    wedgeUnplugs = 4;
+                    // The wire unplug cannot clear this wedge, but the user's
+                    // physical replug provably does: it power-cycles the
+                    // module, and a fresh boot re-handshakes the UART. Do the
+                    // same thing safely (drain first), at most once per 5 min
+                    // so a physical problem can't become a reboot loop.
+                    if (lastUartRebootMs == 0 || (int32_t)(now - lastUartRebootMs) > 300000) {
+                        lastUartRebootMs = now;
+                        diagEventForce("uart", "wire unplug failed %u times: uart-safe restart", (unsigned)wedgeUnplugs);
+                        debugLog("CRITICAL uart wedge: safe restart after %u failed unplug rounds", (unsigned)wedgeUnplugs);
+                        waitQuiet(40);
+                        delay(50);
+                        ESP.restart();
+                    } else {
+                        diagEvent("uart", "wire unplug failed %u times, restart backoff active", (unsigned)wedgeUnplugs);
+                        wedgeStage = 0;
+                        wedgeUnplugs = 4;
+                    }
                 } else {
                     // Unplug done and base still silent: re-arm the ladder.
                     wedgeStage = 1;

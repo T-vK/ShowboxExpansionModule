@@ -6,6 +6,7 @@
 #include <BLECharacteristic.h>
 #include <BLEHIDDevice.h>
 #include <BLESecurity.h>
+#include <esp_heap_caps.h>
 #include <HIDTypes.h>
 #include <Preferences.h>
 #include <cstring>
@@ -479,6 +480,11 @@ bool Hid::ensureBleStarted() {
         security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
         security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
         bleSecurityReady = true;
+    }
+    if (debug != nullptr) {
+        debug->printf("[boot] HID: internal heap free=%u largest=%u\n",
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     }
     bleDevice = new BLEHIDDevice(bleServer);
     bleDevice->manufacturer()->setValue(manufacturerName);

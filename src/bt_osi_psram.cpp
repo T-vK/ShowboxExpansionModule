@@ -4,15 +4,47 @@
 #include <esp_bt.h>
 #include <esp_wifi.h>
 
-// Newer IDF (55.03.312 framework) removed the S3 bt_osi_mem_* allocator —
-// NimBLE host buffers are allocated by the port itself, so the malloc/calloc
-// PSRAM wraps are gone. What remains is the coex-critical controller config
-// and the AMPDU-off wifi init.
+// Newer IDF (55.03.312 framework) removed the S3 bt_osi_mem_* allocator,
+// but the NimBLE HOST allocates through nimble_mem_malloc/calloc (linkable
+// symbols in libbt.a) — wrap those to put host buffers in PSRAM. The
+// controller's DMA memory (malloc_ble_controller_mem) stays internal.
 extern "C" {
 
 static volatile uint32_t sHits = 0;
 static volatile uint32_t sMisses = 0;
 static volatile uint32_t sBytes = 0;
+
+void* __real_nimble_mem_malloc(size_t size);
+void* __real_nimble_mem_calloc(size_t n, size_t size);
+
+static void* psramAlloc(size_t size, bool zero) {
+    void* p = zero
+        ? heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+        : heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p != nullptr) {
+        sHits++;
+        sBytes += (uint32_t)size;
+        return p;
+    }
+    sMisses++;
+    return nullptr;
+}
+
+void* __wrap_nimble_mem_malloc(size_t size) {
+    if (size == 0) {
+        return nullptr;
+    }
+    void* p = psramAlloc(size, false);
+    return p != nullptr ? p : __real_nimble_mem_malloc(size);
+}
+
+void* __wrap_nimble_mem_calloc(size_t n, size_t size) {
+    if (n == 0 || size == 0) {
+        return nullptr;
+    }
+    void* p = psramAlloc(n * size, true);
+    return p != nullptr ? p : __real_nimble_mem_calloc(n, size);
+}
 
 void bt_osi_psram_stats(uint32_t* hits, uint32_t* misses, uint32_t* bytes) {
     if (hits != nullptr) {
