@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import preact from "@preact/preset-vite";
+import { viteSingleFile } from "vite-plugin-singlefile";
 
 function mockShowbox() {
   const store = {};
@@ -221,11 +222,12 @@ function mockShowbox() {
 }
 
 export default defineConfig({
-  plugins: [preact(), mockShowbox()],
+  plugins: [preact(), mockShowbox(), viteSingleFile()],
   build: {
     cssCodeSplit: false,
-    // One JS chunk: the bootstrap loads it via HTTP Range resume and imports
-    // it from a blob URL, which cannot resolve relative imports (vendor).
+    // Single-file build: one response, browser-native loading, the new
+    // EAWS 3.12.1 flow-control engine handles big bodies natively. No
+    // custom bootstrap to maintain.
     minify: "esbuild"
   }
 });
