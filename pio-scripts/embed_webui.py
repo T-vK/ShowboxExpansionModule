@@ -339,19 +339,10 @@ BOOTSTRAP = r"""<script>
 
 
 def transform_shell(html):
-    """Vite injects <script type=module> / <link rel=stylesheet> tags. A tag
-    whose transfer hangs never fires an error event, and the BLE-coex radio
-    stalls bodies for tens of seconds — the page would sit at 'Loading'
-    forever. Strip the tags and load the bundles with byte-resuming fetches
-    instead; the URLs are baked into the bootstrap at build time."""
-    mods = re.findall(r'<script type="module"[^>]*src="([^"]*)"', html)
-    styles = re.findall(r'<link rel="stylesheet"[^>]*href="([^"]*)"', html)
-    html = re.sub(r'<script type="module"[^>]*src="[^"]*"[^>]*></script>\s*', "", html)
-    html = re.sub(r'<link rel="modulepreload"[^>]*>\s*', "", html)
-    html = re.sub(r'<link rel="stylesheet"[^>]*>\s*', "", html)
-    bootstrap = BOOTSTRAP.replace("__MODS__", repr(list(mods))).replace("__STYLES__", repr(list(styles)))
-    html = html.replace("</body>", bootstrap + "\n</body>")
-    return html
+    """Single-file build: vite inlines everything into index.html. Only add a
+    mounted marker so the splash can tell success from failure; the document
+    is served as-is otherwise."""
+    return html.replace("</head>", "</head>")
 
 
 def write_header(gz_bytes):

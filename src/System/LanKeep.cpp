@@ -737,6 +737,38 @@ void lanGwPingTick() {
     // ICMP pings contend for the same coex airtime as a large HTTP body;
     // pause the ping while one is in flight (zombie detection is
     // meaningless mid-transfer anyway) and resume 3 s after it ends.
+    // Webui-active BLE policy: one radio, and the webui is the priority
+    // while someone is actually using it (any HTTP request in the last 30 s,
+    // or an open page that just loaded). While active, the AIRSTEP BLE link
+    // yields; 30 s after the webui goes quiet it reconnects on its own.
+    static bool webuiYield = false;
+    static uint32_t webuiQuietSinceMs = 0;
+    const uint32_t webuiHttpQuiet = lanHttpQuietMs();
+    if (webuiHttpQuiet < 30000) {
+        webuiQuietSinceMs = 0;
+        if (!webuiYield) {
+            webuiYield = true;
+            if (sMultiMidi != nullptr && sMultiMidi->hostConnected()) {
+                sMultiMidi->dropHostLink();
+                sMultiMidi->allowOutgoing(false);
+                diagEventForce("wifi", "webui active: BLE host yielded");
+                debugLog("wifi webui active: BLE host yielded");
+            }
+        }
+    } else if (webuiYield) {
+        if (webuiQuietSinceMs == 0) {
+            webuiQuietSinceMs = millis();
+        }
+        if ((int32_t)(millis() - webuiQuietSinceMs) > 30000) {
+            webuiYield = false;
+            webuiQuietSinceMs = 0;
+            if (sMultiMidi != nullptr) {
+                sMultiMidi->allowOutgoing(true);
+            }
+            diagEventForce("wifi", "webui quiet 30 s: BLE host released");
+            debugLog("wifi webui quiet: BLE host released, pedal reconnecting");
+        }
+    }
     static bool pingPaused = false;
     const bool httpBusy = lanBigHttpBusy();
     if (httpBusy != pingPaused && sGwPing != nullptr) {
