@@ -76,8 +76,12 @@ export function connectLive(onEvent, hooks = {}) {
   let ping = 0;
   let watchdog = 0;
   function armWatch() {
+    // 12 s killed perfectly recoverable sockets: under BLE coex the radio
+    // routinely gaps message flow longer than that, and every reconnect
+    // cycle churns new connections that wedge the listener. Only declare
+    // the socket dead after a genuinely long silence.
     clearTimeout(watchdog);
-    watchdog = setTimeout(() => { if (socket) socket.close(); }, 12000);
+    watchdog = setTimeout(() => { if (socket) socket.close(); }, 40000);
   }
   function open() {
     if (closed) return;
