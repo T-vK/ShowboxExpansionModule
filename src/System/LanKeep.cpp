@@ -728,42 +728,43 @@ void lanGwPingTick() {
         return;
     }
     lanBleYieldTick();
+    // ICMP pings contend for the same coex airtime as a large HTTP body;
+    // pause the ping while one is in flight (zombie detection is
+    // meaningless mid-transfer anyway) and resume 3 s after it ends.
+    static bool pingPaused = false;
+    const bool httpBusy = lanBigHttpBusy();
+    if (httpBusy != pingPaused && sGwPing != nullptr) {
+        pingPaused = httpBusy;
+        if (httpBusy) {
+            esp_ping_stop(sGwPing);
+        } else {
+            esp_ping_start(sGwPing);
+        }
+    }
     // Zombie check: the stack claims associated but the gateway stopped
 // answering. Re-associate. If repeated rejoins fail, the last resort is
 // a UART-safe reboot (drained first — see uartSafeRestart).
 //
-// With a BLE host (AIRSTEP) connected, gateway RTT spikes and loss bursts
-// are expected coex behavior, NOT a dead STA — measured 2026-10-14:
-// pedal on = RTT 23-96 ms with loss, pedal off = 0/731 loss. Tearing the
-// STA down in that state is what turns "degraded" into "dead": the STA
-// cannot re-associate under the pedal's coex load (association only ever
-// succeeds on fresh boots, before BLE connects). So while a BLE host holds
-// the link, ride out the degradation; only if it persists for a long
-// window do we yield the pedal and rejoin. Without a host, rejoin quickly.
+// With a BLE host (AIRSTEP) connected, the gateway dies under coex while
+// the pedal holds the radio (A/B measured: pedal off = 0/731 loss, pedal
+// on = sustained TCP death). Yield the pedal at the first confirmed
+// zombie — a few seconds of gateway silence is already a real death
+// window, and the yield heals the link in place instead of burning it
+// until a forced restart. The pedal reconnects on its own once the
+// gateway is healthy again (lanBleYieldTick). Without a host, rejoin.
     const bool hostUp = sMultiMidi != nullptr && sMultiMidi->hostConnected();
     static uint32_t zombieSinceMs = 0;
     uint32_t now = millis();
     if (hostUp) {
-        // BLE host connected: gateway RTT spikes are expected coex behavior.
-        // Only act if the degradation persists way beyond any burst.
         if (sGwMisses < 3) {
             zombieSinceMs = 0;
             return;
         }
-        if (zombieSinceMs == 0) {
-            zombieSinceMs = now;
-            diagEvent("wifi", "gateway loss with BLE host, riding out coex degradation");
-            return;
-        }
-        if ((int32_t)(now - zombieSinceMs) > 120000) {
-            // Degradation stuck for 2 minutes: yield the pedal. No WiFi
-            // churn here — the one-way zombie is coex starvation and heals
-            // once the pedal is down (and disconnect+reconnect under coex
-            // crashes the driver, see lanYieldBleForAssoc).
-            sGwMisses = 0;
-            zombieSinceMs = 0;
-            lanYieldBleForAssoc("long zombie", 1);
-        }
+        // ~8 s of gateway silence: coex starvation is real and only gets
+        // worse. Yield now — no WiFi churn, no rejoin, no restart.
+        sGwMisses = 0;
+        zombieSinceMs = 0;
+        lanYieldBleForAssoc("gateway zombie", 1);
         return;
     }
     if (sGwMisses >= 3) {
