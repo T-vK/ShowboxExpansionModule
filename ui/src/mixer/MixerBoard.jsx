@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { getJson, postJson } from "../api.js";
+import { getJson, postJson, wsSendMsg } from "../api.js";
 import { useLive } from "../live/LiveContext.jsx";
 import { StatusCluster } from "../status/StatusCluster.jsx";
 import { Pad } from "./Controls.jsx";
@@ -550,7 +550,9 @@ export function MixerBoard({ onMenu, stage, onToggleStage }) {
 
   function snapshotSlot(slot) {
     if (snapAction === "SAVE" && slot === 5) return;
-    send("/api/v1/showbox/action/snapshot", { action: snapAction === "SAVE" ? "SAVE" : "RECALL", slot });
+    // Snapshot actions go over WS (persistent) — HTTP POSTs fail during
+    // radio windows and the action is silently lost.
+    wsSendMsg("s" + JSON.stringify({ action: snapAction === "SAVE" ? "SAVE" : "RECALL", slot }));
     // On recall, drop pending writes: the dump that follows carries the
     // recalled values, not the echoes of the user's last fader moves.
     if (snapAction !== "SAVE") pendingWrites.clear();
