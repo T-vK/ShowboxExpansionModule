@@ -1320,11 +1320,12 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
 .comp-graph:not(.mini) .eq-curve { stroke-width: 1.6; }
 .comp-thresh-lbl { fill: var(--amber); font-size: 6.5px; }
 .proc-fader {
-  flex: none; width: 3.1rem; min-height: 8.5rem;
-  display: flex;
+  flex: none; width: 5.4rem; min-height: 9.5rem;
+  display: flex; justify-content: center;
+  margin: 0 auto;
 }
 .proc-fader .fader { flex: 1; }
-.proc-sheet.gain-sheet .proc-fader { height: 11rem; }
+.proc-sheet.gain-sheet .proc-fader { height: 12.5rem; }
 .proc-sheet.comp-sheet .proc-fader { align-self: stretch; }
 .proc-sheet .fx-name { margin-bottom: 0.2rem; min-height: 1.85rem; padding: 0.2rem 0.32rem; }
 .overlay-knobs { display: flex; justify-content: center; padding: 0.4rem 0; }
@@ -1340,7 +1341,7 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
   flex: 1 1 auto; min-width: 0; min-height: 0;
   display: flex; flex-direction: column; gap: 0.18rem;
 }
-.fx-block-fader { flex: none; width: 2.7rem; min-height: 4.8rem; display: flex; align-self: stretch; }
+.fx-block-fader { flex: none; width: 3.4rem; min-height: 5.6rem; display: flex; align-self: stretch; }
 .fx-sheet-body .fx-block { flex: 1 1 auto; }
 .fx-block-head { display: flex; align-items: center; gap: 0.4rem; }
 .fx-hint { font-size: 0.68rem; color: var(--muted); letter-spacing: 0.04em; }
@@ -1569,7 +1570,6 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
   }
   .proc-sheet.fx-sheet .fx-block { flex: 1 1 0; }
   .proc-sheet.fx-sheet .fx-name { min-height: 1.55rem; margin-bottom: 0.1rem; }
-  .proc-sheet.fx-sheet .fx-block-fader { width: 2.4rem; }
   .proc-sheet.comp-sheet .comp-sheet-body {
     flex-direction: row;
     align-items: stretch;
