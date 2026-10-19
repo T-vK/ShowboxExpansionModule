@@ -724,11 +724,15 @@ void lanGwPingTick() {
             lastPingStartMs = millis();
             gwPingStart(gw);
         }
-        if (sGwPing == nullptr && (int32_t)(millis() - lastForcedZombieMs) >= 30000) {
+        if (sGwPing == nullptr && (int32_t)(millis() - lastForcedZombieMs) >= 60000) {
             lastForcedZombieMs = millis();
-            diagEventForce("wifi", "ping task create failing, forcing zombie ladder");
-            debugLog("wifi ping task create failing, forcing zombie ladder");
-            sGwMisses = 3;
+            // The creation failure is a LOW HEAP problem (the ping task needs
+            // ~4 KB contiguous). A rejoin/restart doesn't free heap — the next
+            // boot has the same pressure. Keep retrying the creation instead
+            // of forcing the zombie ladder into a reboot loop (boot #924→#1017
+            // was a ~700-reboot loop from exactly this).
+            diagEvent("wifi", "ping task create failing, retrying (low heap)");
+            debugLog("wifi ping task create failing, retrying (low heap)");
         }
         lanBleYieldTick();
         return;
