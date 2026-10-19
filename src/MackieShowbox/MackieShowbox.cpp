@@ -498,6 +498,15 @@ bool MackieShowbox::takeSnapshotDone(uint8_t& action, uint8_t& slot) {
     action = snapshotPendingAction;
     slot = snapshotPendingSlot;
     snapshotBusyUntil = 0;
+    // The mixer restores its state on recall but does NOT re-send entity
+    // values (verified 2026-10-19: gain stayed stale until a DATA_REQUEST
+    // forced the dump). Re-request the dump so the module cache and the
+    // webui reflect the recalled state. Send the packet directly —
+    // requestMixerDump() gates behind dumpGen==0 and won't re-dump.
+    lastDumpReqMs = 0;
+    dumpTries = 0;
+    uint8_t req[] = { 0xBE, 0xEF, 0x00, DATA_REQUEST, ALL_ENTITIES, 0xEF, 0xBE };
+    interceptor.sendPacket(req, sizeof(req), TO_MIXER);
     return true;
 }
 
@@ -1098,12 +1107,18 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     // land in the diag ring: the wire format of snapshots has never been
     // captured from the real unit, and this is the only path that will.
     {
-        static const uint8_t kSkip[] = { ENTITY, HEARTBEAT, SD_CARD_EVENT, DATA_REQUEST, ALL_ENTITIES, ACK };
+        static const uint8_t kSkip[] = { ENTITY, HEARTBEAT, SD_CARD_EVENT, DATA_REQUEST, ALL_ENTITIES, ACK, TUNER_FEEDBACK };
         bool common = false;
         for (uint8_t k : kSkip) {
             if (packetType == k) { common = true; break; }
         }
-        if (!common && length >= 7 && raw_packet[0] == 0xBE && raw_packet[1] == 0xEF) {
+        // Dedupe: the tuner streams identical packets every 100 ms and would
+        // evict everything else from the ring.
+        static uint32_t lastSig = 0;
+        uint32_t sig = (static_cast<uint32_t>(packetType) << 24) ^ (static_cast<uint32_t>(length) << 16) ^ (static_cast<uint32_t>(direction) << 8);
+        for (size_t i = 4; i + 1 < length; i++) { sig ^= static_cast<uint32_t>(raw_packet[i]) << ((i % 4) * 8); }
+        if (!common && length >= 7 && raw_packet[0] == 0xBE && raw_packet[1] == 0xEF && sig != lastSig) {
+            lastSig = sig;
             char hex[3 * 32 + 4] = {};
             size_t hexN = 0;
             for (size_t i = 0; i < length && hexN + 3 < sizeof(hex); i++) {
