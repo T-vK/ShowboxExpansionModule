@@ -6,6 +6,7 @@
 #include "string_mappings.h"
 #include "constants.h"
 #include <esp_heap_caps.h>
+#include <ArduinoJson.h>
 #include <cstdio>
 #include <cstring>
 
@@ -116,6 +117,23 @@ void LiveSocket::begin(AsyncWebServer* server, MackieShowbox* showboxIn) {
         }
         if (data[0] == 'l') {
             sendLink(client);
+        }
+        if (data[0] == 's' && showbox != nullptr) {
+            // Snapshot actions over WS: reliable when HTTP POSTs fail during
+            // radio windows. data = "s" + JSON {"action":"SAVE","slot":0}
+            JsonDocument doc;
+            if (deserializeJson(doc, data + 1, len - 1) == DeserializationError::Ok) {
+                const char* action = doc["action"] | "";
+                uint8_t slot = doc["slot"] | 0;
+                if (strcmp(action, "SAVE") == 0) {
+                    showbox->snapshotAction(SAVE, static_cast<snapshot_slot>(slot));
+                } else if (strcmp(action, "RECALL") == 0) {
+                    showbox->snapshotAction(RECALL, static_cast<snapshot_slot>(slot));
+                } else if (strcmp(action, "BK") == 0) {
+                    showbox->snapshotMenuBack();
+                }
+            }
+            return;
         }
     });
     server->addHandler(&socket);

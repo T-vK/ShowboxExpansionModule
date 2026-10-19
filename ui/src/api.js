@@ -65,6 +65,10 @@ export async function postJson(url, body) {
   }
 }
 
+let wsSend = null;
+export function setWsSend(fn) { wsSend = fn; }
+export function wsSendMsg(data) { if (wsSend) wsSend(data); }
+
 export function asList(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -94,6 +98,7 @@ export function connectLive(onEvent, hooks = {}) {
         if (socket && socket.readyState === 1) socket.send("p");
       }, 4000);
       armWatch();
+      setWsSend((data) => { if (socket && socket.readyState === 1) socket.send(data); });
     };
     socket.onmessage = (event) => {
       armWatch();
@@ -106,6 +111,7 @@ export function connectLive(onEvent, hooks = {}) {
     socket.onclose = () => {
       clearInterval(ping);
       clearTimeout(watchdog);
+      setWsSend(null);
       socket = null;
       if (hooks.onClose) hooks.onClose();
       if (!closed) timer = setTimeout(open, 1500);
