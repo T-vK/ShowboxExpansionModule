@@ -288,10 +288,16 @@ export function MixerBoard({ onMenu, stage, onToggleStage }) {
           setSnapNames(msg.snapshots.map((name, i) => String(name || i + 1)));
         }
       }
-      if (msg.type === "snapshot" && msg.ok && boardRef.current === "snap") {
-        clearTimeout(snapWait.current);
-        const back = snapReturn.current && snapReturn.current !== "snap" ? snapReturn.current : "mixer";
-        setBoard(back === "tuner" ? "mixer" : back);
+      if (msg.type === "snapshot" && msg.ok) {
+        // The recall restored the mixer's state; the dump that follows sends
+        // the recalled values. Clear pending writes so the echo reconciler
+        // doesn't drop them as stale echoes of the user's last fader moves.
+        pendingWrites.clear();
+        if (boardRef.current === "snap") {
+          clearTimeout(snapWait.current);
+          const back = snapReturn.current && snapReturn.current !== "snap" ? snapReturn.current : "mixer";
+          setBoard(back === "tuner" ? "mixer" : back);
+        }
       }
     });
     getJson("/api/v1/showbox/names").then((data) => {
@@ -545,6 +551,9 @@ export function MixerBoard({ onMenu, stage, onToggleStage }) {
   function snapshotSlot(slot) {
     if (snapAction === "SAVE" && slot === 5) return;
     send("/api/v1/showbox/action/snapshot", { action: snapAction === "SAVE" ? "SAVE" : "RECALL", slot });
+    // On recall, drop pending writes: the dump that follows carries the
+    // recalled values, not the echoes of the user's last fader moves.
+    if (snapAction !== "SAVE") pendingWrites.clear();
     clearTimeout(snapWait.current);
     // The module now reports snapshot done when the mixer really finished
     // (saves take seconds); this timeout is only a fallback.
