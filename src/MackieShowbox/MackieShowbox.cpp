@@ -1094,6 +1094,25 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
     if (packetLogEnabled) {
         logPacket(raw_packet, length, direction);
     }
+    // Discrete/rare packets (snapshots, menu, looper, tuner, unknown) always
+    // land in the diag ring: the wire format of snapshots has never been
+    // captured from the real unit, and this is the only path that will.
+    {
+        static const uint8_t kSkip[] = { ENTITY, HEARTBEAT, SD_CARD_EVENT, DATA_REQUEST, ALL_ENTITIES, ACK };
+        bool common = false;
+        for (uint8_t k : kSkip) {
+            if (packetType == k) { common = true; break; }
+        }
+        if (!common && length >= 7 && raw_packet[0] == 0xBE && raw_packet[1] == 0xEF) {
+            char hex[3 * 32 + 4] = {};
+            size_t hexN = 0;
+            for (size_t i = 0; i < length && hexN + 3 < sizeof(hex); i++) {
+                hexN += static_cast<size_t>(snprintf(hex + hexN, sizeof(hex) - hexN, "%s%02X", i ? " " : "", raw_packet[i]));
+            }
+            diagEventForce("uart", "%s packet: %s",
+                direction == TO_MIXER ? "BASE->MIXER" : "MIXER->BASE", hex);
+        }
+    }
     return UARTInterceptor::PACKET_NOT_MODIFIED;
 }
 
