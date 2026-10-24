@@ -275,7 +275,7 @@ void LiveSocket::sendLink(AsyncWebSocketClient* client) {
     }
     char body[768];
     int n = snprintf(body, sizeof(body),
-        "{\"type\":\"link\",\"ok\":%s,\"baseAgeMs\":%u,\"mixerAgeMs\":%u,\"battery\":%s,\"tunerOn\":%s,\"tunerChan\":%u,\"tunerNoteId\":%u,\"tunerMidi\":%u,\"tunerCents\":%.1f,\"tunerHz\":%.2f,\"tunerHeard\":%s,\"sdCard\":%u,\"sdHeard\":%s,\"analogHoldPhones\":%s,\"analogHoldLoop\":%s,\"dumpSeq\":%u,\"bleOn\":%s,\"bleHosts\":%u,\"bleNames\":\"%s\"}",
+        "{\"type\":\"link\",\"ok\":%s,\"baseAgeMs\":%u,\"mixerAgeMs\":%u,\"battery\":%s,\"tunerOn\":%s,\"tunerChan\":%u,\"tunerNoteId\":%u,\"tunerMidi\":%u,\"tunerCents\":%.1f,\"tunerHz\":%.2f,\"tunerHeard\":%s,\"sdCard\":%u,\"sdHeard\":%s,\"analogHoldPhones\":%s,\"analogHoldLoop\":%s,\"dumpSeq\":%u,\"bleOn\":%s,\"bleHosts\":%u,\"bleNames\":\"%s\",\"recSec\":%u,\"recPre\":%s}",
         showbox->linkOk(1500) ? "true" : "false",
         (unsigned)showbox->baseAgeMs(),
         (unsigned)showbox->mixerAgeMs(),
@@ -294,7 +294,9 @@ void LiveSocket::sendLink(AsyncWebSocketClient* client) {
         (unsigned)showbox->dumpSeq(),
         connections != nullptr && connections->bluetoothRadioOn() ? "true" : "false",
         connections != nullptr && connections->bluetoothRadioOn() ? (unsigned)connections->bleLinkCount() : 0u,
-        namesBuf);
+        namesBuf,
+        showbox->getRecStartMs() != 0 ? (unsigned)((millis() - showbox->getRecStartMs()) / 1000) : 0u,
+        showbox->getRecPreBoot() ? "true" : "false");
     if (n <= 0) {
         return;
     }
