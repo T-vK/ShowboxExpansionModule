@@ -2,6 +2,7 @@
 #include "../System/Diag.h"
 
 #include "MackieShowbox/MackieShowbox.h"
+#include "Connections/Connections.h"
 #include "System/LanKeep.h"
 #include "string_mappings.h"
 #include "constants.h"
@@ -268,9 +269,13 @@ void LiveSocket::sendLink(AsyncWebSocketClient* client) {
     } else {
         memcpy(batt, "null", 5);
     }
-    char body[512];
+    char namesBuf[192] = "";
+    if (connections != nullptr) {
+        connections->bleConnectedNames(namesBuf, sizeof(namesBuf));
+    }
+    char body[768];
     int n = snprintf(body, sizeof(body),
-        "{\"type\":\"link\",\"ok\":%s,\"baseAgeMs\":%u,\"mixerAgeMs\":%u,\"battery\":%s,\"tunerOn\":%s,\"tunerChan\":%u,\"tunerNoteId\":%u,\"tunerMidi\":%u,\"tunerCents\":%.1f,\"tunerHz\":%.2f,\"tunerHeard\":%s,\"sdCard\":%u,\"sdHeard\":%s,\"analogHoldPhones\":%s,\"analogHoldLoop\":%s,\"dumpSeq\":%u}",
+        "{\"type\":\"link\",\"ok\":%s,\"baseAgeMs\":%u,\"mixerAgeMs\":%u,\"battery\":%s,\"tunerOn\":%s,\"tunerChan\":%u,\"tunerNoteId\":%u,\"tunerMidi\":%u,\"tunerCents\":%.1f,\"tunerHz\":%.2f,\"tunerHeard\":%s,\"sdCard\":%u,\"sdHeard\":%s,\"analogHoldPhones\":%s,\"analogHoldLoop\":%s,\"dumpSeq\":%u,\"bleOn\":%s,\"bleHosts\":%u,\"bleNames\":\"%s\"}",
         showbox->linkOk(1500) ? "true" : "false",
         (unsigned)showbox->baseAgeMs(),
         (unsigned)showbox->mixerAgeMs(),
@@ -286,7 +291,10 @@ void LiveSocket::sendLink(AsyncWebSocketClient* client) {
         showbox->hasSdCardState() ? "true" : "false",
         showbox->analogHoldPhones() ? "true" : "false",
         showbox->analogHoldLoop() ? "true" : "false",
-        (unsigned)showbox->dumpSeq());
+        (unsigned)showbox->dumpSeq(),
+        connections != nullptr && connections->bluetoothRadioOn() ? "true" : "false",
+        connections != nullptr && connections->bluetoothRadioOn() ? (unsigned)connections->bleLinkCount() : 0u,
+        namesBuf);
     if (n <= 0) {
         return;
     }

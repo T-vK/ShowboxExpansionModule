@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Dropdown } from "../ui/Dropdown.jsx";
 import { IconBattery, IconSignalStream } from "../mixer/Icons.jsx";
+import { IconBluetooth } from "../mixer/Icons.jsx";
 import { useLive } from "../live/LiveContext.jsx";
 
 function battClass(pct) {
@@ -66,6 +67,16 @@ export function StatusCluster() {
           <IconSignalStream live={live} on={esp.connected} />
         </span>
       </button>
+      {link.bleOn ? (
+      <button
+        type="button"
+        class="bt-chip"
+        title={link.bleHosts > 0 ? `Bluetooth: ${link.bleHosts} device(s) connected` : "Bluetooth on, no devices"}
+        onClick={() => toggle("batt")}
+      >
+        <IconBluetooth />
+      </button>
+      ) : null}
       <button
         ref={battBtn}
         type="button"

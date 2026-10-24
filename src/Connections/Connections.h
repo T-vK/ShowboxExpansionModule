@@ -60,6 +60,9 @@ public:
     uint32_t pairingMsLeft() const;
     void setBluetoothRadio(bool on);
     bool bluetoothRadioOn() const { return bluetoothRadioEnabled; }
+    int bleLinkCount() const { return radio != nullptr ? radio->gapLinkCount() : 0; }
+    // Comma-separated names of connected BLE peripherals (for the status bar)
+    void bleConnectedNames(char* out, size_t cap) const;
     void setFrontPanel(FrontPanel* panel);
     enum class UsbPortMode {
         Jtag,

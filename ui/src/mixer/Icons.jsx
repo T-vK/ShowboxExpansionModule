@@ -293,3 +293,11 @@ export function IconInstall() {
     </Svg>
   );
 }
+
+export function IconBluetooth() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 1v14M8 1l4 3.5L4 12M8 15l4-3.5L4 4M4 4l4 4M12 11.5L4 4" />
+    </svg>
+  );
+}
