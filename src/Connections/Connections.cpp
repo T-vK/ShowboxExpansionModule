@@ -942,6 +942,28 @@ void Connections::applyPairingMixIfIdle() {
     hid->setBleMix(blePairMix);
 }
 
+void Connections::bleConnectedNames(char* out, size_t cap) const {
+    if (cap == 0) return;
+    out[0] = '\0';
+    if (radio == nullptr) return;
+    BleRadio::Incoming incoming[BleRadio::kMaxIncoming];
+    int count = radio->copyIncoming(incoming, BleRadio::kMaxIncoming);
+    size_t pos = 0;
+    for (int i = 0; i < count && pos + 2 < cap; i++) {
+        const char* name = incoming[i].name;
+        if (name == nullptr || name[0] == '\0') {
+            name = incoming[i].address;
+        }
+        if (name == nullptr || name[0] == '\0') continue;
+        if (pos > 0 && pos + 2 < cap) { out[pos++] = ','; out[pos] = '\0'; }
+        size_t nlen = strlen(name);
+        if (pos + nlen >= cap) nlen = cap - pos - 1;
+        memcpy(out + pos, name, nlen);
+        pos += nlen;
+        out[pos] = '\0';
+    }
+}
+
 void Connections::rememberIncomingHost(const BleRadio::Incoming& incoming) {
     const char* ota = incoming.otaAddress[0] != '\0' ? incoming.otaAddress : nullptr;
     const char* id = incoming.idAddress[0] != '\0' ? incoming.idAddress : nullptr;

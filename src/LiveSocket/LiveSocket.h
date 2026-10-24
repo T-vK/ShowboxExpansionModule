@@ -4,10 +4,12 @@
 #include <ESPAsyncWebServer.h>
 
 class MackieShowbox;
+class Connections;
 
 class LiveSocket {
 public:
     void begin(AsyncWebServer* server, MackieShowbox* showbox);
+    void setConnections(Connections* conn) { connections = conn; }
     void tick();
     void noteEntity(const char* id, const char* value);
     void pushEntity(const char* id, uint8_t value);
@@ -33,6 +35,7 @@ private:
 
     AsyncWebSocket socket{"/ws"};
     MackieShowbox* showbox = nullptr;
+    Connections* connections = nullptr;
     volatile bool linkDirty = false;
     volatile bool mixerDirty = false;
     uint32_t lastLinkMs = 0;

@@ -1828,3 +1828,6 @@ html.phone-preview .overlay { position: absolute; }
   .diag-cores { grid-template-columns: 1fr; }
   .diag-grid { grid-template-columns: 1fr; }
 }
+
+.bt-chip { display: flex; align-items: center; padding: 0.25rem 0.4rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.bt-chip:hover { color: var(--text); border-color: var(--metal); }

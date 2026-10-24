@@ -200,6 +200,7 @@ void setup() {
     restApiRouter.setLiveSocket(&liveSocket);
     restApiRouter.setCaptivePortal(&captivePortal);
     restApiRouter.setup();
+    liveSocket.setConnections(&connections);
     liveSocket.begin(&webServer, &showbox);
     captivePortal.begin(&webServer, &ubfw);
     lanKeepMdns();
