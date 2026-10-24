@@ -173,8 +173,6 @@ export function MixerBoard({ onMenu, stage, onToggleStage }) {
   const dumpSeqRef = useRef(0);
   const linkOkRef = useRef(false);
   const loopClock = useRef({ recAt: 0, lengthMs: 0 });
-  const sdRecAt = useRef(0);
-  const [recNow, setRecNow] = useState(0);
   const loopHold = useRef({ expect: null, until: 0 });
   const snapReturn = useRef("mixer");
   const snapWait = useRef(0);
@@ -643,8 +641,6 @@ export function MixerBoard({ onMenu, stage, onToggleStage }) {
       setWarn("The mixer reports no SD card. Record from the mixer itself to confirm.");
       return;
     }
-    if (!rec) sdRecAt.current = Date.now();
-    else sdRecAt.current = 0;
     setLink((prev) => ({ ...prev, sdCard: rec ? 1 : 2, sdHeard: true }));
     send("/api/v1/showbox/action/sdcard", {});
   }
@@ -690,21 +686,14 @@ export function MixerBoard({ onMenu, stage, onToggleStage }) {
   const frontLed = truthy(val(entities, "FRONT_LED", false));
   const sdCard = Number(link.sdCard);
   const sdRec = sdCard === 2;
-  const recSecs = sdRec && sdRecAt.current
-    ? Math.max(0, Math.floor(((recNow || Date.now()) - sdRecAt.current) / 1000))
-    : 0;
-  const recLabel = sdRec ? `${Math.floor(recSecs / 60)}:${String(recSecs % 60).padStart(2, "0")}` : undefined;
+  // The module supplies the recording elapsed time (computed server-side);
+  // no local timer needed. recPre = recording predates the module boot.
+  const recSecs = sdRec ? (link.recSec || 0) : 0;
+  const recPre = sdRec && link.recPre;
+  const recLabel = sdRec
+    ? `${recPre ? "~" : ""}${Math.floor(recSecs / 60)}:${String(recSecs % 60).padStart(2, "0")}`
+    : undefined;
 
-  useEffect(() => {
-    if (!sdRec) {
-      sdRecAt.current = 0;
-      return undefined;
-    }
-    if (!sdRecAt.current) sdRecAt.current = Date.now();
-    setRecNow(Date.now());
-    const id = setInterval(() => setRecNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [sdRec]);
   const procCh = proc && CHANNELS.find((item) => item.id === proc.id);
   const noteId = Number(link.tunerNoteId);
   const heard = !!link.tunerOn && !!link.tunerHeard && noteId >= 1 && noteId <= 12;

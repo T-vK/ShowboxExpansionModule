@@ -999,13 +999,18 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             sdCardHeard = true;
             if (state == 3) {
                 sdCardPresent = true;
+                if (recStartMs == 0) {
+                    recStartMs = millis();
+                    // If the module just booted and the first state is already
+                    // RECORDING, the recording predates the module — the webui
+                    // shows "~" for the unknown pre-boot duration.
+                    recPreBoot = millis() < 10000;
+                }
                 sdCardState = sd_card_state::RECORDING;
             } else if (state == 2 || state == 1) {
                 sdCardPresent = true;
-                // The base's state=2 announce is authoritative: recording has
-                // stopped. The old guard (if not already RECORDING) prevented
-                // the RECORDING→READY transition and left the webui showing
-                // "recording" forever after the user stopped on the mixer.
+                recStartMs = 0;
+                recPreBoot = false;
                 sdCardState = sd_card_state::READY;
             }
             // state 0 is the base's boot/idle announce; keep what we know.

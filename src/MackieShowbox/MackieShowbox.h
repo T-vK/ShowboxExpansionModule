@@ -44,6 +44,8 @@ public:
     uint8_t dumpTryCount() const { return dumpTries; }
     void requestMixerDump();
     sd_card_state getSdCardState();
+    uint32_t getRecStartMs() const { return recStartMs; }
+    bool getRecPreBoot() const { return recPreBoot; }
     bool hasSdCardState() const { return sdCardHeard; }
     void setParsing(bool enabled) { parseEnabled = enabled; }
     bool parsing() const { return parseEnabled; }
@@ -214,6 +216,11 @@ private:
     sd_card_state sdCardState = sd_card_state::NOT_DETECTED;
     bool sdCardHeard = false;
     bool sdCardPresent = false;
+    // Recording timing: millis() timestamp when recording started (0 = not
+    // recording), and whether recording was already active when the module
+    // booted (the webui shows "~" for the unknown pre-boot duration).
+    uint32_t recStartMs = 0;
+    bool recPreBoot = false;
     bool tunerOn = false;
     uint8_t tunerChannel = 1;
     void sendTunerPacket(uint8_t action, uint8_t chan);
