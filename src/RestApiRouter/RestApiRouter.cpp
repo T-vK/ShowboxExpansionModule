@@ -754,6 +754,16 @@ void RestApiRouter::setup() {
     }, nullptr, collectBody);
 
     // Looper route
+    _server->on("/api/v1/showbox/looper_overdub", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        String val;
+        if (!requireParam(request, "value", val)) {
+            return;
+        }
+        if (_actions != nullptr) {
+            _actions->setVariable("looperOverdub", val == "1" || val == "true" ? 1.0f : 0.0f);
+        }
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
     _server->on("/api/v1/showbox/action/looper_button", HTTP_GET, [this](AsyncWebServerRequest* request) {
         Debug->println("GET /api/v1/showbox/action/looper_button");
         String actionName;

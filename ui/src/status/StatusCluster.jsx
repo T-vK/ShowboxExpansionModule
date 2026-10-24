@@ -77,17 +77,15 @@ export function StatusCluster() {
         <IconBluetooth />
       </button>
       ) : null}
-      <button
+      <span
         ref={battBtn}
-        type="button"
         class={"batt-chip " + (pct == null ? "unknown" : battClass(pct)) + (link.ok ? "" : " stale")}
         title={pct == null ? "Battery unknown" : `Showbox battery ${pct}%`}
-        onClick={() => toggle("batt")}
       >
         <span class="batt-meter">
           <IconBattery pct={pct} />
         </span>
-      </button>
+      </span>
       <Dropdown anchorRef={popAnchor} open={open} wide onClose={() => setOpen(false)}>
         <div class="link-pop">
           <p class={"link-pop-state " + (live ? "ok" : "bad")}>

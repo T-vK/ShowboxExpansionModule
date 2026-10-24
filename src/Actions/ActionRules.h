@@ -14,6 +14,7 @@ class ActionRules {
 public:
     void begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections* connectionsIn, Hid* hidIn = nullptr);
     void setFrontPanel(FrontPanel* panelIn);
+        void setVariable(const char* name, float value);
     void setDebugSerial(Print* serial);
     void tick();
 
