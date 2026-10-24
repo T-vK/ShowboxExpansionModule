@@ -500,9 +500,15 @@ bool MackieShowbox::takeSnapshotDone(uint8_t& action, uint8_t& slot) {
     snapshotBusyUntil = 0;
     // The mixer restores its state on recall but does NOT re-send entity
     // values (verified 2026-10-19: gain stayed stale until a DATA_REQUEST
-    // forced the dump). Re-request the dump so the module cache and the
-    // webui reflect the recalled state. Send the packet directly —
-    // requestMixerDump() gates behind dumpGen==0 and won't re-dump.
+    // forced the dump). Two problems:
+    // 1. The module's cache needs a fresh dump — re-request it.
+    // 2. The mixerTouched flags (set when the user wrote entities via the
+    //    webui) suppress the module from accepting the dump's values —
+    //    every entity the user ever touched via the webui is gated off.
+    //    Clear them ALL so the dump updates everything.
+    for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+        mixerTouched[i] = false;
+    }
     lastDumpReqMs = 0;
     dumpTries = 0;
     uint8_t req[] = { 0xBE, 0xEF, 0x00, DATA_REQUEST, ALL_ENTITIES, 0xEF, 0xBE };
