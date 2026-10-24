@@ -373,6 +373,7 @@ const char* kBuiltinRules[] = {
     "{\"on\":true,\"name\":\"MIDI Boost Toggle\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"midiBoostToggle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"108\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"toggle\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Auto Boost On Play\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostOn\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"op\":\"lt\",\"value\":\"0.5\"},\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"on\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":105,\"echoChannel\":16}]}",
     "{\"on\":true,\"name\":\"Auto Boost Off\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostOff\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\"}],\"condition\":{\"op\":\"and\",\"items\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"op\":\"ne\",\"value\":\"3\"},{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"op\":\"lt\",\"value\":\"0.5\"}]},\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"off\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":106,\"echoChannel\":16}]}",
+    "{\"on\":true,\"name\":\"Looper Overdub After Record\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"looperOverdubAfter\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"type\":\"variable\",\"name\":\"looperOverdub\",\"op\":\"gt\",\"value\":\"0.5\"},\"actions\":[{\"type\":\"variable\",\"name\":\"looperOverdubFire\",\"op\":\"set\",\"value\":\"1\",\"persist\":false},{\"type\":\"looper\",\"button\":\"cycle\"}]}",
     "{\"on\":true,\"name\":\"Auto Boost Toggle\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostToggle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"107\"}],\"actions\":[{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"op\":\"toggle\",\"persist\":true}]}",
     "{\"on\":false,\"name\":\"Auto Boost Armed\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostArmed\",\"triggers\":[{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"value\":\"0\"}],\"condition\":{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"op\":\"eq\",\"value\":\"3\"},\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"on\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":105,\"echoChannel\":16}]}",
     "{\"on\":false,\"name\":\"Auto Boost Disarmed\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostDisarmed\",\"triggers\":[{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"value\":\"1\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"off\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":106,\"echoChannel\":16}]}",
@@ -466,6 +467,10 @@ void ActionRules::begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections
 
 void ActionRules::setFrontPanel(FrontPanel* panelIn) {
     panel = panelIn;
+}
+
+void ActionRules::setVariable(const char* name, float value) {
+    setVar(nullptr, String(name), value, false, true);
 }
 
 void ActionRules::setDebugSerial(Print* serial) {

@@ -273,10 +273,17 @@ body:has(.mixer-shell), body:has(.page-shell) {
 .page-hud .pad {
   padding: 0 0.4rem;
 }
-.hud-right .pad.icon-only, .page-hud .pad.icon-only, .hud-fs {
+.hud-right .pad.icon-only, .page-hud .pad.icon-only {
   min-width: 1.7rem; width: 1.7rem; padding: 0;
   color: #d0d4dc;
   border-color: #2a3040;
+}
+.hud-fs {
+  min-width: 1.7rem; width: 1.7rem; padding: 0;
+  color: #d0d4dc;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 .mixer-hud .pad-ico, .hud-right .pad-ico { width: 0.9rem; height: 0.9rem; }
 .hud-right .pad.hud-rec {
