@@ -147,6 +147,8 @@ private:
     uint8_t lastMidiInCc = 0xFF;
     uint8_t lastMidiInCh = 0xFF;
     uint32_t looperChangedAtMs = 0;
+    uint32_t looperTapWatch = 0;
+    uint8_t looperTapStateBefore = 0xFF;
     char pendingLooperOp[8] = {};
     uint32_t pendingLooperDueMs = 0;
     uint32_t ignoreShowboxUntil = 0;
