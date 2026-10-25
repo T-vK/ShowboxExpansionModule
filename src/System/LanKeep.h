@@ -41,6 +41,7 @@ void lanTickSoak(MackieShowbox& showbox);
 uint32_t lanGwRttMs();
 int lanGwMisses();
 void lanTickHttpHealth();
+void lanNoteApActive(bool on);
 
 extern volatile bool gMdnsUp;
 extern volatile bool gSetupDone;

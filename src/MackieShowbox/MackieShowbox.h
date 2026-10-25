@@ -268,6 +268,8 @@ private:
     volatile uint32_t ignoreTouchUntil = 0;
     volatile uint32_t looperHoldUntil = 0;
     bool looperOutgoing = false;
+    uint32_t looperSecondTapAt = 0;
+    void sendLooperPress();
     volatile uint32_t restoreCount = 0;
     volatile uint32_t dumpGen = 0;
     uint32_t lastDumpReqMs = 0;

@@ -655,6 +655,54 @@ static void lanBleYieldTick() {
     }
 }
 
+// AP+BLE+UART does not fit the internal heap: at the gig the fallback
+// hotspot came up next to a live pedal, softAP ate the last contiguous
+// blocks and the UART interceptor starved until the next reboot (and the
+// persisted apWanted kept it broken across reboots). While the AP is up,
+// yield the pedal link first; it reconnects on its own when the AP stops.
+static bool apYieldForAp = false;
+static uint32_t apYieldSinceMs = 0;
+
+void lanNoteApActive(bool on) {
+    static bool last = false;
+    if (on == last) {
+        return;
+    }
+    last = on;
+    if (on) {
+        apYieldSinceMs = millis();
+        debugLog("ap active: yield BLE host");
+        if (sMultiMidi != nullptr && sMultiMidi->hostConnected()) {
+            apYieldForAp = true;
+            sMultiMidi->dropHostLink();
+            sMultiMidi->allowOutgoing(false);
+            diagEventForce("wifi", "fallback AP up: BLE host yielded");
+        }
+    } else {
+        apYieldForAp = false;
+        if (sMultiMidi != nullptr) {
+            sMultiMidi->allowOutgoing(true);
+        }
+        debugLog("ap stopped: BLE host released");
+    }
+}
+
+static void lanBleApTick() {
+    if (!apYieldForAp) {
+        return;
+    }
+    if (sMultiMidi == nullptr || !sMultiMidi->hostConnected()) {
+        apYieldForAp = false;
+        return;
+    }
+    // autoConnect keeps trying to re-establish while the AP is up; keep
+    // stamping on it until the AP hands the radio back.
+    if ((int32_t)(millis() - apYieldSinceMs) >= 2000) {
+        apYieldSinceMs = millis();
+        sMultiMidi->dropHostLink();
+    }
+}
+
 static void gwPingStart(uint32_t ip) {
     if (sGwPing != nullptr) {
         esp_ping_stop(sGwPing);
@@ -698,9 +746,6 @@ static void gwPingStart(uint32_t ip) {
 }
 
 void lanGwPingTick() {
-    if (!gDiagWatch) {
-        return;
-    }
     uint32_t gw = WiFi.gatewayIP();
     if (WiFi.status() != WL_CONNECTED || gw == 0) {
         if (sGwPing != nullptr) {
@@ -884,9 +929,6 @@ static bool httpListenProbe() {
 }
 
 void lanTickHttpHealth() {
-    if (!gDiagWatch) {
-        return;
-    }
     if (WiFi.status() != WL_CONNECTED || WiFi.localIP()[0] == 0) {
         sHttpProbeFails = 0;
         sHttpRebound = false;
@@ -920,6 +962,7 @@ void lanTickHttpHealth() {
 }
 
 void lanKeepWifi(const FrontPanel& panel) {
+    lanBleApTick();
     lanGwPingTick();
     if (!panel.wifiRadioOn() || panel.wifiPortalOpen()) {
         return;

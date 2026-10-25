@@ -187,8 +187,7 @@ void midiInboundSetSource(const char* name) {
     inboundSourceName = (name != nullptr && name[0] != '\0') ? name : "ext";
 }
 
-const char* midiKindFromStatus(uint8_t status) {
-    if (status >= 0xF0) {
+const char* midiKindFromStatus(uint8_t status) {    if (status >= 0xF0) {
         switch (status) {
             case 0xF0: return "sysex";
             case 0xF1: return "timeCode";
@@ -242,6 +241,14 @@ void midiInboundDispatch(midi::MidiAction* action, uint8_t status, uint8_t p1, u
         }
     }
     actionRulesOnMidi(midiKindFromStatus(status), channel, p1, p2);
+}
+
+void MultiMidi::testDispatch(uint8_t status, uint8_t p1, uint8_t p2) {
+    if (instance == nullptr) {
+        return;
+    }
+    midiInboundSetSource("test");
+    midiInboundDispatch(&instance->action, status, p1, p2);
 }
 
 MultiMidi* MultiMidi::instance = nullptr;

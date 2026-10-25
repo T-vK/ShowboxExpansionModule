@@ -365,18 +365,6 @@ const char* kBuiltinRules[] = {
     "{\"on\":true,\"name\":\"Looper Rec / Play / Overdub\",\"group\":\"TRS Looper\",\"builtin\":\"looperTrsCycle\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"1t\",\"gesture\":\"shortRelease\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"cycle\"}]}",
     "{\"on\":true,\"name\":\"Looper Stop\",\"group\":\"TRS Looper\",\"builtin\":\"looperTrsStop\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"1r\",\"gesture\":\"shortRelease\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"stop\"}]}",
     "{\"on\":true,\"name\":\"Looper Delete\",\"group\":\"TRS Looper\",\"builtin\":\"looperTrsDelete\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"1r\",\"gesture\":\"long\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"delete\"}]}",
-    "{\"on\":true,\"name\":\"MIDI Looper Rec / Play / Overdub\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"looperMidiCycle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"102\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"cycle\"}]}",
-    "{\"on\":true,\"name\":\"MIDI Looper Stop\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"looperMidiStop\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"103\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"stop\"}]}",
-    "{\"on\":true,\"name\":\"MIDI Looper Delete\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"looperMidiDelete\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"104\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"delete\"}]}",
-    "{\"on\":true,\"name\":\"MIDI Boost On\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"midiBoostOn\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"105\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"on\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true}]}",
-    "{\"on\":true,\"name\":\"MIDI Boost Off\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"midiBoostOff\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"106\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"off\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true}]}",
-    "{\"on\":true,\"name\":\"MIDI Boost Toggle\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"midiBoostToggle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"108\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"toggle\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true}]}",
-    "{\"on\":true,\"name\":\"Auto Boost On Play\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostOn\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"op\":\"lt\",\"value\":\"0.5\"},\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"on\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":105,\"echoChannel\":16}]}",
-    "{\"on\":true,\"name\":\"Auto Boost Off\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostOff\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\"}],\"condition\":{\"op\":\"and\",\"items\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"op\":\"ne\",\"value\":\"3\"},{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"op\":\"lt\",\"value\":\"0.5\"}]},\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"off\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":106,\"echoChannel\":16}]}",
-    "{\"on\":true,\"name\":\"Looper Overdub After Record\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"looperOverdubAfter\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"type\":\"variable\",\"name\":\"looperOverdub\",\"op\":\"gt\",\"value\":\"0.5\"},\"actions\":[{\"type\":\"variable\",\"name\":\"looperOverdubFire\",\"op\":\"set\",\"value\":\"1\",\"persist\":false},{\"type\":\"looper\",\"button\":\"cycle\"}]}",
-    "{\"on\":true,\"name\":\"Auto Boost Toggle\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostToggle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"107\"}],\"actions\":[{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"op\":\"toggle\",\"persist\":true}]}",
-    "{\"on\":false,\"name\":\"Auto Boost Armed\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostArmed\",\"triggers\":[{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"value\":\"0\"}],\"condition\":{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"op\":\"eq\",\"value\":\"3\"},\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"on\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":105,\"echoChannel\":16}]}",
-    "{\"on\":false,\"name\":\"Auto Boost Disarmed\",\"group\":\"MIDI Looper & Boost\",\"builtin\":\"autoBoostDisarmed\",\"triggers\":[{\"type\":\"variable\",\"name\":\"autoBoostOff\",\"value\":\"1\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT2_GAIN\",\"on\":\"off\",\"steps\":2,\"var\":\"midiBoost\",\"persist\":true,\"echoCc\":106,\"echoChannel\":16}]}",
     "{\"on\":true,\"name\":\"Booster Pedal\",\"group\":\"Booster Pedal\",\"builtin\":\"pedalBoost\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"2t\",\"gesture\":\"shortRelease\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT4_GAIN\",\"on\":\"toggle\",\"low\":32,\"high\":52,\"var\":\"pedalBoost\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Bluetooth Pairing (blue press)\",\"group\":\"Front Panel\",\"builtin\":\"panelBluePress\",\"triggers\":[{\"type\":\"panel\",\"button\":\"blue\",\"gesture\":\"press\"}],\"actions\":[{\"type\":\"system\",\"command\":\"pairing\"}]}",
     "{\"on\":true,\"name\":\"Bluetooth Mode Button (blue)\",\"group\":\"Front Panel\",\"builtin\":\"panelBlueLong\",\"triggers\":[{\"type\":\"panel\",\"button\":\"blue\",\"gesture\":\"long\"}],\"actions\":[{\"type\":\"system\",\"command\":\"bluetoothToggle\"}]}",
@@ -409,6 +397,10 @@ void actionRulesOnPanel(const char* button, const char* gesture) {
     if (instance != nullptr) {
         instance->onPanel(button, gesture);
     }
+}
+
+float actionRulesVariable(const char* name) {
+    return instance != nullptr ? instance->getVariable(name) : 0.0f;
 }
 
 void ActionRules::jackPress(void* parameter) {
@@ -471,6 +463,10 @@ void ActionRules::setFrontPanel(FrontPanel* panelIn) {
 
 void ActionRules::setVariable(const char* name, float value) {
     setVar(nullptr, String(name), value, false, true);
+}
+
+float ActionRules::getVariable(const char* name) const {
+    return getVar(nullptr, String(name == nullptr ? "" : name));
 }
 
 void ActionRules::setDebugSerial(Print* serial) {
@@ -1518,6 +1514,8 @@ void ActionRules::flush() {
     prefs.end();
 }
 
+bool obsoleteBuiltin(const String& key);
+
 bool ActionRules::hasBuiltin(const char* key) const {
     if (key == nullptr || key[0] == '\0') {
         return true;
@@ -1541,6 +1539,9 @@ void ActionRules::seedBuiltins() {
             continue;
         }
         String key = jsonText(doc["builtin"]);
+        if (obsoleteBuiltin(key)) {
+            continue;
+        }
         if (hasBuiltin(key.c_str())) {
             continue;
         }
@@ -1553,7 +1554,37 @@ void ActionRules::seedBuiltins() {
     patchBuiltinMeta();
 }
 
+// Builtin rules that older firmware seeded and that are now obsolete: the
+// MIDI looper/boost CCs (102-108) are owned end-to-end by MidiBoostLoop, and
+// the looper boost is driven by the real LOOPER_STATE announcements. Keeping
+// both implementations was the "boost way too much / never un-boosted" bug.
+// They are deleted from the store once, on first boot of this firmware.
+const char* kObsoleteBuiltins[] = {
+    "autoBoostOn", "autoBoostOff", "autoBoostArmed", "autoBoostDisarmed",
+    "looperOverdubAfter", "looperMidiCycle", "looperMidiStop", "looperMidiDelete",
+    "midiBoostOn", "midiBoostOff", "midiBoostToggle", "autoBoostToggle",
+};
+
+bool obsoleteBuiltin(const String& key) {
+    for (const char* stale : kObsoleteBuiltins) {
+        if (key == stale) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ActionRules::patchBuiltinMeta() {
+    for (size_t i = rules.size(); i-- > 0;) {
+        JsonDocument doc;
+        if (deserializeJson(doc, rules[i].json)) {
+            continue;
+        }
+        if (obsoleteBuiltin(jsonText(doc["builtin"]))) {
+            rules.erase(rules.begin() + i);
+            dirty = true;
+        }
+    }
     for (const char* raw : kBuiltinRules) {
         JsonDocument seed;
         if (deserializeJson(seed, raw)) {
@@ -1585,37 +1616,24 @@ void ActionRules::patchBuiltinMeta() {
             }
             // MIDI 105/106 already arrived from a controller. Echoing them back
             // out kMidiPortAll loops BLE/ETH/ext forever.
-            if (key == "midiBoostOn" || key == "midiBoostOff" || key == "midiBoostToggle"
-                || key == "autoBoostOn" || key == "autoBoostOff" || key == "autoBoostArmed"
-                || key == "autoBoostDisarmed") {
+            if (key == "midiBoostOn" || key == "midiBoostOff" || key == "midiBoostToggle") {
                 for (JsonObject action : doc["actions"].as<JsonArray>()) {
                     if (jsonText(action["type"]) != "gainBoost") {
                         continue;
                     }
-                    if (key == "midiBoostOn" || key == "midiBoostOff" || key == "midiBoostToggle") {
-                        if (!action["echoCc"].isNull() || !action["echoChannel"].isNull()) {
-                            action.remove("echoCc");
-                            action.remove("echoChannel");
-                            changed = true;
-                        }
+                    if (!action["echoCc"].isNull() || !action["echoChannel"].isNull()) {
+                        action.remove("echoCc");
+                        action.remove("echoChannel");
+                        changed = true;
+                    }
+                    if (jsonText(action["var"]) == "midiBoost") {
+                        action["var"] = "boost";
+                        changed = true;
                     }
                     if (jsonInt(action["steps"], 4) != 2) {
                         action["steps"] = 2;
                         changed = true;
                     }
-                }
-            }
-            if (key == "autoBoostArmed" || key == "autoBoostDisarmed") {
-                if (doc["on"] != false) { doc["on"] = false; changed = true; }
-            }
-            if (key == "autoBoostOn" || key == "autoBoostOff") {
-                String have;
-                String want;
-                serializeJson(doc["condition"], have);
-                serializeJson(seed["condition"], want);
-                if (have != want) {
-                    doc["condition"] = seed["condition"];
-                    changed = true;
                 }
             }
             if (changed) {
@@ -1807,13 +1825,12 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
                 }
             } else {
                 float base = getVar(&job, baseName);
-                int boosted = nearestGainStep(current);
-                int expected = nearestGainStep(base) + steps;
-                if (expected >= kGainStepCount) expected = kGainStepCount - 1;
+                // Restore the pre-boost gain whenever we are the ones who
+                // boosted. The old "boosted == expected" guard skipped the
+                // restore whenever the base drifted, which is exactly how a
+                // deleted loop used to leave the boost behind.
                 ignoreShowboxUntil = millis() + 80;
-                if (boosted == expected) {
-                    showbox->setEntityValue(id, base);
-                }
+                showbox->setEntityValue(id, base);
                 if (varName.length()) {
                     setVar(&job, varName, 0.0f, false, persist);
                 }
@@ -1858,14 +1875,12 @@ void ActionRules::dispatchLooper(const String& op) {
 
     if (op == "stop") {
         sendAction(looper_button_action::DOUBLE_PRESS);
-        applyMidiLoopBoost(false);
         noteLooperState((state == looper_state::RECORD_INITIAL_LOOP || state == looper_state::DELETE)
             ? looper_state::DELETE : looper_state::STOP_PLAYING);
         return;
     }
     if (op == "delete") {
         sendAction(looper_button_action::LONG_PRESS);
-        applyMidiLoopBoost(false);
         noteLooperState(looper_state::DELETE);
         return;
     }
@@ -1881,35 +1896,33 @@ void ActionRules::dispatchLooper(const String& op) {
         sendAction(looper_button_action::LONG_PRESS);
         return;
     }
-    // cycle / down / tap. UART first, then boost/state. Rec -> overdub is
-    // two taps back-to-back (DOWN/UP/DOWN/UP) with no software gap.
+    // cycle / down / tap. Recording -> next step honours the overdub
+    // preference (one tap = play, two back-to-back taps = overdub). Boosting
+    // is NOT done here: onLooperState() reacts to the base's real
+    // LOOPER_STATE announcements, so a single level change is one boost.
     if (state == looper_state::RECORD_INITIAL_LOOP) {
-        sendTap(2);
-        applyMidiLoopBoost(false);
-        noteLooperState(looper_state::RECORD_OVERDUB);
+        const bool overdub = getVar(nullptr, "looperOverdub") >= 0.5f;
+        sendTap(overdub ? 2 : 1);
+        noteLooperState(overdub ? looper_state::RECORD_OVERDUB : looper_state::PLAY);
         ignoreShowboxUntil = millis() + 450;
         return;
     }
     if (state == looper_state::PLAY) {
         sendTap(1);
-        applyMidiLoopBoost(false);
         noteLooperState(looper_state::RECORD_OVERDUB);
         return;
     }
     if (state == looper_state::RECORD_OVERDUB) {
         sendTap(1);
-        applyMidiLoopBoost(true);
         noteLooperState(looper_state::PLAY);
         return;
     }
     if (state == looper_state::STOP_PLAYING) {
         sendTap(1);
-        applyMidiLoopBoost(false);
         noteLooperState(looper_state::PLAY);
         return;
     }
     sendTap(1);
-    applyMidiLoopBoost(false);
     noteLooperState(looper_state::RECORD_INITIAL_LOOP);
 }
 
@@ -1923,23 +1936,6 @@ void ActionRules::noteLooperState(uint8_t next) {
     }
     showbox->setLooperState(static_cast<looper_state>(next));
     liveSocket.pushEntity("LOOPER_STATE", next);
-}
-
-void ActionRules::applyMidiLoopBoost(bool on) {
-    if (on && getVar(nullptr, "autoBoostOff") >= 0.5f) {
-        return;
-    }
-    Job job;
-    JsonDocument doc;
-    JsonObject step = doc.to<JsonObject>();
-    step["entity"] = "INPUT2_GAIN";
-    step["on"] = on ? "on" : "off";
-    step["steps"] = 2;
-    step["var"] = "midiBoost";
-    step["persist"] = true;
-    step["echoCc"] = on ? 105 : 106;
-    step["echoChannel"] = 16;
-    applyGainBoost(job, step);
 }
 
 void ActionRules::startLooper(Job& job, const String& op) {

@@ -387,6 +387,11 @@ body:has(.mixer-shell), body:has(.page-shell) {
 .link-pop-state.ok { color: var(--green); }
 .link-pop-state.bad { color: #e85a4a; }
 .link-pop ul { margin: 0.35rem 0 0; padding: 0 0 0 1rem; color: var(--muted); }
+.bt-device-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.15rem 0; }
+.bt-device-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bt-device-row button { flex: none; font-size: 0.68rem; padding: 0.1rem 0.4rem; }
+.bt-page-link { color: var(--accent); text-decoration: none; }
+.bt-page-link:hover { text-decoration: underline; }
 .hud-voice { display: flex; align-items: center; padding: 0 0.12rem; flex: none; }
 .rec-banner { background: #3a1414; color: #ff9a8c; }
 

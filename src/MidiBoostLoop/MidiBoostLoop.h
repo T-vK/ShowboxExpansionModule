@@ -67,7 +67,6 @@ private:
     bool isAutoBoostCc(uint8_t controller) const;
     bool isBoostToggleCc(uint8_t controller) const;
     bool isBoostEcho(uint8_t controller, uint8_t value) const;
-    bool autoBoostWanted() const;
     void toggleAutoBoost();
     void setBoost(bool on);
     void syncBoost();
@@ -103,6 +102,7 @@ private:
     uint32_t announceAt = 0;
     uint32_t ignoreBoostEchoUntil = 0;
     Mode mode = Mode::Empty;
+    Mode lastSyncMode = Mode::Empty;
     Job job = Job::None;
     uint8_t jobStep = 0;
     uint32_t jobAt = 0;

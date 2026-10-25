@@ -252,8 +252,9 @@ namespace Showbox {
         constexpr uint8_t PA = 0x00;
     } // namespace AmpPaMode
     namespace LocationMode {
-        constexpr uint8_t OUTDOOR = 0x01;
-        constexpr uint8_t INDOOR = 0x00;
+        // Wire truth (observed on the mixer): 0 = outdoor, 1 = indoor.
+        constexpr uint8_t OUTDOOR = 0x00;
+        constexpr uint8_t INDOOR = 0x01;
     } // namespace LocationMode
     namespace SelectedChan {
         constexpr uint8_t CHAN1 = 0x00;

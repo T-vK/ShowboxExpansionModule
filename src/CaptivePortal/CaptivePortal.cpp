@@ -259,11 +259,19 @@ void CaptivePortal::ensureAp() {
             return;
         }
     }
+    // A bare mode switch can leave the default ESP_XXXX beacon up if softAP
+    // lost its config; re-assert the hotspot identity.
+    if (WiFi.softAPSSID() != kApSsid) {
+        debugLog("ap ssid drift -> %s, reasserting", WiFi.softAPSSID().c_str());
+        WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
+    }
+    lanNoteApActive(true);
     startDns();
 }
 
 void CaptivePortal::stopAp() {
     stopDns();
+    lanNoteApActive(false);
     if (!apUp && WiFi.softAPIP()[0] == 0) {
         return;
     }
