@@ -15,7 +15,7 @@
 #endif
 
 namespace {
-constexpr float kAnalogHoldNorm = 0.006f;
+constexpr float kAnalogHoldNorm = 0.009f;
 constexpr float kAnalogFloor = -120.0f;
 constexpr float kAnalogCeil = 10.0f;
 constexpr float kAnalogSpan = 130.0f;
@@ -368,6 +368,18 @@ void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
+void MackieShowbox::sendLooperPress() {
+    uint8_t buf[16];
+    size_t n = 0;
+    uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
+    uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
+    memcpy(buf + n, down, 8);
+    n += 8;
+    memcpy(buf + n, up, 8);
+    n += 8;
+    interceptor.sendPacket(buf, n, TO_BASE);
+}
+
 void MackieShowbox::tapLooper(uint8_t times) {
     if (times < 1) {
         times = 1;
@@ -375,17 +387,13 @@ void MackieShowbox::tapLooper(uint8_t times) {
     if (times > 2) {
         times = 2;
     }
-    uint8_t buf[32];
-    size_t n = 0;
-    for (uint8_t i = 0; i < times; i++) {
-        uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
-        uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
-        memcpy(buf + n, down, 8);
-        n += 8;
-        memcpy(buf + n, up, 8);
-        n += 8;
+    sendLooperPress();
+    if (times >= 2) {
+        // The base debounces a back-to-back DOWN/UP/DOWN/UP burst into one
+        // press (rec -> play instead of rec -> overdub). The second press
+        // must go out as its own burst, gapped past the debouncer.
+        looperSecondTapAt = millis() + 250;
     }
-    interceptor.sendPacket(buf, n, TO_BASE);
 }
 
 void MackieShowbox::noteLooperOutgoing() {
@@ -923,11 +931,24 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             mixerAccepted = rememberMixerEntity(raw_packet, length);
         }
         const bool baseOwned = !mixerOwnsEntity(entityId);
-        if (entityId == LOOPER_STATE && looperHoldActive()) {
-            // Keep the predicted looper state until the hardware echo catches up.
-        } else if (baseOwned && fromMixer) {
+        const bool looperHold = entityId == LOOPER_STATE && looperHoldActive();
+        const bool looperEchoMatch = looperHold && !fromMixer && length >= 10
+            && raw_packet[9] == entityValues[LOOPER_STATE].uint8Value;
+        bool keepPredictedLooper = false;
+        if (looperEchoMatch) {
+            // The base confirmed the predicted transition: end the hold and
+            // accept the announcement below, or the state-driven boost and
+            // every later rule waits out the whole 4 s window.
+            looperHoldUntil = 0;
+        } else if (looperHold) {
+            // Keep the predicted looper state: mixer display/status echoes
+            // are not DSP truth, and a differing base value during the hold
+            // is a stale echo of the old state.
+            keepPredictedLooper = true;
+        }
+        if (!keepPredictedLooper && baseOwned && fromMixer) {
             // Mixer display/status echoes are not DSP truth (especially LOOPER_STATE).
-        } else if (entityType == BOOL) {
+        } else if (!keepPredictedLooper && entityType == BOOL) {
             bool value = raw_packet[9];
             setEntityValue(entityId, value, false);
             if (entityListener != nullptr) {
@@ -951,6 +972,10 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
                 memcpy(&value, &raw_packet[9], sizeof(float));
                 if (fromMixer && analogHoldOn(entityId) && !mixerAccepted) {
                     // rememberMixerEntity left the store alone (knob jitter).
+                } else if (!fromMixer && analogHoldOn(entityId)
+                    && ignoreAnalogJitter(entityId, snapFloat(entityId, value))) {
+                    // The base reports knob moves too (the phones knob lives on
+                    // the base), so the jitter gate must cover both directions.
                 } else {
                     float stored;
                     if (fromMixer && mixerAccepted) {
@@ -1259,6 +1284,10 @@ void MackieShowbox::uartTask(void* arg) {
 void MackieShowbox::tick() {
     if (analogHoldDirty) {
         saveAnalogHold();
+    }
+    if (looperSecondTapAt != 0 && (int32_t)(millis() - looperSecondTapAt) >= 0) {
+        looperSecondTapAt = 0;
+        sendLooperPress();
     }
     if (!uartTaskRunning) {
         interceptor.tick();

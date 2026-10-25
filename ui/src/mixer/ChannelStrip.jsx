@@ -133,7 +133,8 @@ export function ChannelStrip({ ch, entities, selected, name, view, onSelect, onR
   const title = (name && name.trim()) ? name : ch.label;
   const fader = shown("fader");
   const amp = truthy(val(entities, "AMP_PA_MODE", false));
-  const outdoor = truthy(val(entities, "LOCATION_MODE", false));
+  // LOCATION_MODE wire truth: 0 = outdoor, 1 = indoor.
+  const indoor = truthy(val(entities, "LOCATION_MODE", false));
   const bypass = truthy(val(entities, "FX_BYPASS", false));
   const linkOk = !!link.ok;
 
@@ -291,7 +292,7 @@ export function ChannelStrip({ ch, entities, selected, name, view, onSelect, onR
     parts.push(<Header key="h" title={title} clipOn={truthy(val(entities, "MAIN_CLIP_OL", false))} onRename={onRename} />);
     parts.push(
       <div key="eq" class="curve-btn readonly" title="Main voicing">
-        <VoicingGraph amp={amp} outdoor={outdoor} mini />
+        <VoicingGraph amp={amp} outdoor={!indoor} mini />
       </div>
     );
     const feedback = Number(val(entities, "FEEDBACK_ELIM", 0)) === 1;
@@ -300,12 +301,14 @@ export function ChannelStrip({ ch, entities, selected, name, view, onSelect, onR
         <ModeToggle
           label={amp ? "Amp Mode" : "PA Mode"}
           title="Toggle PA / Amp voicing"
+          on
           onClick={() => write("AMP_PA_MODE", !amp)}
         />
         <ModeToggle
-          label={outdoor ? "Outdoor Mode" : "Indoor Mode"}
+          label={indoor ? "Indoor Mode" : "Outdoor Mode"}
           title="Toggle Indoor / Outdoor voicing"
-          onClick={() => write("LOCATION_MODE", !outdoor)}
+          on
+          onClick={() => write("LOCATION_MODE", !indoor)}
         />
         <ModeToggle
           label="Bypass FX"

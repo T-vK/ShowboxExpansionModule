@@ -14,7 +14,7 @@ class ActionRules {
 public:
     void begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections* connectionsIn, Hid* hidIn = nullptr);
     void setFrontPanel(FrontPanel* panelIn);
-        void setVariable(const char* name, float value);
+    void setVariable(const char* name, float value);
     void setDebugSerial(Print* serial);
     void tick();
 
@@ -31,6 +31,7 @@ public:
     void onPanel(const char* button, const char* gesture);
     void onShowbox(const char* entity, const char* value);
     void onPacket(const uint8_t* data, size_t length, const char* dir);
+    float getVariable(const char* name) const;
 
 private:
     struct Rule {
@@ -82,7 +83,6 @@ private:
     float getVar(Job* job, const String& name) const;
     void setVar(Job* job, const String& name, float value, bool local, bool persist);
     void applyGainBoost(Job& job, JsonObjectConst step);
-    void applyMidiLoopBoost(bool on);
     void noteLooperState(uint8_t next);
     void dispatchLooper(const String& op);
     void startLooper(Job& job, const String& op);
@@ -155,3 +155,4 @@ bool actionRulesClaimMidi(const char* kind, uint8_t channel, uint8_t number);
 bool actionRulesClaimPanel(const char* button, const char* gesture);
 void actionRulesOnMidi(const char* kind, uint8_t channel, uint8_t number, uint8_t value);
 void actionRulesOnPanel(const char* button, const char* gesture);
+float actionRulesVariable(const char* name);

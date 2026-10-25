@@ -27,11 +27,117 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function deviceName(device) {
+  return (device.name && device.name.trim()) || device.address || "unknown";
+}
+
+async function callApi(url) {
+  const res = await fetch(url, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(await res.text() || `HTTP ${res.status}`);
+  }
+}
+
+function BtDeviceRow({ device, onAction }) {
+  return (
+    <li class="bt-device-row">
+      <span class="bt-device-name" title={device.address}>{deviceName(device)}</span>
+      {device.connected ? (
+        <button
+          type="button"
+          class="ghost"
+          onClick={() => onAction(`/api/v1/midi/ble/disconnect?address=${encodeURIComponent(device.address)}`)}
+        >Disconnect</button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onAction(`/api/v1/midi/ble/connect?midi=${device.midi ? 1 : 0}&hid=${device.hid ? 1 : 0}&address=${encodeURIComponent(device.address)}&name=${encodeURIComponent(device.name || "")}`)}
+        >Connect</button>
+      )}
+    </li>
+  );
+}
+
+function BtPopup() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/v1/midi", { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => { if (alive && json) setData(json); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 2500);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  async function act(url) {
+    setBusy(true);
+    try {
+      await callApi(url);
+      const res = await fetch("/api/v1/midi", { cache: "no-store" });
+      if (res.ok) setData(await res.json());
+    } catch (err) {
+      console.warn("bluetooth action failed", err);
+    }
+    setBusy(false);
+  }
+
+  const slots = (data && data.bleSlots) || {};
+  const linkCount = data ? data.bleLinkCount || 0 : 0;
+  const linkLimit = data ? data.bleLinkLimit || 3 : 3;
+  const hosts = data ? (data.hosts || []).filter((d) => d.connected) : [];
+  const peripherals = data ? (data.peripherals || []).filter((d) => d.connected) : [];
+  const connectable = data
+    ? [
+        ...(data.peripherals || []).filter((d) => !d.connected),
+        ...(data.nearby || []),
+      ]
+    : [];
+  const hostMax = slots.hostMax == null ? 1 : slots.hostMax;
+  const periMax = slots.peripheralMax == null ? 2 : slots.peripheralMax;
+
+  return (
+    <div class="link-pop">
+      <p class="link-pop-state ok">Bluetooth {linkCount}/{linkLimit} connected</p>
+      <p class="meta">Hosts {slots.hostUsed || 0}/{hostMax} · Peripherals {slots.peripheralUsed || 0}/{periMax}</p>
+      {hosts.length ? (
+        <>
+          <p>Hosts connected:</p>
+          <ul>{hosts.map((d) => <BtDeviceRow key={d.address} device={d} onAction={act} />)}</ul>
+        </>
+      ) : <p class="meta">No hosts connected.</p>}
+      {peripherals.length ? (
+        <>
+          <p>Peripherals connected:</p>
+          <ul>{peripherals.map((d) => <BtDeviceRow key={d.address} device={d} onAction={act} />)}</ul>
+        </>
+      ) : <p class="meta">No peripherals connected.</p>}
+      {connectable.length ? (
+        <>
+          <p>Available:</p>
+          <ul>{connectable.map((d) => <BtDeviceRow key={d.address} device={{ ...d, connected: false }} onAction={act} />)}</ul>
+        </>
+      ) : <p class="meta">Nothing new nearby. Use Add device on the Bluetooth page to scan.</p>}
+      <p class="actions">
+        <a href="/bluetooth" class="bt-page-link">Bluetooth settings</a>
+      </p>
+      {busy ? <p class="meta">Working…</p> : null}
+    </div>
+  );
+}
+
 export function StatusCluster() {
   const { esp, link } = useLive();
   const [open, setOpen] = useState(false);
+  const [pop, setPop] = useState("link");
   const [now, setNow] = useState(() => Date.now());
   const linkBtn = useRef(null);
+  const btBtn = useRef(null);
   const battBtn = useRef(null);
   const popAnchor = useRef(null);
   const pct = link.battery == null || link.battery === ""
@@ -50,8 +156,11 @@ export function StatusCluster() {
   const lastLasted = lastSession ? fmtDur(lastSession.end - lastSession.start) : null;
 
   function toggle(which) {
-    popAnchor.current = which === "batt" ? battBtn.current : linkBtn.current;
-    setOpen((v) => !v);
+    popAnchor.current = which === "batt" ? battBtn.current
+      : which === "bt" ? btBtn.current
+      : linkBtn.current;
+    setPop(which);
+    setOpen((v) => !(v && pop === which));
   }
 
   return (
@@ -68,14 +177,15 @@ export function StatusCluster() {
         </span>
       </button>
       {link.bleOn ? (
-      <button
-        type="button"
-        class="bt-chip"
-        title={link.bleHosts > 0 ? `Bluetooth: ${link.bleHosts} device(s) connected` : "Bluetooth on, no devices"}
-        onClick={() => toggle("batt")}
-      >
-        <IconBluetooth />
-      </button>
+        <button
+          ref={btBtn}
+          type="button"
+          class="bt-chip"
+          title={link.bleHosts > 0 ? `Bluetooth: ${link.bleHosts} device(s) connected` : "Bluetooth on, no devices"}
+          onClick={() => toggle("bt")}
+        >
+          <IconBluetooth />
+        </button>
       ) : null}
       <span
         ref={battBtn}
@@ -87,28 +197,30 @@ export function StatusCluster() {
         </span>
       </span>
       <Dropdown anchorRef={popAnchor} open={open} wide onClose={() => setOpen(false)}>
-        <div class="link-pop">
-          <p class={"link-pop-state " + (live ? "ok" : "bad")}>
-            {live ? "Connected to Showbox" : (esp.connected ? "Waiting for Showbox" : "Web UI disconnected")}
-          </p>
-          {esp.connected ? (
-            <p>This session {connectedFor} · since {fmtTime(esp.since)}</p>
-          ) : (
-            <p>Last drop {esp.lastDisconnect ? fmtTime(esp.lastDisconnect) : "—"}{lastLasted ? ` · that session ${lastLasted}` : ""}</p>
-          )}
-          <p>Drops this page: {esp.disconnects}</p>
-          <p>Mixer ↔ base: {link.ok ? "live" : "waiting"}{pct != null ? ` · battery ${pct}%` : ""}</p>
-          {esp.sessions.length ? (
-            <ul>
-              {esp.sessions.slice(-6).map((row, i) => (
-                <li key={`${row.start}-${i}`}>
-                  {fmtTime(row.start)} – {row.end ? fmtTime(row.end) : "now"}
-                  {" "}({fmtDur((row.end || now) - row.start)})
-                </li>
-              ))}
-            </ul>
-          ) : <p class="meta">No sessions yet.</p>}
-        </div>
+        {pop === "bt" ? <BtPopup /> : (
+          <div class="link-pop">
+            <p class={"link-pop-state " + (live ? "ok" : "bad")}>
+              {live ? "Connected to Showbox" : (esp.connected ? "Waiting for Showbox" : "Web UI disconnected")}
+            </p>
+            {esp.connected ? (
+              <p>This session {connectedFor} · since {fmtTime(esp.since)}</p>
+            ) : (
+              <p>Last drop {esp.lastDisconnect ? fmtTime(esp.lastDisconnect) : "—"}{lastLasted ? ` · that session ${lastLasted}` : ""}</p>
+            )}
+            <p>Drops this page: {esp.disconnects}</p>
+            <p>Mixer ↔ base: {link.ok ? "live" : "waiting"}{pct != null ? ` · battery ${pct}%` : ""}</p>
+            {esp.sessions.length ? (
+              <ul>
+                {esp.sessions.slice(-6).map((row, i) => (
+                  <li key={`${row.start}-${i}`}>
+                    {fmtTime(row.start)} – {row.end ? fmtTime(row.end) : "now"}
+                    {" "}({fmtDur((row.end || now) - row.start)})
+                  </li>
+                ))}
+              </ul>
+            ) : <p class="meta">No sessions yet.</p>}
+          </div>
+        )}
       </Dropdown>
     </>
   );

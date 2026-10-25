@@ -1,6 +1,7 @@
 #include "MidiBoostLoop.h"
 #include "Actions/ActionRules.h"
 #include "MultiMidi/MidiInbound.h"
+#include "MultiMidi/MidiPorts.h"
 #include <Preferences.h>
 #include <cmath>
 
@@ -60,6 +61,7 @@ void MidiBoostLoop::begin(MultiMidi* midiIn) {
     autoBoostOn = false;
     job = Job::None;
     mode = modeFromState(showbox->getLooperState());
+    lastSyncMode = mode;
 
     midi->action.setCallbackOnControlChange(MidiBoostLoop::onControlChange);
     midi->action.setCallbackOnNoteOn(MidiBoostLoop::onNoteOn);
@@ -310,7 +312,11 @@ void MidiBoostLoop::sendButton(looper_button_action action) {
 void MidiBoostLoop::sendLooperNow(uint8_t controller) {
     if (controller == recPlayOverdubCc) {
         uint8_t state = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-        showbox->tapLooper(state == looper_state::RECORD_INITIAL_LOOP ? 2 : 1);
+        // The overdub-after-record preference lives in the reaction variables
+        // (webui toggle); honour it for the recording -> next step tap.
+        const bool overdub = state == looper_state::RECORD_INITIAL_LOOP
+            && actionRulesVariable("looperOverdub") >= 0.5f;
+        showbox->tapLooper(overdub ? 2 : 1);
         showbox->noteLooperOutgoing();
         return;
     }
@@ -355,27 +361,20 @@ void MidiBoostLoop::handleRecordPlayOverdub() {
     switch (mode) {
         case Mode::Empty:
             mode = Mode::Recording;
-            if (autoBoostEnabled) {
-                setBoost(false);
-            }
             break;
-        case Mode::Recording:
-            mode = Mode::Overdub;
-            if (autoBoostEnabled) {
-                setBoost(false);
-            }
+        case Mode::Recording: {
+            // Match what sendLooperNow actually sent: the overdub preference
+            // decides between one tap (play) and a gapped double press
+            // (overdub).
+            const bool overdub = actionRulesVariable("looperOverdub") >= 0.5f;
+            mode = overdub ? Mode::Overdub : Mode::Playing;
             break;
+        }
         case Mode::Playing:
             mode = Mode::Overdub;
-            if (autoBoostEnabled) {
-                setBoost(false);
-            }
             break;
         case Mode::Overdub:
             mode = Mode::Playing;
-            if (autoBoostEnabled) {
-                setBoost(true);
-            }
             break;
         case Mode::Stopped:
             mode = Mode::Playing;
@@ -386,26 +385,16 @@ void MidiBoostLoop::handleRecordPlayOverdub() {
 void MidiBoostLoop::handleStop() {
     syncModeFromLive();
     mode = (mode == Mode::Recording || mode == Mode::Empty) ? Mode::Empty : Mode::Stopped;
-    if (autoBoostEnabled) {
-        setBoost(false);
-    }
 }
 
 void MidiBoostLoop::handleDelete() {
     syncModeFromLive();
     mode = Mode::Empty;
-    if (autoBoostEnabled) {
-        setBoost(false);
-    }
 }
 
 void MidiBoostLoop::setBoost(bool on) {
     boostWanted = on;
     applyBoost();
-}
-
-bool MidiBoostLoop::autoBoostWanted() const {
-    return autoBoostEnabled && mode == Mode::Playing && job == Job::None && boostWanted;
 }
 
 void MidiBoostLoop::toggleAutoBoost() {
@@ -425,14 +414,19 @@ void MidiBoostLoop::syncBoost() {
     if (actionRulesClaimMidi("cc", midiChannel, boostOnCc) || actionRulesClaimMidi("cc", midiChannel, boostOffCc)) {
         return;
     }
-    // Auto on/off only when play actually starts or ends. A manual CC 105/106
-    // is left alone until the next rec/overdub/stop/play transition.
-    bool want = autoBoostWanted();
-    if (want == autoBoostOn) {
+    // Level-triggered on mode TRANSITIONS: entering Playing arms the boost,
+    // every other mode undoes it (so a deleted or stopped loop can never
+    // leave the boost behind). A manual CC 105/106 survives until the next
+    // transition, because syncBoost only acts when the mode changed.
+    if (mode == lastSyncMode) {
         return;
     }
-    autoBoostOn = want;
-    setBoost(want);
+    lastSyncMode = mode;
+    const bool want = autoBoostEnabled && mode == Mode::Playing;
+    if (want != autoBoostOn) {
+        autoBoostOn = want;
+        setBoost(want);
+    }
 }
 
 void MidiBoostLoop::applyBoost() {
@@ -478,7 +472,14 @@ void MidiBoostLoop::publishBoost() {
     ignoreBoostEchoUntil = millis() + kBoostEchoMs;
     Debug->printf("MIDI out cc ch=%u d1=%u d2=127 (%s)\n",
         (unsigned)(midiChannel + 1), (unsigned)controller, boostActive ? "boost on" : "boost off");
-    midi->controlChange(controller, 127, static_cast<int8_t>(midiChannel));
+    midi::MidiMessage msg = {};
+    msg.status = 0xB0 | static_cast<uint8_t>(midiChannel);
+    msg.arg1 = controller;
+    msg.arg2 = 127;
+    // The AIRSTEP echoes everything we publish back to us, late and out of
+    // order, and a stale echo re-triggers the boost. Never feed boost
+    // feedback into the link it would bounce from.
+    midi->writeData(&msg, 2, 0xFFFF & ~kMidiPortBle);
     publishing = false;
 }
 

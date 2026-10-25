@@ -8,6 +8,7 @@
 #include <os/os_mbuf.h>
 #include <cstdio>
 #include <cstring>
+#include "Arduino.h"
 
 namespace {
 constexpr char kMidiService[] = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700";
@@ -127,6 +128,7 @@ int onGapNameAttr(uint16_t connHandle, const struct ble_gatt_error* error,
         return 0;
     }
     int status = error != nullptr ? error->status : BLE_HS_EUNKNOWN;
+    Serial.printf("[blename] attr conn=%u status=%d\r\n", connHandle, status);
     if (status == BLE_HS_EDONE) {
         radio->finishIncomingName(connHandle, false);
         return 0;
@@ -417,9 +419,6 @@ void BleRadio::service() {
 }
 
 void BleRadio::queryIncomingNames() {
-    if (hidOn) {
-        return;
-    }
     uint16_t connId = 0;
     bool found = false;
     uint32_t now = millis();
@@ -446,6 +445,7 @@ void BleRadio::queryIncomingNames() {
     }
     portEXIT_CRITICAL(&mux);
     if (!found) {
+        Serial.printf("[blename] nothing to query (incoming=%d)\r\n", incomingCount);
         return;
     }
     struct ble_gap_conn_desc desc = {};
@@ -455,6 +455,7 @@ void BleRadio::queryIncomingNames() {
     }
     ble_uuid16_t uuid = BLE_UUID16_INIT(0x2A00);
     int rc = ble_gattc_read_by_uuid(connId, 1, 0xFFFF, &uuid.u, onGapNameAttr, this);
+    Serial.printf("[blename] read conn=%u rc=%d\r\n", connId, rc);
     if (rc == 0) {
         return;
     }

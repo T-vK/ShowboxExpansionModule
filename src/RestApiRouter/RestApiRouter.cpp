@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Preferences.h>
+#include <MultiMidi/MultiMidi.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -1430,6 +1431,58 @@ void RestApiRouter::setup() {
     _server->on("/api/v1/midi", HTTP_GET, [this](AsyncWebServerRequest* request) {
         sendMidiStatus(request, _connections);
     });
+    // Test hook: feed a MIDI message through the same inbound dispatch the
+    // transports use (BLE parser, AppleMIDI, DIN). Test-only; no port gating.
+    _server->on("/api/v1/midi/inject", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        JsonDocument doc;
+        if (!jsonBody(request, doc)) {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"body required\"}");
+            return;
+        }
+        if (!doc["packet"].isNull()) {
+            // Raw UART packet test hook (hex, e.g. the looper button packet).
+            if (_showbox == nullptr) {
+                request->send(503, "text/plain", "Showbox is not available.");
+                return;
+            }
+            const char* hex = doc["packet"].as<const char*>();
+            uint8_t bytes[280];
+            size_t n = 0;
+            const char* p = hex;
+            int acc = -1;
+            while (*p != '\0' && n < sizeof(bytes)) {
+                int v = -1;
+                if (*p >= '0' && *p <= '9') v = *p - '0';
+                else if (*p >= 'a' && *p <= 'f') v = 10 + (*p - 'a');
+                else if (*p >= 'A' && *p <= 'F') v = 10 + (*p - 'A');
+                else if (*p == ' ' || *p == ':') { ++p; continue; }
+                else { request->send(400, "text/plain", "Bad hex."); return; }
+                if (acc < 0) {
+                    acc = v;
+                } else {
+                    bytes[n++] = static_cast<uint8_t>((acc << 4) | v);
+                    acc = -1;
+                }
+                ++p;
+            }
+            if (n == 0 || acc >= 0) {
+                request->send(400, "text/plain", "Bad hex.");
+                return;
+            }
+            _showbox->injectPacket(bytes, n, "base");
+            request->send(200, "application/json", "{\"ok\":true}");
+            return;
+        }
+        if (doc["status"].isNull()) {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"status required\"}");
+            return;
+        }
+        uint8_t status = (uint8_t)(doc["status"].as<int>() & 0xFF);
+        uint8_t d1 = (uint8_t)((doc["d1"] | 0) & 0x7F);
+        uint8_t d2 = (uint8_t)((doc["d2"] | 0) & 0x7F);
+        MultiMidi::testDispatch(status, d1, d2);
+        request->send(200, "application/json", "{\"ok\":true}");
+    }, nullptr, collectBody);
     httpsAddRoutes(_server);
 
     _server->on("/api/v1/midi/settings", HTTP_POST, [this](AsyncWebServerRequest* request) {

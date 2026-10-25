@@ -388,6 +388,16 @@ void Connections::tick() {
         refreshStatusCache();
     }
     enforcePeripheralSlots();
+    if (radio != nullptr) {
+        // The BT chip popup shows connected host names; the GAP name read is
+        // one 2A00 read per new connection, throttled here.
+        static uint32_t lastNameQueryMs = 0;
+        uint32_t nowMs = millis();
+        if (lastNameQueryMs == 0 || (int32_t)(nowMs - lastNameQueryMs) >= 2000) {
+            lastNameQueryMs = nowMs;
+            radio->queryIncomingNames();
+        }
+    }
     int links = radio != nullptr ? radio->gapLinkCount() : 0;
     if (links != lastBleLinks) {
         lastBleLinks = links;
@@ -961,6 +971,26 @@ void Connections::bleConnectedNames(char* out, size_t cap) const {
         memcpy(out + pos, name, nlen);
         pos += nlen;
         out[pos] = '\0';
+    }
+    // The AIRSTEP pedal connects the other way round (we are central), so
+    // outgoing peripherals belong in the same list.
+    if (multiMidi != nullptr) {
+        BleMidi::Outgoing outgoing[BleMidi::kMaxOutgoing];
+        int outCount = multiMidi->copyOutgoing(outgoing, BleMidi::kMaxOutgoing);
+        for (int i = 0; i < outCount && pos + 2 < cap; i++) {
+            if (!outgoing[i].connected) continue;
+            const char* name = outgoing[i].name;
+            if (name == nullptr || name[0] == '\0') {
+                name = outgoing[i].address;
+            }
+            if (name == nullptr || name[0] == '\0') continue;
+            if (pos > 0 && pos + 2 < cap) { out[pos++] = ','; out[pos] = '\0'; }
+            size_t nlen = strlen(name);
+            if (pos + nlen >= cap) nlen = cap - pos - 1;
+            memcpy(out + pos, name, nlen);
+            pos += nlen;
+            out[pos] = '\0';
+        }
     }
 }
 
