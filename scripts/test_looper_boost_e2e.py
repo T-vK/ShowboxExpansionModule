@@ -227,6 +227,8 @@ api("/api/v1/showbox/looper_overdub?value=0")
 time.sleep(0.3)
 
 print("--- manual boost CC105/CC106")
+api("/api/v1/actions/vars", {"name": "BOOST_ENABLED", "value": 0})
+time.sleep(0.3)
 cc(104)
 wait_state(0)
 wait_gain(GAIN0)

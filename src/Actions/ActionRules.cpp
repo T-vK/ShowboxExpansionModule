@@ -657,6 +657,23 @@ void ActionRules::tick() {
             }
         }
     }
+    // Self-healing: after a looper press, the base announces the new state
+    // within ~300 ms. When no announcement arrives (radio window, lost
+    // frame) the cache goes stale and every following dispatchLooper
+    // decision is wrong. One resync restores the truth; the missed press
+    // behaves like a missed physical button press (press again).
+    if (looperTapWatch != 0) {
+        const uint8_t nowState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
+        if (nowState != looperTapStateBefore) {
+            looperTapWatch = 0;
+        } else if ((int32_t)(millis() - looperTapWatch) > 2000) {
+            looperTapWatch = 0;
+            showbox->forceEntityResync();
+            if (debug != nullptr) {
+                debug->printf("[looper] no announcement after press, resyncing (state %u)\n", nowState);
+            }
+        }
+    }
     pump();
 }
 
@@ -1719,8 +1736,12 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
                 if (debug != nullptr) debug->printf("[trk %lu] same %.1f\n", (unsigned long)millis(), (double)next);
                 return true;
             }
-            if (next == lastOwnGainWrite && (int32_t)(millis() - lastOwnGainWriteMs) < 5000) {
-                if (debug != nullptr) debug->printf("[trk %lu] own-write echo %.1f skipped\n", (unsigned long)millis(), (double)next);
+            if (next == lastOwnGainWrite) {
+                // Echo of our own gain write. No time window: the base's
+                // announcement can lag the write by seconds, and adopting it
+                // would ratchet REMEMBERED_GAIN upward forever. The marker
+                // clears on the next engine write, so a later genuine user
+                // change to a different value still lands.
                 return true;
             }
             if (debug != nullptr) debug->printf("[trk %lu] user change %.1f -> %.1f, clear %s\n",
@@ -2357,6 +2378,31 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
             baseName = varName.length() ? varName + "Base" : String("boostBase");
         }
         bool active = getVar(&job, varName.length() ? varName : String("boostOn")) >= 0.5f;
+        // Reconcile a flag/gain desync before acting: if the gain already
+        // sits ~steps above the remembered base, the boost is in effect even
+        // though the flag says otherwise (the unboost announcement was
+        // lost), and boosting again would ratchet the gain upward. If the
+        // gain sits back at the base while the flag says boosted, the
+        // restore already happened.
+        float persistedBase = getVar(&job, baseName);
+        if (persistedBase > 1.0f) {
+            const float boostedDistance = 4.0f * steps - 1.0f;
+            if (!active && current - persistedBase >= boostedDistance) {
+                setVar(&job, varName, 1.0f, false, persist);
+                active = true;
+                if (debug != nullptr) {
+                    debug->printf("[gb %lu] reconcile: gain %.1f is already %.0f steps over base %.1f\n",
+                        (unsigned long)millis(), (double)current, (double)steps, (double)persistedBase);
+                }
+            } else if (active && fabsf(current - persistedBase) < 1.0f) {
+                setVar(&job, varName, 0.0f, false, persist);
+                active = false;
+                if (debug != nullptr) {
+                    debug->printf("[gb %lu] reconcile: gain %.1f already back at base\n",
+                        (unsigned long)millis(), (double)current);
+                }
+            }
+        }
         if (mode == "bootReset") {
             if (debug != nullptr) {
                 debug->printf("[gb %lu] bootReset active=%d cur=%.1f base=%.1f steps=%d\n",
@@ -2459,6 +2505,8 @@ void ActionRules::dispatchLooper(const String& op) {
     auto sendTap = [&](uint8_t times) {
         if (!alreadySent) {
             showbox->tapLooper(times);
+            looperTapWatch = millis();
+            looperTapStateBefore = state;
         }
     };
     auto sendAction = [&](looper_button_action action) {
