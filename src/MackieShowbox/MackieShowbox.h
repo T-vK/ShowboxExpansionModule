@@ -272,6 +272,7 @@ private:
     uint32_t looperUpAtMs = 0;
     uint32_t looperPressAtMs = 0;
     void sendLooperPress();
+    void advanceLooperPress();
     volatile uint32_t restoreCount = 0;
     volatile uint32_t dumpGen = 0;
     uint32_t lastDumpReqMs = 0;

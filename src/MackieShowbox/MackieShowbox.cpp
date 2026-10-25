@@ -387,7 +387,7 @@ void MackieShowbox::sendLooperPress() {
     // schedule the UP ~40 ms later, like a real button hold.
     uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
     interceptor.sendPacket(down, sizeof(down), TO_BASE);
-    looperUpAtMs = millis() + 120;
+    looperUpAtMs = millis() + 280;
 }
 
 void MackieShowbox::tapLooper(uint8_t times) {
@@ -406,6 +406,18 @@ void MackieShowbox::tapLooper(uint8_t times) {
         // press (rec -> overdub) must go out as its own press, gapped past
         // the double-press window.
         looperPressAtMs = millis() + 550;
+    }
+}
+
+void MackieShowbox::advanceLooperPress() {
+    if (looperUpAtMs != 0 && (int32_t)(millis() - looperUpAtMs) >= 0) {
+        looperUpAtMs = 0;
+        uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
+        interceptor.sendPacket(up, sizeof(up), TO_BASE);
+    }
+    if (looperPressAtMs != 0 && (int32_t)(millis() - looperPressAtMs) >= 0) {
+        looperPressAtMs = 0;
+        sendLooperPress();
     }
 }
 
@@ -1271,6 +1283,10 @@ void MackieShowbox::uartTask(void* arg) {
         // burst used to hold core 1 long enough for the 128-byte UART FIFO
         // to overflow; the Showbox base then went silent.
         self->interceptor.tick();
+        // The looper press sequencing lives here: this task keeps running
+        // through BLE-coex radio windows that stall the loop task for
+        // seconds, and a delayed UP would read as a long press.
+        self->advanceLooperPress();
         {
             static uint32_t lastEmitFlushMs = 0;
             uint32_t now = millis();
@@ -1299,16 +1315,8 @@ void MackieShowbox::tick() {
     if (analogHoldDirty) {
         saveAnalogHold();
     }
-    if (looperUpAtMs != 0 && (int32_t)(millis() - looperUpAtMs) >= 0) {
-        looperUpAtMs = 0;
-        uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
-        interceptor.sendPacket(up, sizeof(up), TO_BASE);
-    }
-    if (looperPressAtMs != 0 && (int32_t)(millis() - looperPressAtMs) >= 0) {
-        looperPressAtMs = 0;
-        sendLooperPress();
-    }
     if (!uartTaskRunning) {
+        advanceLooperPress();
         interceptor.tick();
         flushEmits();
     }
