@@ -2476,12 +2476,16 @@ void ActionRules::dispatchLooper(const String& op) {
     const bool looperAction = op == "cycle" || op == "stop" || op == "delete"
         || op == "down" || op == "tap";
     if (looperAction && pendingLooperOp[0] == '\0'
-        && looperChangedAtMs != 0
-        && (int32_t)(millis() - looperChangedAtMs) < 2500) {
-        strncpy(pendingLooperOp, op.c_str(), sizeof(pendingLooperOp) - 1);
-        pendingLooperOp[sizeof(pendingLooperOp) - 1] = '\0';
-        pendingLooperDueMs = looperChangedAtMs + 2500;
-        return;
+        && looperChangedAtMs != 0) {
+        const uint32_t age = millis() - looperChangedAtMs;
+        if (age < 1200) {
+            strncpy(pendingLooperOp, op.c_str(), sizeof(pendingLooperOp) - 1);
+            pendingLooperOp[sizeof(pendingLooperOp) - 1] = '\0';
+            // Hard-capped remaining wait: a late-drained state event must not
+            // postpone the press forever (the gate re-arms on re-dispatch).
+            pendingLooperDueMs = millis() + (1200 - age) + 20;
+            return;
+        }
     }
 
     // The cache is hardware truth: send the button action and let the base's
