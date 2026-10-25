@@ -95,7 +95,7 @@ function FxLine({ label, amount, on, tone, onClick, title, compact }) {
     <button type="button" class={"fx-line" + (tone ? " tone-" + tone : "") + (on ? " on" : " off") + (compact ? " compact" : "")} title={title || label} onClick={onClick}>
       <span class="fx-line-fill" style={{ width: `${pct}%` }} />
       <span class="fx-line-txt">{label}</span>
-      {compact ? null : <span class="fx-line-val">{Math.round(pct)}%</span>}
+      <span class="fx-line-val">{Math.round(pct)}%</span>
     </button>
   );
 }

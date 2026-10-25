@@ -17,7 +17,7 @@ extern int gIso;
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <esp_random.h>
-#include <mdns.h>
+
 #include <nvs.h>
 
 #include <cerrno>
@@ -742,16 +742,9 @@ bool openListen() {
 }
 
 void advertiseFromLoop() {
-    if (!gMdnsUp) {
-        return;
-    }
-    if (gListening && !gAdvOn) {
-        MDNS.addService("https", "tcp", kHttpsPort);
-        gAdvOn = true;
-    } else if (!gListening && gAdvOn) {
-        mdns_service_remove("_https", "_tcp");
-        gAdvOn = false;
-    }
+    // The custom mDNS responder only answers A records; HTTPS stays
+    // discoverable by port, not by service browse.
+    gAdvOn = gListening;
 }
 
 void spliceConn(int slot, int client) {

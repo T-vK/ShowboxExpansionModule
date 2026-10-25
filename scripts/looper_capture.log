@@ -1,0 +1,819 @@
+=== capture start 1792963297.675
+### CC102 at 0.000s
+Firmware Name: ShowboxExpansionModule Firmware
+Firmware Version: 0.0.0
+Chip Family: ESP32-S3
+Device Name: ESP32-S3
+Host Name: showbox
+Device URL: http://showbox.local/
+
+[  OK  ] Initializing ImprovSerial...
+[ INFO ] ImprovSerial initialized.
+[ INFO ] Initializing WifiManager...
+*wm:AutoConnect 
+*wm:Connecting to SAVED AP: pfSenseAP
+*wm:connectTimeout not set, ESP waitForConnectResult... 
+*wm:AutoConnect: SUCCESS 
+*wm:STA IP Address: 192.168.3.55
+Connected to WiFi!
+[  OK  ] WifiManager initialized.
+[ INFO ] WiFi connected!
+[ INFO ] Initializing Debug Serial...
+[  OK  ] Debug Serial initialized.
+[ INFO ] Preparing Web Server...
+[ INFO ] Web Server prepared.
+[  OK  ] Initializing OTA...
+[ INFO ] OTA initialized.
+[ INFO ] Starting Web Server...
+[  OK  ] Web Server started.
+[ INFO ] Initializing MDNS...
+[  OK  ] MDNS initialized.
+[ INFO ] Initializing Showbox...
+Showbox UART pass-through is on core 1
+[  OK  ] Showbox UART is forwarding.
+[  OK  ] mDNS advertised as showbox.local at 192.168.3.55
+[  OK  ] API routes and showbox.local are up before Bluetooth.
+[ INFO ] Initializing MultiMidi...
+Hardware Serial MIDI pins RX: 10, TX: 9 (starts only if DIN is on)
+AppleMIDI enabled on port: 5004
+Bluetooth MIDI enabled.
+AppleMIDI initialized.
+DIN SoftwareSerial started.
+MultiMidi setup complete.
+[boot] HID: internal heap free=28788 largest=20468
+Bluetooth HID keyboard, mouse, and absolute pointer are ready.
+Bluetooth MIDI: connect out to peripherals, and advertise on the shared radio.
+Bluetooth MIDI ready.
+[  OK  ] MultiMidi initialized (iso=0 wifiInit=1).
+[vars] loaded 183 bytes
+[var 2363] REMEMBERED_GAIN = 36 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":36,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 2460] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":36,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[booster] rtc state: enabled=1 remembered=36.0
+Could not store a reaction.
+Could not store a reaction.
+[gb 9420] bootReset active=1 cur=28.0 base=36.0 steps=2
+[var 9421] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":36,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Auto-connecting to 'AIRSTEP'
+Connecting MIDI at d9:d7:5b:c1:90:f4 as random
+BLE itvl=320 wifi=3 heap=21124 largest=12788 proto=0x1 adv=0
+Bluetooth MIDI ready: AIRSTEP d9:d7:5b:c1:90:f4 itvl=320 heap=21124 largest=12788 gatt-wait
+Reaction 25 Track gain changes
+[trk 44260] user change 36.0 -> 28.0, clear BOOST_ENABLED
+[var 44260] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 44273] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 45503] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 45685] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 45791] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 45976] BOOST_CHANNEL = 2 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 46111] BOOST_AMOUNT = 2 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 46193] looperOverdub = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 51190] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 51687] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+Bluetooth MIDI notify on AIRSTEP d9:d7:5b:c1:90:f4
+Reaction 23 Boost on play (auto)
+[gb 54627] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 54628] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 54630] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 56164] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 56165] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 23 Boost on play (auto)
+[gb 58058] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 58059] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 58061] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 60156] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 60156] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 23 Boost on play (auto)
+[gb 62005] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 62006] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 62008] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 63241] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 63243] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 23 Boost on play (auto)
+[gb 64575] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 64577] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 64579] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 80414] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 80414] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 93743] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[var 95308] AUTO_BOOST = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":0}
+[var 100010] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 100433] looperOverdub = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":1,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 101037] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+Reaction 26 Unboost on loop end (auto)
+[gb 101299] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+Reaction 23 Boost on play (auto)
+[gb 103103] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 103104] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":1,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 103195] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":1,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 116974] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 116975] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":1,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 131203] looperOverdub = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 131722] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[var 132336] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 22 Booster Toggle
+[gb 132764] mode=toggle active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 132765] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 1327### CC102 at 1.720s
+67] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 22 Booster Toggle
+[gb 133183] mode=toggle active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 133184] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 22 Booster Toggle
+[gb 133727] mode=toggle active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 133727] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 133729] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 25 Track gain changes
+[trk 134227] user change 28.0 -> 40.0, clear BOOST_ENABLED
+[var 134228] REMEMBERED_GAIN = 40 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":40,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 134335] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":40,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 25 Track gain changes
+[trk 134910] user change 40.0 -> 28.0, clear BOOST_ENABLED
+[var 134911] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 134933] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 25 Track gain changes
+[trk 208614] same 28.0
+[var 209933] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 210033] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 210246] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 210690] BOOST_CHANNEL = 2 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 210835] BOOST_AMOUNT = 2 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 211031] looperOverdub = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 216151] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 216637] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+Reaction 23 Boost on play (auto)
+[gb 219522] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 219523] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 219527] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 221119] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 221120] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 23 Boost on play (auto)
+[gb 222978] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 222978] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 222980] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 224921] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 224922] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 23 Boost on play (auto)
+[gb 226669] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 226670] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 226673] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 227906] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 227907] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 23 Boost on play (auto)
+[gb 243870] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 243871] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 243873] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 25 Track gain changes
+[trk 275028] same 28.0
+[var 276149] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 276348] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 276445] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 25 Track gain changes
+[trk 286691] same 28.0
+Reaction 25 Track gain changes
+[trk 286740] same 28.0
+[var 287747] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 287809] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 287908] AUTO_BOOST = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+Reaction 26 Unboost on loop end (auto)
+[gb 296227] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 1 BE EF 05 03 00 5C 00 00 00 01 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 298686] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 300436] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 300437] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 300439] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 00 EF BE 
+### CC102 at 3.525s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 302184] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 302184] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 5.156s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 303876] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 303877] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 303879] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC103 at 6.952s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FE EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 2 BE EF 05 03 00 5C 00 00 00 02 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 305672] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 305672] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+### CC102 at 8.446s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 307330] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 307331] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 307334] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 10.092s
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 308726] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 308727] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 11.663s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 310348] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 310349] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 310351] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 13.462s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 312182] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 312182] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC104 at 15.093s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 0 BE EF 05 03 00 5C 00 00 00 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 313881] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 16.745s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 1 BE EF 05 03 00 5C 00 00 00 01 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 315427] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 18.406s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 317123] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 317124] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 317126] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 20.117s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 318761] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 318762] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+### CC102 at 21.653s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 320304] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 320305] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 320307] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC103 at 23.312s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 2 BE EF 05 03 00 5C 00 00 00 02 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 322042] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 322043] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 24.940s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 323705] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 323707] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 323709] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 26.597s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 325324] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 325325] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 28.209s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+### CC102 at 29.839s
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 328501] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 328502] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 328504] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC104 at 31.495s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 0 BE EF 05 03 00 5C 00 00 00 00 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 330136] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 330137] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 33.026s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 1 BE EF 05 03 00 5C 00 00 00 01 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 331653] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 34.550s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 333183] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 333184] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 333186] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 36.111s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 334814] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 334815] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+### CC102 at 37.632s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+### CC103 at 39.250s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 2 BE EF 05 03 00 5C 00 00 00 02 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 337889] mode=off active=0 on=0 cur=28.0 base=28.0 steps=2 entity=22
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 40.882s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 339743] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 339743] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 339745] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 42.726s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 341391] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 341392] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 44.195s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 342806] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 342807] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 342809] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+### CC102 at 45.916s
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 344592] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 344592] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FE EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC104 at 47.585s
+[UART] BASE->MIXER BATTERY_LEVEL 100.0 BE EF 08 16 01 01 04 00 20 00 00 C8 42 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 16 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 49.266s
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 347963] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 347963] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 347965] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 50.930s
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 349567] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 349567] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+### CC102 at 52.779s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 3 BE EF 05 03 00 5C 00 00 00 03 EF BE 
+Reaction 23 Boost on play (auto)
+[gb 351435] mode=on active=0 on=1 cur=28.0 base=28.0 steps=2 entity=22
+[var 351436] REMEMBERED_GAIN = 28 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[var 351438] BOOST_ENABLED = 1 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":1,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER BATTERY_LEVEL 100.0 BE EF 08 16 01 01 04 00 20 00 00 C8 42 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 16 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 09 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+### CC102 at 54.436s
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER ENTITY LOOPER_STATE 4 BE EF 05 03 00 5C 00 00 00 04 EF BE 
+Reaction 26 Unboost on loop end (auto)
+[gb 353209] mode=off active=1 on=0 cur=36.0 base=28.0 steps=2 entity=22
+[var 353210] BOOST_ENABLED = 0 (persist, save)
+[vars] saved 183 bytes: {"midiBoostBase":52,"midiBoost":1,"autoBoostOff":0,"looperOverdub":0,"boostBase":28,"boost":0,"BOOST_ENABLED":0,"REMEMBERED_GAIN":28,"BOOST_AMOUNT":2,"BOOST_CHANNEL":2,"AUTO_BOOST":1}
+[UART] BASE->MIXER ACK BE EF 01 01 00 17 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] BASE->MIXER HEARTBEAT BE EF 00 FF 00 EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+[UART] BASE->MIXER ACK BE EF 01 01 00 FF EF BE 
+[UART] MIXER->BASE ACK BE EF 01 01 00 FF EF BE 
+=== capture end 1792963353.731

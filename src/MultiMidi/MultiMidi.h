@@ -106,7 +106,7 @@ public:
     // Callback methods
     MidiCallbackAction action;
     // Test hook: dispatch an inbound message through `action` exactly like
-    // the transports do, so injected CCs reach MidiBoostLoop and reactions.
+    // the transports do, so injected CCs reach reactions and MIDI handlers.
     static void testDispatch(uint8_t status, uint8_t p1, uint8_t p2);
 private:
     MidiBleServer *bleServer;

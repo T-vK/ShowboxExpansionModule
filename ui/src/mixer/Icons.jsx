@@ -294,6 +294,18 @@ export function IconInstall() {
   );
 }
 
+export function IconWifi({ level }) {
+  const bars = level == null ? 0 : level;
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+      <path d="M3.4 9.2a13 13 0 0 1 17.2 0" />
+      <path d="M6.6 12.6a8.6 8.6 0 0 1 10.8 0" />
+      <path d="M9.8 16a4.4 4.4 0 0 1 4.4 0" class={bars >= 1 ? "" : "dim"} />
+      <circle cx="12" cy="19.2" r="1.15" fill="currentColor" stroke="none" class={bars >= 1 ? "" : "dim"} />
+    </svg>
+  );
+}
+
 export function IconBluetooth() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">

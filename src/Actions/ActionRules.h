@@ -20,6 +20,10 @@ public:
 
     String json();
     bool snapshotJson(String& json, String& error);
+    String varsJson();
+    bool setVarJson(const String& body, String& error);
+    String buildVarsJson() const;
+    bool applySetVar(const String& body, String& error);
     bool saveJson(const String& body, String& error);
     bool removeRule(int id, String& error);
     bool runRule(int id, String& error);
@@ -31,6 +35,7 @@ public:
     void onPanel(const char* button, const char* gesture);
     void onShowbox(const char* entity, const char* value);
     void onPacket(const uint8_t* data, size_t length, const char* dir);
+    void noteEntityWrite(const char* entityName, const char* value);
     float getVariable(const char* name) const;
 
 private:
@@ -63,6 +68,7 @@ private:
         uint16_t lastAbsY = 0;
         uint8_t looperKind = 0;
         uint8_t looperStep = 0;
+        char triggerValue[16] = {};
         LocalVar locals[8] = {};
         uint8_t localCount = 0;
     };
@@ -71,7 +77,7 @@ private:
         float value = 0;
         bool persist = false;
     };
-    enum class Ask : uint8_t { None, Save, Remove, Run, List };
+    enum class Ask : uint8_t { None, Save, Remove, Run, List, Vars, SetVar };
 
     void load();
     void flush();
@@ -83,7 +89,6 @@ private:
     float getVar(Job* job, const String& name) const;
     void setVar(Job* job, const String& name, float value, bool local, bool persist);
     void applyGainBoost(Job& job, JsonObjectConst step);
-    void noteLooperState(uint8_t next);
     void dispatchLooper(const String& op);
     void startLooper(Job& job, const String& op);
     void runLooper(Job& job);
@@ -93,11 +98,13 @@ private:
     String buildJson() const;
     bool waitAsk(Ask kind, String& error);
     int indexOf(int id) const;
-    bool enqueue(uint16_t id);
+    bool enqueue(uint16_t id, const char* triggerValue = "");
     void pump();
     bool runStep(Job& job, JsonObjectConst step);
     void watchConnections();
     void watchJacks();
+    void drainMidi();
+    void drainEntityEvents();
     bool linkUp(const String& link) const;
     bool triggerMatches(JsonObjectConst trigger, const char* event, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5) const;
     bool conditionPass(JsonVariantConst node) const;
@@ -130,14 +137,24 @@ private:
     bool peripheralUp = false;
     bool usbUp = false;
     bool inAction = false;
+    uint32_t inActionSinceMs = 0;
     uint32_t ignoreMidiUntil = 0;
     uint32_t ignoreMidiEchoUntil = 0;
+    uint32_t gatedSinceMs = 0;
     uint8_t ignoreMidiEchoCc = 0xFF;
     uint8_t ignoreMidiEchoCh = 0xFF;
     uint32_t lastMidiInUntil = 0;
     uint8_t lastMidiInCc = 0xFF;
     uint8_t lastMidiInCh = 0xFF;
+    uint32_t looperChangedAtMs = 0;
+    char pendingLooperOp[8] = {};
+    uint32_t pendingLooperDueMs = 0;
     uint32_t ignoreShowboxUntil = 0;
+    uint32_t readyDumpSeq = 0;
+    float lastOwnGainWrite = -9999.0f;
+    int lastOwnGainEntity = -1;
+    uint32_t lastOwnGainWriteMs = 0;
+    void noteOwnGainWrite(int id, float value);
     void* jacks[8] = {};
     bool dirty = false;
     portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -156,3 +173,4 @@ bool actionRulesClaimPanel(const char* button, const char* gesture);
 void actionRulesOnMidi(const char* kind, uint8_t channel, uint8_t number, uint8_t value);
 void actionRulesOnPanel(const char* button, const char* gesture);
 float actionRulesVariable(const char* name);
+void actionRulesNoteEntityWrite(const char* entityName, const char* value);

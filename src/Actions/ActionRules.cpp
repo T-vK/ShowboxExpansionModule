@@ -23,6 +23,14 @@ extern LiveSocket liveSocket;
 
 namespace {
 ActionRules* instance = nullptr;
+// The boost state must survive an ESP.restart() so the boot undo knows a
+// boost was live. NVS writes can race the restart; RTC memory (no-init)
+// keeps its contents across soft reboots by design.
+RTC_NOINIT_ATTR float rtcRememberedGain = -1.0f;
+RTC_NOINIT_ATTR uint8_t rtcBoostEnabled = 0;
+RTC_NOINIT_ATTR uint32_t rtcBoostMagic = 0;
+constexpr uint32_t kRtcBoostMagic = 0x424F4F53u;  // "BOOS"
+portMUX_TYPE rtcMux = portMUX_INITIALIZER_UNLOCKED;
 const char* kJacks[] = {"1t", "1r", "2t", "2r", "3t", "3r", "4t", "4r"};
 const uint8_t kPins[] = {TRS1_TIP, TRS1_RING, TRS2_TIP, TRS2_RING, TRS3_TIP, TRS3_RING, TRS4_TIP, TRS4_RING};
 const char* kGestures[] = {"press", "long", "shortRelease", "longRelease", "double"};
@@ -245,6 +253,47 @@ uint8_t modifiersOf(JsonVariantConst value) {
     return bits;
 }
 
+struct EntityEventRing {
+    static constexpr int kCap = 32;
+    struct Item {
+        uint8_t id;
+        char value[24];
+    };
+    Item items[kCap] = {};
+    volatile uint8_t head = 0;
+    volatile uint8_t tail = 0;
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+
+    bool push(uint8_t id, const char* value) {
+        portENTER_CRITICAL(&mux);
+        uint8_t next = head + 1;
+        next %= kCap;
+        bool room = next != tail;
+        if (room) {
+            items[head].id = id;
+            strncpy(items[head].value, value, sizeof(items[head].value) - 1);
+            items[head].value[sizeof(items[head].value) - 1] = '\0';
+            head = next;
+        }
+        portEXIT_CRITICAL(&mux);
+        return room;
+    }
+
+    bool pop(Item& out) {
+        portENTER_CRITICAL(&mux);
+        bool have = tail != head;
+        if (have) {
+            out = items[tail];
+            uint8_t next = tail + 1;
+            next %= kCap;
+            tail = next;
+        }
+        portEXIT_CRITICAL(&mux);
+        return have;
+    }
+};
+EntityEventRing sEntityRing;
+
 void entityHeard(entity_id id, const char* value) {
     if (instance == nullptr) {
         return;
@@ -253,7 +302,17 @@ void entityHeard(entity_id id, const char* value) {
     if (name == entity_id_to_string.end()) {
         return;
     }
-    instance->onShowbox(name->second.c_str(), value == nullptr ? "" : value);
+    // Entity events are edge-triggered (the base announces a state change
+    // once), so they must never be dropped by an action's ignore window -
+    // queue them and let tick() decide when to run them.
+    if (!sEntityRing.push(id, value == nullptr ? "" : value)) {
+        static uint32_t lastDropLog = 0;
+        uint32_t now = millis();
+        if (now - lastDropLog > 5000) {
+            lastDropLog = now;
+            Serial.println("[actions] entity event ring overflow");
+        }
+    }
     if (value != nullptr) {
         liveSocket.noteEntity(name->second.c_str(), value);
     }
@@ -365,6 +424,14 @@ const char* kBuiltinRules[] = {
     "{\"on\":true,\"name\":\"Looper Rec / Play / Overdub\",\"group\":\"TRS Looper\",\"builtin\":\"looperTrsCycle\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"1t\",\"gesture\":\"shortRelease\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"cycle\"}]}",
     "{\"on\":true,\"name\":\"Looper Stop\",\"group\":\"TRS Looper\",\"builtin\":\"looperTrsStop\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"1r\",\"gesture\":\"shortRelease\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"stop\"}]}",
     "{\"on\":true,\"name\":\"Looper Delete\",\"group\":\"TRS Looper\",\"builtin\":\"looperTrsDelete\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"1r\",\"gesture\":\"long\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"delete\"}]}",
+    "{\"on\":true,\"name\":\"Rec / Play / Overdub\",\"group\":\"MIDI Looper\",\"builtin\":\"midiLooperCycle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"102\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"cycle\"}]}",
+    "{\"on\":true,\"name\":\"Stop\",\"group\":\"MIDI Looper\",\"builtin\":\"midiLooperStop\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"103\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"stop\"}]}",
+    "{\"on\":true,\"name\":\"Clear\",\"group\":\"MIDI Looper\",\"builtin\":\"midiLooperDelete\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"104\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"delete\"}]}",
+    "{\"on\":true,\"name\":\"Booster Toggle\",\"group\":\"MIDI Booster\",\"builtin\":\"midiBoosterToggle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"105\"}],\"actions\":[{\"type\":\"gainBoost\",\"on\":\"toggle\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
+    "{\"on\":true,\"name\":\"Boost on play (auto)\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterAutoOn\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"type\":\"variable\",\"name\":\"AUTO_BOOST\",\"value\":\"1\"},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"on\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
+    "{\"on\":true,\"name\":\"Unboost on loop end (auto)\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterAutoOff\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\"}],\"condition\":{\"op\":\"and\",\"items\":[{\"type\":\"variable\",\"name\":\"AUTO_BOOST\",\"value\":\"1\"},{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"op\":\"ne\",\"value\":\"3\"}]},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"off\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
+    "{\"on\":true,\"name\":\"Track gain changes\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterGainTracker\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"INPUT2_GAIN\"}],\"actions\":[{\"type\":\"variable\",\"name\":\"REMEMBERED_GAIN\",\"op\":\"trackTrigger\",\"valueFromTrigger\":\"1\",\"clearVar\":\"BOOST_ENABLED\",\"persist\":true}]}",
+    "{\"on\":true,\"name\":\"Undo boost on boot\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterBootReset\",\"triggers\":[{\"type\":\"showboxReady\"}],\"condition\":{\"type\":\"variable\",\"name\":\"BOOST_ENABLED\",\"value\":\"1\"},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"bootReset\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Booster Pedal\",\"group\":\"Booster Pedal\",\"builtin\":\"pedalBoost\",\"triggers\":[{\"type\":\"trs\",\"jack\":\"2t\",\"gesture\":\"shortRelease\"}],\"actions\":[{\"type\":\"gainBoost\",\"entity\":\"INPUT4_GAIN\",\"on\":\"toggle\",\"low\":32,\"high\":52,\"var\":\"pedalBoost\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Bluetooth Pairing (blue press)\",\"group\":\"Front Panel\",\"builtin\":\"panelBluePress\",\"triggers\":[{\"type\":\"panel\",\"button\":\"blue\",\"gesture\":\"press\"}],\"actions\":[{\"type\":\"system\",\"command\":\"pairing\"}]}",
     "{\"on\":true,\"name\":\"Bluetooth Mode Button (blue)\",\"group\":\"Front Panel\",\"builtin\":\"panelBlueLong\",\"triggers\":[{\"type\":\"panel\",\"button\":\"blue\",\"gesture\":\"long\"}],\"actions\":[{\"type\":\"system\",\"command\":\"bluetoothToggle\"}]}",
@@ -401,6 +468,12 @@ void actionRulesOnPanel(const char* button, const char* gesture) {
 
 float actionRulesVariable(const char* name) {
     return instance != nullptr ? instance->getVariable(name) : 0.0f;
+}
+
+void actionRulesNoteEntityWrite(const char* entityName, const char* value) {
+    if (instance != nullptr) {
+        instance->noteEntityWrite(entityName, value);
+    }
 }
 
 void ActionRules::jackPress(void* parameter) {
@@ -440,6 +513,9 @@ void ActionRules::begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections
     connections = connectionsIn;
     hid = hidIn;
     instance = this;
+    // Job actions can enqueue more jobs (variable events fire rules); a
+    // reallocation would invalidate the vector while pump() iterates it.
+    jobs.reserve(64);
     load();
     if (showbox != nullptr) {
         showbox->entityListener = entityHeard;
@@ -462,11 +538,29 @@ void ActionRules::setFrontPanel(FrontPanel* panelIn) {
 }
 
 void ActionRules::setVariable(const char* name, float value) {
-    setVar(nullptr, String(name), value, false, true);
+    // Foreign-task safe: run through the ask pipeline like the REST var set.
+    String body = "{\"name\":\"" + String(name == nullptr ? "" : name) + "\",\"value\":" + String(value, 4) + "}";
+    String error;
+    askIn = body;
+    waitAsk(Ask::SetVar, error);
 }
 
 float ActionRules::getVariable(const char* name) const {
     return getVar(nullptr, String(name == nullptr ? "" : name));
+}
+
+void ActionRules::noteEntityWrite(const char* entityName, const char* value) {
+    // Module-originated writes (webui/API) produce no wire echo, so rules
+    // that track entity changes would never see them. Feed the write into
+    // the same event ring the hardware announcements use.
+    if (entityName == nullptr) {
+        return;
+    }
+    auto found = string_to_entity_id.find(std::string(entityName));
+    if (found == string_to_entity_id.end()) {
+        return;
+    }
+    sEntityRing.push(static_cast<uint8_t>(found->second), value == nullptr ? "" : value);
 }
 
 void ActionRules::setDebugSerial(Print* serial) {
@@ -488,6 +582,11 @@ void ActionRules::tick() {
         } else if (ask == Ask::List) {
             askOut = buildJson();
             askOk = true;
+        } else if (ask == Ask::Vars) {
+            askOut = buildVarsJson();
+            askOk = true;
+        } else if (ask == Ask::SetVar) {
+            askOk = applySetVar(askIn, askOut);
         }
         if (dirty) {
             flush();
@@ -504,6 +603,60 @@ void ActionRules::tick() {
     }
     watchJacks();
     watchConnections();
+    // Watchdog: a wedged action must not hold the engine closed forever.
+    if (inAction) {
+        if (inActionSinceMs == 0) {
+            inActionSinceMs = millis();
+        } else if (millis() - inActionSinceMs > 5000) {
+            inActionSinceMs = 0;
+            inAction = false;
+            if (debug != nullptr) {
+                debug->println("[actions] inAction watchdog fired");
+            }
+        }
+    } else {
+        inActionSinceMs = 0;
+    }
+    drainMidi();
+    drainEntityEvents();
+    if (pendingLooperOp[0] != '\0' && (int32_t)(millis() - pendingLooperDueMs) >= 0) {
+        char op[8];
+        strncpy(op, pendingLooperOp, sizeof(op) - 1);
+        op[sizeof(op) - 1] = '\0';
+        pendingLooperOp[0] = '\0';
+        dispatchLooper(String(op));
+    }
+    // showboxReady: the first entity dump after boot (and every re-dump
+    // after a link restore) means the entity cache mirrors the hardware.
+    // Rules use it to undo state that outlived the reboot, e.g. a boost.
+    if (showbox != nullptr) {
+        uint32_t dump = showbox->dumpSeq();
+        if (dump != readyDumpSeq) {
+            bool first = readyDumpSeq == 0;
+            readyDumpSeq = dump;
+            if (!inAction) {
+                inAction = true;
+                if (first) {
+                    // Undo a boost that outlived the reboot BEFORE any entity
+                    // event flows: the gain tracker would otherwise clear the
+                    // flag while treating the still-boosted gain as a user
+                    // change, and the undo would never happen.
+                    Job job;
+                    JsonDocument doc;
+                    JsonObject step = doc.to<JsonObject>();
+                    step["on"] = "bootReset";
+                    step["channelVar"] = "BOOST_CHANNEL";
+                    step["stepsVar"] = "BOOST_AMOUNT";
+                    step["var"] = "BOOST_ENABLED";
+                    step["baseVar"] = "REMEMBERED_GAIN";
+                    step["persist"] = true;
+                    applyGainBoost(job, step);
+                }
+                fire("showboxReady", first ? "boot" : "restore", "", "", "");
+                inAction = false;
+            }
+        }
+    }
     pump();
 }
 
@@ -553,6 +706,51 @@ String ActionRules::json() {
         return String();
     }
     return json;
+}
+
+String ActionRules::buildVarsJson() const {
+    JsonDocument doc;
+    JsonArray list = doc["vars"].to<JsonArray>();
+    for (uint8_t i = 0; i < globalCount; i++) {
+        if (globals[i].name[0] == '\0') {
+            continue;
+        }
+        JsonObject row = list.add<JsonObject>();
+        row["name"] = globals[i].name;
+        row["value"] = globals[i].value;
+    }
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+String ActionRules::varsJson() {
+    String error;
+    if (!waitAsk(Ask::Vars, error)) {
+        return String();
+    }
+    return error;
+}
+
+bool ActionRules::applySetVar(const String& body, String& error) {
+    JsonDocument doc;
+    if (deserializeJson(doc, body) || doc["name"].isNull()) {
+        error = "name and value required.";
+        return false;
+    }
+    String name = doc["name"].as<String>();
+    float value = doc["value"] | 0.0f;
+    setVar(nullptr, name, value, false, true);
+    if (varsDirty) {
+        saveVars();
+    }
+    error = buildVarsJson();
+    return true;
+}
+
+bool ActionRules::setVarJson(const String& body, String& error) {
+    askIn = body;
+    return waitAsk(Ask::SetVar, error);
 }
 
 bool ActionRules::saveJson(const String& body, String& error) {
@@ -644,7 +842,106 @@ bool ActionRules::wasRecentMidiCc(uint8_t cc, uint8_t channel) const {
     return (int32_t)(millis() - lastMidiInUntil) < 0;
 }
 
+namespace {
+// MIDI arrives on foreign tasks (BLE stack, AppleMIDI, the async HTTP test
+// hook). fire() mutates the job list, which pump() walks on the loop task,
+// so events are queued here and drained in tick() instead of racing.
+struct MidiEventRing {
+    static constexpr int kCap = 24;
+    struct Item {
+        char kind[12];
+        uint8_t channel;
+        uint8_t number;
+        uint8_t value;
+        char source[10];
+    };
+    Item items[kCap] = {};
+    volatile uint8_t head = 0;
+    volatile uint8_t tail = 0;
+    volatile uint32_t drops = 0;
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+
+    bool push(const char* kind, uint8_t channel, uint8_t number, uint8_t value, const char* source) {
+        portENTER_CRITICAL(&mux);
+        uint8_t next = (head + 1) % kCap;
+        bool room = next != tail;
+        if (room) {
+            Item& slot = items[head];
+            strncpy(slot.kind, kind ? kind : "", sizeof(slot.kind) - 1);
+            slot.kind[sizeof(slot.kind) - 1] = '\0';
+            slot.channel = channel;
+            slot.number = number;
+            slot.value = value;
+            strncpy(slot.source, source ? source : "ext", sizeof(slot.source) - 1);
+            slot.source[sizeof(slot.source) - 1] = '\0';
+            head = next;
+        } else {
+            drops++;
+        }
+        portEXIT_CRITICAL(&mux);
+        return room;
+    }
+
+    bool pop(Item& out) {
+        portENTER_CRITICAL(&mux);
+        bool have = tail != head;
+        if (have) {
+            out = items[tail];
+            tail = (tail + 1) % kCap;
+        }
+        portEXIT_CRITICAL(&mux);
+        return have;
+    }
+};
+MidiEventRing sMidiRing;
+}  // namespace
+
+// Realtime streams (a pedal's MIDI clock runs at 24 x tempo per second)
+// would flood the event ring and evict real note/cc events while an action
+// holds the engine briefly. They get a single latest-wins slot instead.
+namespace {
+struct RealtimeSlot {
+    char kind[12];
+    uint8_t channel;
+    uint8_t number;
+    uint8_t value;
+    char source[10];
+    bool pending = false;
+};
+RealtimeSlot sRealtime;
+portMUX_TYPE sRealtimeMux = portMUX_INITIALIZER_UNLOCKED;
+
+bool isRealtimeKind(const char* kind) {
+    static const char* kRealtime[] = {
+        "clock", "start", "stop", "continue", "reset",
+        "timeCode", "songPosition", "songSelect", "tuneRequest",
+    };
+    if (kind == nullptr) {
+        return false;
+    }
+    for (const char* rt : kRealtime) {
+        if (strcmp(kind, rt) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
 void ActionRules::onMidi(const char* kind, uint8_t channel, uint8_t number, uint8_t value) {
+    if (isRealtimeKind(kind)) {
+        portENTER_CRITICAL(&sRealtimeMux);
+        strncpy(sRealtime.kind, kind ? kind : "", sizeof(sRealtime.kind) - 1);
+        sRealtime.kind[sizeof(sRealtime.kind) - 1] = '\0';
+        sRealtime.channel = channel;
+        sRealtime.number = number;
+        sRealtime.value = value;
+        strncpy(sRealtime.source, midiInboundSource(), sizeof(sRealtime.source) - 1);
+        sRealtime.source[sizeof(sRealtime.source) - 1] = '\0';
+        sRealtime.pending = true;
+        portEXIT_CRITICAL(&sRealtimeMux);
+        return;
+    }
     if (kind != nullptr && strcmp(kind, "cc") == 0) {
         lastMidiInCc = number;
         lastMidiInCh = channel;
@@ -653,16 +950,85 @@ void ActionRules::onMidi(const char* kind, uint8_t channel, uint8_t number, uint
             return;
         }
     }
-    if (inAction || (int32_t)(millis() - ignoreMidiUntil) < 0) {
-        return;
+    sMidiRing.push(kind, channel, number, value, midiInboundSource());
+}
+
+void ActionRules::drainMidi() {
+    // Realtime slot first (latest wins).
+    portENTER_CRITICAL(&sRealtimeMux);
+    bool haveRt = sRealtime.pending;
+    RealtimeSlot rt = sRealtime;
+    sRealtime.pending = false;
+    portEXIT_CRITICAL(&sRealtimeMux);
+    if (haveRt && !inAction && (int32_t)(millis() - ignoreMidiUntil) >= 0) {
+        char channelText[8];
+        char numberText[8];
+        char valueText[8];
+        snprintf(channelText, sizeof(channelText), "%u", rt.channel + 1);
+        snprintf(numberText, sizeof(numberText), "%u", rt.number);
+        snprintf(valueText, sizeof(valueText), "%u", rt.value);
+        fire("midi", rt.kind, channelText, numberText, valueText, rt.source);
     }
-    char channelText[8];
-    char numberText[8];
-    char valueText[8];
-    snprintf(channelText, sizeof(channelText), "%u", channel + 1);
-    snprintf(numberText, sizeof(numberText), "%u", number);
-    snprintf(valueText, sizeof(valueText), "%u", value);
-    fire("midi", kind, channelText, numberText, valueText, midiInboundSource());
+    MidiEventRing::Item item;
+    while (sMidiRing.pop(item)) {
+        if (inAction || (int32_t)(millis() - ignoreMidiUntil) < 0) {
+            // Mid-action: keep the event, but never let a stuck gate freeze
+            // the engine - drop what has waited too long.
+            if (gatedSinceMs == 0) {
+                gatedSinceMs = millis();
+            } else if (millis() - gatedSinceMs > 2000) {
+                gatedSinceMs = 0;
+                if (debug != nullptr) {
+                    debug->printf("[midi] dropped %s num=%u (gate stuck)\n", item.kind, item.number);
+                }
+                continue;
+            }
+            sMidiRing.push(item.kind, item.channel, item.number, item.value, item.source);
+            break;
+        }
+        gatedSinceMs = 0;
+        char channelText[8];
+        char numberText[8];
+        char valueText[8];
+        snprintf(channelText, sizeof(channelText), "%u", item.channel + 1);
+        snprintf(numberText, sizeof(numberText), "%u", item.number);
+        snprintf(valueText, sizeof(valueText), "%u", item.value);
+        fire("midi", item.kind, channelText, numberText, valueText, item.source);
+    }
+    if (sMidiRing.drops > 0) {
+        sMidiRing.drops = 0;
+        if (debug != nullptr) {
+            debug->println("MIDI event ring overflow");
+        }
+    }
+}
+
+void ActionRules::drainEntityEvents() {
+    EntityEventRing::Item item;
+    while (sEntityRing.pop(item)) {
+        if (inAction || (int32_t)(millis() - ignoreShowboxUntil) < 0) {
+            // Keep order: stop draining, retry next tick - but never let a
+            // stuck gate freeze state tracking (the base announces a state
+            // change once; a dropped one is gone).
+            if (gatedSinceMs == 0) {
+                gatedSinceMs = millis();
+            } else if (millis() - gatedSinceMs > 2000) {
+                gatedSinceMs = 0;
+                if (debug != nullptr) {
+                    debug->printf("[ent] dropped id=%u (gate stuck)\n", item.id);
+                }
+                continue;
+            }
+            // Keep order: re-queue at the tail and stop draining.
+            sEntityRing.push(item.id, item.value);
+            break;
+        }
+        gatedSinceMs = 0;
+        auto name = entity_id_to_string.find(static_cast<entity_id>(item.id));
+        if (name != entity_id_to_string.end()) {
+            onShowbox(name->second.c_str(), item.value);
+        }
+    }
 }
 
 void ActionRules::onPanel(const char* button, const char* gesture) {
@@ -670,6 +1036,9 @@ void ActionRules::onPanel(const char* button, const char* gesture) {
 }
 
 void ActionRules::onShowbox(const char* entity, const char* value) {
+    if (entity != nullptr && strcmp(entity, "LOOPER_STATE") == 0) {
+        looperChangedAtMs = millis();
+    }
     if (inAction || (int32_t)(millis() - ignoreShowboxUntil) < 0) {
         return;
     }
@@ -789,6 +1158,11 @@ bool ActionRules::triggerMatches(JsonObjectConst trigger, const char* event, con
         if (!midiPortNameMatches(trigger["ports"].isNull() ? trigger["port"] : trigger["ports"], p5)) {
             return false;
         }
+        // CC 0 is the release half of a press; a trigger without an explicit
+        // value is a press trigger and must not fire on it.
+        if (strcmp(p1, "cc") == 0 && atoi(p4) == 0 && blank(jsonText(trigger["value"]))) {
+            return false;
+        }
         return numberOrAny(trigger["channel"], atoi(p2))
             && numberOrAny(trigger["number"], atoi(p3))
             && numberOrAny(trigger["value"], atoi(p4));
@@ -801,6 +1175,9 @@ bool ActionRules::triggerMatches(JsonObjectConst trigger, const char* event, con
             return false;
         }
         return hexPrefix(jsonText(trigger["hex"]), String(p3));
+    }
+    if (type == "showboxReady") {
+        return blank(jsonText(trigger["phase"])) || jsonText(trigger["phase"]) == p1;
     }
     if (type == "variable") {
         if (jsonText(trigger["name"]) != p1) {
@@ -965,14 +1342,23 @@ void ActionRules::fire(const char* event, const char* p1, const char* p2, const 
             dispatchLooper(looperOp);
             continue;
         }
-        if (enqueue(rule.id) && debug != nullptr) {
+        const char* triggerValue = "";
+        if (strcmp(event, "midi") == 0) {
+            triggerValue = p4;
+        } else if (strcmp(event, "showbox") == 0 || strcmp(event, "variable") == 0) {
+            triggerValue = p2;
+        }
+        if (enqueue(rule.id, triggerValue) && debug != nullptr) {
             debug->printf("Reaction %u%s%s\n", rule.id, rule.name.length() ? " " : "", rule.name.c_str());
         }
     }
 }
 
-bool ActionRules::enqueue(uint16_t id) {
+bool ActionRules::enqueue(uint16_t id, const char* triggerValue) {
     if (indexOf(id) < 0) {
+        return false;
+    }
+    if (jobs.size() >= 64) {
         return false;
     }
     for (const Job& job : jobs) {
@@ -983,6 +1369,10 @@ bool ActionRules::enqueue(uint16_t id) {
     Job job;
     job.active = true;
     job.id = id;
+    if (triggerValue != nullptr) {
+        strncpy(job.triggerValue, triggerValue, sizeof(job.triggerValue) - 1);
+        job.triggerValue[sizeof(job.triggerValue) - 1] = '\0';
+    }
     jobs.push_back(job);
     return true;
 }
@@ -1077,6 +1467,7 @@ void ActionRules::pump() {
 
 bool ActionRules::runStep(Job& job, JsonObjectConst step) {
     inAction = true;
+    inActionSinceMs = millis();
     String type = jsonText(step["type"]);
     String error;
     if ((type == "midi" || type == "hidKey" || type == "hidMouse" || type == "hidScroll"
@@ -1253,14 +1644,20 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
             entity_id id = found->second;
             entity_data_type kind = entity_type_mapping[id];
             ignoreShowboxUntil = millis() + 80;
-            String raw = jsonText(step["value"]);
-            if (kind == BOOL) {
-                raw.toLowerCase();
-                showbox->setEntityValue(id, raw == "1" || raw == "true" || raw == "on");
-            } else if (kind == UINT8) {
-                showbox->setEntityValue(id, (uint8_t)raw.toInt());
+            // valueVar: take the value from a variable (e.g. write a stored
+            // gain back after a reboot).
+            if (!step["valueVar"].isNull() && kind == FLOAT) {
+                showbox->setEntityValue(id, getVar(&job, jsonText(step["valueVar"])));
             } else {
-                showbox->setEntityValue(id, raw.length() == 0 ? 0.0f : raw.toFloat());
+                String raw = jsonText(step["value"]);
+                if (kind == BOOL) {
+                    raw.toLowerCase();
+                    showbox->setEntityValue(id, raw == "1" || raw == "true" || raw == "on");
+                } else if (kind == UINT8) {
+                    showbox->setEntityValue(id, (uint8_t)raw.toInt());
+                } else {
+                    showbox->setEntityValue(id, raw.length() == 0 ? 0.0f : raw.toFloat());
+                }
             }
         }
     } else if (type == "showboxPacket" && showbox != nullptr) {
@@ -1297,11 +1694,44 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
             persist = !local && step["persist"].as<bool>();
         }
         float current = getVar(&job, name);
-        float next = wantedNumber(jsonText(step["value"]));
+        // valueFromTrigger: store what the trigger carried (e.g. the new
+        // value of a showbox entity), so a rule can mirror hardware state
+        // into a variable without a fixed literal.
+        float next;
+        if (jsonText(step["valueFromTrigger"]) == "1" && job.triggerValue[0] != '\0') {
+            next = wantedNumber(String(job.triggerValue));
+        } else {
+            next = wantedNumber(jsonText(step["value"]));
+        }
         if (op == "toggle") {
             next = current >= 0.5f ? 0.0f : 1.0f;
         } else if (op == "add") {
             next = current + next;
+        } else if (op == "trackTrigger") {
+            // Mirror the trigger value into `name`, but only when it actually
+            // changed (the base re-announces values); a genuine external gain
+            // move also clears the companion flag (the boost is no longer
+            // ours to undo). Echoes of our own boost writes are skipped: they
+            // carry the boosted value and would corrupt the remembered base
+            // and ratchet the gain upwards forever.
+            inAction = false;
+            if (fabsf(current - next) < 0.05f) {
+                if (debug != nullptr) debug->printf("[trk %lu] same %.1f\n", (unsigned long)millis(), (double)next);
+                return true;
+            }
+            if (next == lastOwnGainWrite && (int32_t)(millis() - lastOwnGainWriteMs) < 5000) {
+                if (debug != nullptr) debug->printf("[trk %lu] own-write echo %.1f skipped\n", (unsigned long)millis(), (double)next);
+                return true;
+            }
+            if (debug != nullptr) debug->printf("[trk %lu] user change %.1f -> %.1f, clear %s\n",
+                (unsigned long)millis(), (double)current, (double)next, jsonText(step["clearVar"]).c_str());
+            setVar(&job, name, next, local, persist);
+            String clearName = jsonText(step["clearVar"]);
+            if (clearName.length()) {
+                setVar(&job, clearName, 0.0f, local, persist);
+            }
+            inAction = false;
+            return true;
         }
         setVar(&job, name, next, local, persist);
     } else if (type == "system") {
@@ -1325,6 +1755,7 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
         liveSocket.noteLink();
     }
     inAction = false;
+    inActionSinceMs = 0;
     if (debug != nullptr && error.length() > 0) {
         debug->printf("Reaction step skipped: %s\n", error.c_str());
     }
@@ -1442,6 +1873,43 @@ void ActionRules::load() {
     rules.clear();
     storedIds.clear();
     loadVars();
+    // Group defaults for the MIDI booster (persisted across reboots; the
+    // webui edits them inline on the booster rules).
+    struct VarDefault { const char* name; float value; };
+    const VarDefault kDefaults[] = {
+        {"BOOST_ENABLED", 0.0f},
+        {"REMEMBERED_GAIN", -1.0f},
+        {"BOOST_AMOUNT", 2.0f},
+        {"BOOST_CHANNEL", 2.0f},
+        {"AUTO_BOOST", 1.0f},
+    };
+    for (const VarDefault& def : kDefaults) {
+        bool have = false;
+        for (uint8_t i = 0; i < globalCount; i++) {
+            if (strcmp(globals[i].name, def.name) == 0) {
+                have = true;
+                break;
+            }
+        }
+        if (!have) {
+            setVar(nullptr, def.name, def.value, false, true);
+        }
+    }
+    // RTC memory holds the freshest boost state across a soft reboot (an
+    // NVS write can lose the race against the restart that follows it).
+    portENTER_CRITICAL(&rtcMux);
+    const bool rtcValid = rtcBoostMagic == kRtcBoostMagic;
+    const float rtcGain = rtcRememberedGain;
+    const uint8_t rtcEnabled = rtcBoostEnabled;
+    portEXIT_CRITICAL(&rtcMux);
+    if (rtcValid) {
+        setVar(nullptr, "REMEMBERED_GAIN", rtcGain, false, true);
+        setVar(nullptr, "BOOST_ENABLED", static_cast<float>(rtcEnabled), false, true);
+        if (debug != nullptr) {
+            debug->printf("[booster] rtc state: enabled=%u remembered=%.1f\n",
+                rtcEnabled, (double)rtcGain);
+        }
+    }
     Preferences prefs;
     if (prefs.begin("actions", true)) {
         String ids = prefs.getString("ids", "");
@@ -1654,6 +2122,7 @@ void ActionRules::loadVars() {
     }
     String blob = prefs.getString("blob", "");
     prefs.end();
+    debug->printf("[vars] loaded %u bytes\n", (unsigned)blob.length());
     if (blob.length() == 0) {
         return;
     }
@@ -1661,11 +2130,29 @@ void ActionRules::loadVars() {
     if (deserializeJson(doc, blob) || !doc.is<JsonObject>()) {
         return;
     }
+    // Vars from removed implementations (the old MidiBoostLoop / boost rules)
+    // only bloat the persisted blob; drop them on load so the NVS record
+    // shrinks back and stays writable.
+    static const char* kLegacy[] = {
+        "midiBoostBase", "midiBoost", "autoBoostOff", "boostBase", "boost",
+        "midiBoostOn", "pedalBoostBase", "looperOverdubFire",
+    };
     for (JsonPairConst pair : doc.as<JsonObjectConst>()) {
         if (globalCount >= 24) {
             break;
         }
-        copyVarName(globals[globalCount].name, sizeof(globals[globalCount].name), String(pair.key().c_str()));
+        String key(pair.key().c_str());
+        bool legacy = false;
+        for (const char* stale : kLegacy) {
+            if (key == stale) {
+                legacy = true;
+                break;
+            }
+        }
+        if (legacy) {
+            continue;
+        }
+        copyVarName(globals[globalCount].name, sizeof(globals[globalCount].name), key);
         if (globals[globalCount].name[0] == '\0') {
             continue;
         }
@@ -1685,10 +2172,39 @@ void ActionRules::saveVars() {
     }
     String blob;
     serializeJson(object, blob);
+    // Pad to a fixed size: a variable-length record makes the NVS allocate a
+    // fresh entry on every save, which fragments the partition until writes
+    // fail with NOT_ENOUGH_SPACE (observed as random state loss). A constant
+    // size lets the NVS reuse the same entry.
+    const size_t kBlobSize = 256;
+    while (blob.length() < kBlobSize) {
+        blob += ' ';
+    }
+    if (blob.length() > kBlobSize) {
+        blob.remove(kBlobSize);
+    }
     Preferences prefs;
+    bool ok = false;
     if (prefs.begin("actvar", false)) {
-        prefs.putString("blob", blob);
+        ok = prefs.putString("blob", blob) != 0;
         prefs.end();
+        if (!ok) {
+            // The partition ran out of usable entries; wipe this namespace
+            // and write once more. The in-RAM values are intact.
+            Preferences wipe;
+            if (wipe.begin("actvar", false)) {
+                wipe.clear();
+                wipe.end();
+                debug->println("[vars] nvs full, actvar wiped and rewritten");
+            }
+            if (prefs.begin("actvar", false)) {
+                ok = prefs.putString("blob", blob) != 0;
+                prefs.end();
+            }
+        }
+    }
+    if (debug != nullptr) {
+        debug->printf("[vars] saved %u bytes ok=%d\n", (unsigned)blob.length(), ok ? 1 : 0);
     }
     varsDirty = false;
 }
@@ -1754,7 +2270,13 @@ void ActionRules::setVar(Job* job, const String& name, float value, bool local, 
     globals[slot].value = value;
     if (persist) {
         globals[slot].persist = true;
+        // Persist immediately: a boost flag that only lives in RAM dies with
+        // the reboot, and then the boot undo cannot know it should run.
         varsDirty = true;
+        if (debug != nullptr) {
+            debug->printf("[var %lu] %s = %.6g (persist, save)\n", (unsigned long)millis(), key, (double)value);
+        }
+        saveVars();
     }
     if (fabsf(previous - value) >= 0.0001f) {
         char text[24];
@@ -1763,13 +2285,28 @@ void ActionRules::setVar(Job* job, const String& name, float value, bool local, 
     }
 }
 
+void ActionRules::noteOwnGainWrite(int id, float value) {
+    lastOwnGainEntity = id;
+    lastOwnGainWrite = value;
+    lastOwnGainWriteMs = millis();
+}
+
 void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
     String entity = jsonText(step["entity"]);
+    // channelVar: the input channel comes from a variable (1-4), so the
+    // boosted channel is reconfigurable without editing the rule.
+    if (!step["channelVar"].isNull()) {
+        int chan = (int)getVar(&job, jsonText(step["channelVar"]));
+        if (chan >= 1 && chan <= 4) {
+            entity = String("INPUT") + chan + "_GAIN";
+        }
+    }
     if (entity.length() == 0) {
         entity = "INPUT2_GAIN";
     }
     auto found = string_to_entity_id.find(std::string(entity.c_str()));
     if (found == string_to_entity_id.end()) {
+        inAction = false;
         return;
     }
     entity_id id = found->second;
@@ -1783,6 +2320,9 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
     if (step["persist"].is<bool>()) {
         persist = step["persist"].as<bool>();
     }
+    // The boost's own writes must not be mistaken for user gain moves by
+    // gain-tracking rules; the base echoes within a few ms, keep margin.
+    const uint32_t boostIgnoreMs = 200;
     bool haveRange = !step["low"].isNull() || !step["high"].isNull();
     float low = step["low"].isNull() ? Showbox::InputGain::POSITION_9 : step["low"].as<float>();
     float high = step["high"].isNull() ? Showbox::InputGain::POSITION_14 : step["high"].as<float>();
@@ -1795,8 +2335,9 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         else on = !atHigh;
         float next = on ? high : low;
         if (fabsf(current - next) >= 0.05f) {
-            ignoreShowboxUntil = millis() + 80;
+            ignoreShowboxUntil = millis() + boostIgnoreMs;
             showbox->setEntityValue(id, next);
+            noteOwnGainWrite(id, next);
             changed = true;
         }
         if (varName.length()) {
@@ -1804,12 +2345,54 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         }
     } else {
         int steps = jsonInt(step["steps"], 2);
+        if (!step["stepsVar"].isNull()) {
+            float configured = getVar(&job, jsonText(step["stepsVar"]));
+            if (configured >= 1.0f) {
+                steps = (int)configured;
+            }
+        }
         if (steps < 1) steps = 1;
-        String baseName = varName.length() ? varName + "Base" : String("boostBase");
+        String baseName = jsonText(step["baseVar"]);
+        if (baseName.length() == 0) {
+            baseName = varName.length() ? varName + "Base" : String("boostBase");
+        }
         bool active = getVar(&job, varName.length() ? varName : String("boostOn")) >= 0.5f;
+        if (mode == "bootReset") {
+            if (debug != nullptr) {
+                debug->printf("[gb %lu] bootReset active=%d cur=%.1f base=%.1f steps=%d\n",
+                    (unsigned long)millis(), active ? 1 : 0, (double)current,
+                    (double)getVar(&job, baseName), steps);
+            }
+            // The module came back up with BOOST_ENABLED persisted. If the
+            // gain still shows exactly base + steps, the boost survived the
+            // reboot and is undone; anything else means the user (or the
+            // hardware) moved the gain meanwhile, so we stop claiming it.
+            if (!active) {
+                inAction = false;
+                return;
+            }
+            float base = getVar(&job, baseName);
+            int baseStep = nearestGainStep(base);
+            int boostedStep = baseStep + steps;
+            if (boostedStep >= kGainStepCount) boostedStep = kGainStepCount - 1;
+            if (nearestGainStep(current) == boostedStep && fabsf(current - kGainSteps[boostedStep]) < 0.05f) {
+                ignoreShowboxUntil = millis() + boostIgnoreMs;
+                showbox->setEntityValue(id, base);
+                noteOwnGainWrite(id, base);
+            }
+            if (varName.length()) {
+                setVar(&job, varName, 0.0f, false, persist);
+            }
+            return;
+        }
         if (mode == "on") on = true;
         else if (mode == "off") on = false;
         else on = !active;
+        if (debug != nullptr) {
+            debug->printf("[gb %lu] mode=%s active=%d on=%d cur=%.1f base=%.1f steps=%d entity=%d\n",
+                (unsigned long)millis(), mode.c_str(), active ? 1 : 0, on ? 1 : 0, (double)current,
+                (double)getVar(&job, baseName), steps, (int)id);
+        }
         if (on != active) {
             changed = true;
             if (on) {
@@ -1817,23 +2400,34 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
                 if (stepIndex >= kGainStepCount) {
                     stepIndex = kGainStepCount - 1;
                 }
-                ignoreShowboxUntil = millis() + 80;
+                ignoreShowboxUntil = millis() + boostIgnoreMs;
                 showbox->setEntityValue(id, kGainSteps[stepIndex]);
+                noteOwnGainWrite(id, kGainSteps[stepIndex]);
                 setVar(&job, baseName, current, false, persist);
                 if (varName.length()) {
                     setVar(&job, varName, 1.0f, false, persist);
                 }
+                portENTER_CRITICAL(&rtcMux);
+                rtcRememberedGain = current;
+                rtcBoostEnabled = 1;
+                rtcBoostMagic = kRtcBoostMagic;
+                portEXIT_CRITICAL(&rtcMux);
             } else {
                 float base = getVar(&job, baseName);
                 // Restore the pre-boost gain whenever we are the ones who
                 // boosted. The old "boosted == expected" guard skipped the
                 // restore whenever the base drifted, which is exactly how a
                 // deleted loop used to leave the boost behind.
-                ignoreShowboxUntil = millis() + 80;
+                ignoreShowboxUntil = millis() + boostIgnoreMs;
                 showbox->setEntityValue(id, base);
+                noteOwnGainWrite(id, base);
                 if (varName.length()) {
                     setVar(&job, varName, 0.0f, false, persist);
                 }
+                portENTER_CRITICAL(&rtcMux);
+                rtcBoostEnabled = 0;
+                rtcBoostMagic = kRtcBoostMagic;
+                portEXIT_CRITICAL(&rtcMux);
             }
         }
     }
@@ -1873,15 +2467,34 @@ void ActionRules::dispatchLooper(const String& op) {
         }
     };
 
+    // The base's looper button handler has a dead zone after every state
+    // transition (measured: presses 0.6-2.5 s after a change are silently
+    // ignored, faster repeats count as its double-press, later ones work).
+    // Hold the action until the zone has passed; the retry re-runs
+    // dispatchLooper with the by-then-current state, so the decision is
+    // always fresh.
+    const bool looperAction = op == "cycle" || op == "stop" || op == "delete"
+        || op == "down" || op == "tap";
+    if (looperAction && pendingLooperOp[0] == '\0'
+        && looperChangedAtMs != 0
+        && (int32_t)(millis() - looperChangedAtMs) < 2500) {
+        strncpy(pendingLooperOp, op.c_str(), sizeof(pendingLooperOp) - 1);
+        pendingLooperOp[sizeof(pendingLooperOp) - 1] = '\0';
+        pendingLooperDueMs = looperChangedAtMs + 2500;
+        return;
+    }
+
+    // The cache is hardware truth: send the button action and let the base's
+    // own LOOPER_STATE announcement drive every state rule. Predicting the
+    // outcome here desynced the cache whenever the hardware disagreed (a
+    // swallowed press, a double-press window), and every state-driven rule
+    // then acted on the wrong state.
     if (op == "stop") {
         sendAction(looper_button_action::DOUBLE_PRESS);
-        noteLooperState((state == looper_state::RECORD_INITIAL_LOOP || state == looper_state::DELETE)
-            ? looper_state::DELETE : looper_state::STOP_PLAYING);
         return;
     }
     if (op == "delete") {
         sendAction(looper_button_action::LONG_PRESS);
-        noteLooperState(looper_state::DELETE);
         return;
     }
     if (op == "up") {
@@ -1897,45 +2510,13 @@ void ActionRules::dispatchLooper(const String& op) {
         return;
     }
     // cycle / down / tap. Recording -> next step honours the overdub
-    // preference (one tap = play, two back-to-back taps = overdub). Boosting
-    // is NOT done here: onLooperState() reacts to the base's real
-    // LOOPER_STATE announcements, so a single level change is one boost.
+    // preference (one tap = play, a gapped second press = overdub).
     if (state == looper_state::RECORD_INITIAL_LOOP) {
         const bool overdub = getVar(nullptr, "looperOverdub") >= 0.5f;
         sendTap(overdub ? 2 : 1);
-        noteLooperState(overdub ? looper_state::RECORD_OVERDUB : looper_state::PLAY);
-        ignoreShowboxUntil = millis() + 450;
-        return;
-    }
-    if (state == looper_state::PLAY) {
-        sendTap(1);
-        noteLooperState(looper_state::RECORD_OVERDUB);
-        return;
-    }
-    if (state == looper_state::RECORD_OVERDUB) {
-        sendTap(1);
-        noteLooperState(looper_state::PLAY);
-        return;
-    }
-    if (state == looper_state::STOP_PLAYING) {
-        sendTap(1);
-        noteLooperState(looper_state::PLAY);
         return;
     }
     sendTap(1);
-    noteLooperState(looper_state::RECORD_INITIAL_LOOP);
-}
-
-void ActionRules::noteLooperState(uint8_t next) {
-    if (showbox == nullptr) {
-        return;
-    }
-    uint8_t now = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-    if (next == now) {
-        return;
-    }
-    showbox->setLooperState(static_cast<looper_state>(next));
-    liveSocket.pushEntity("LOOPER_STATE", next);
 }
 
 void ActionRules::startLooper(Job& job, const String& op) {

@@ -32,13 +32,13 @@ static void uartSafeRestart(const char* why) {
 #include <esp_netif.h>
 #include <cstring>
 #include "esp_private/wifi.h"
-#include "mdns.h"
 #include "ping/ping_sock.h"
 
 extern "C" {
 #include "lwip/etharp.h"
 #include "lwip/igmp.h"
 #include "lwip/ip4.h"
+#include "lwip/sockets.h"
 #include "lwip/netif.h"
 #include "lwip/tcp.h"
 #include "lwip/priv/tcp_priv.h"
@@ -194,39 +194,6 @@ static void staJoinMdnsGroup() {
         igmpLogs++;
         debugLog("mdns igmp join=%d ok=%d ip=%s", (int)err, mdnsIgmpJoined ? 1 : 0, ip.toString().c_str());
     }
-}
-
-static void mdnsBindStaOnly() {
-    // Predefined AP/STA netifs cannot be unregistered. Disable AP answers
-    // so showbox.local is the LAN STA IP, not 192.168.4.1. Call only after
-    // setup — these APIs wait on the mDNS task and deadlock begin().
-    esp_netif_t* sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    esp_netif_t* ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (ap != nullptr) {
-        mdns_netif_action(ap, MDNS_EVENT_DISABLE_IP4);
-        mdns_netif_action(ap, MDNS_EVENT_DISABLE_IP6);
-    }
-    if (sta != nullptr) {
-        mdns_netif_action(sta, MDNS_EVENT_ENABLE_IP4);
-        mdns_netif_action(sta, MDNS_EVENT_ANNOUNCE_IP4);
-        mdns_netif_action(sta, MDNS_EVENT_IP4_REVERSE_LOOKUP);
-    }
-}
-
-static void mdnsPreferStaIp() {
-    if (!gSetupDone) {
-        return;
-    }
-    if (!mdnsStaBound) {
-        mdnsBindStaOnly();
-        mdnsStaBound = true;
-    } else {
-        esp_netif_t* sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (sta != nullptr) {
-            mdns_netif_action(sta, MDNS_EVENT_ANNOUNCE_IP4);
-        }
-    }
-    staJoinMdnsGroup();
 }
 
 static void lanSendGratuitousArp() {
@@ -541,6 +508,204 @@ void lanRestoreBleSleepIfIdle() {
     // Do not put the STA back to sleep while a BLE central is live.
 }
 
+// Minimal custom mDNS responder. The esp-idf mdns component never answered
+// multicast queries on the STA interface of this AP+STA setup (unicast
+// probes to its port worked, group queries never did), and its announcements
+// carried a stray duplicate record in the authority section. A plain UDP
+// socket answers A queries for showbox.local directly to the querier —
+// unicast replies survive any AP — and announces the record once a second
+// so passive listeners and caches stay warm.
+namespace {
+constexpr uint16_t kMdnsPort = 5353;
+constexpr const char* kMdnsName = "showbox.local";
+constexpr uint32_t kMdnsGroupAddr = 0xE00000FBu;  // 224.0.0.251
+
+void mdnsLowerName(const uint8_t* msg, size_t len, size_t& off, char* out, size_t cap) {
+    size_t n = 0;
+    int hops = 0;
+    for (;;) {
+        if (off >= len || ++hops > 16) {
+            if (n < cap) out[n] = '\0';
+            return;
+        }
+        uint8_t l = msg[off++];
+        if (l == 0) {
+            break;
+        }
+        if (l & 0xC0) {  // compression pointer: not expected in queries
+            if (n + 1 < cap) out[n++] = '*';
+            break;
+        }
+        if (n + l + 2 >= cap) {
+            break;
+        }
+        if (n > 0) {
+            out[n++] = '.';
+        }
+        for (uint8_t i = 0; i < l && off + i < len; i++) {
+            char c = static_cast<char>(msg[off + i]);
+            out[n++] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+        }
+        off += l;
+    }
+    if (n < cap) {
+        out[n] = '\0';
+    }
+}
+
+// The module's STA address as a little-endian uint32: written into the A
+// record low-byte-first it comes out in network order, and the same value
+// is what lwIP's IP_MULTICAST_IF expects.
+uint32_t mdnsStaIp() {
+    IPAddress ip = lanIP();
+    if (ip[0] == 0) {
+        return 0;
+    }
+    return static_cast<uint32_t>(ip[0]) | (static_cast<uint32_t>(ip[1]) << 8)
+        | (static_cast<uint32_t>(ip[2]) << 16) | (static_cast<uint32_t>(ip[3]) << 24);
+}
+
+size_t mdnsBuildARecord(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid) {    if (cap < 41) {
+        return 0;
+    }
+    size_t p = 0;
+    out[p++] = static_cast<uint8_t>(tid >> 8);
+    out[p++] = static_cast<uint8_t>(tid & 0xFF);
+    out[p++] = 0x84; out[p++] = 0x00;  // response, authoritative
+    out[p++] = 0; out[p++] = 0;        // qdcount 0
+    out[p++] = 0; out[p++] = 1;        // ancount 1
+    out[p++] = 0; out[p++] = 0;        // nscount 0
+    out[p++] = 0; out[p++] = 0;        // arcount 0
+    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
+    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
+    out[p++] = 0;
+    out[p++] = 0; out[p++] = 1;        // type A
+    out[p++] = 0x80; out[p++] = 0x01;  // IN + cache-flush
+    out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 120;  // ttl
+    out[p++] = 0; out[p++] = 4;        // rdlength
+    out[p++] = static_cast<uint8_t>(ipAddr);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 8);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 16);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 24);
+    return p;
+}
+}  // namespace
+
+static bool sMdnsResponderUp = false;
+
+static void lanMdnsResponderTask(void*) {
+    int sock = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        debugLog("mdnsrsp socket failed");
+        vTaskDelete(nullptr);
+        return;
+    }
+    int yes = 1;
+    lwip_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = lwip_htons(kMdnsPort);
+    addr.sin_addr.s_addr = PP_HTONL(INADDR_ANY);
+    if (lwip_bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        debugLog("mdnsrsp bind failed");
+        lwip_close(sock);
+        vTaskDelete(nullptr);
+        return;
+    }
+    ip_mreq mreq = {};
+    mreq.imr_multiaddr.s_addr = lwip_htonl(kMdnsGroupAddr);
+    mreq.imr_interface.s_addr = PP_HTONL(INADDR_ANY);
+    lwip_setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    int ttl = 255;
+    lwip_setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+    lwip_setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+    // Poll: a blocking recvfrom would park the 1 s announce cadence forever.
+    timeval tv = {};
+    tv.tv_usec = 100 * 1000;
+    lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    debugLog("mdnsrsp listening on 5353");
+
+    // The membership above lands on whatever netif is default at bind time —
+    // in AP+STA that is the AP, and the group dies with it. The STA-side
+    // membership is what feeds the WiFi driver's multicast RX filter, so
+    // re-assert it (and the multicast TX interface) whenever the STA IP is
+    // up, and again whenever it changes.
+    uint32_t joinedFor = 0;
+    uint32_t lastJoinMs = 0;
+
+    uint32_t lastAnnounceMs = 0;
+    int announceFails = 0;
+    for (;;) {
+        uint32_t now = millis();
+        uint32_t ip = mdnsStaIp();
+        if (ip != 0 && (ip != joinedFor || (int32_t)(now - lastJoinMs) >= 10000)) {
+            // Join on the STA netif explicitly and keep refreshing it: the
+            // WiFi driver's multicast RX filter follows this membership.
+            ip_mreq sta = {};
+            sta.imr_multiaddr.s_addr = lwip_htonl(kMdnsGroupAddr);
+            sta.imr_interface.s_addr = ip;
+            if (lwip_setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &sta, sizeof(sta)) == 0) {
+                joinedFor = ip;
+            }
+            lastJoinMs = now;
+        }
+        if (ip != 0 && ((lastAnnounceMs == 0 && (int32_t)(now - lastAnnounceMs) >= 0) || (int32_t)(now - lastAnnounceMs) >= 1000)) {
+            in_addr ifAddr;
+            ifAddr.s_addr = ip;
+            lwip_setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &ifAddr, sizeof(ifAddr));
+            uint8_t pkt[64];
+            size_t n = mdnsBuildARecord(pkt, sizeof(pkt), ip, 0);
+            if (n > 0) {
+                sockaddr_in dst = {};
+                dst.sin_family = AF_INET;
+                dst.sin_port = lwip_htons(kMdnsPort);
+                dst.sin_addr.s_addr = lwip_htonl(kMdnsGroupAddr);
+                int sent = lwip_sendto(sock, pkt, n, 0, reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+                if (sent < 0 && announceFails < 5) {
+                    announceFails++;
+                    debugLog("mdnsrsp announce sendto failed errno=%d", errno);
+                }
+                lastAnnounceMs = now;
+            }
+        }
+        char buf[1500];
+        sockaddr_in from = {};
+        socklen_t flen = sizeof(from);
+        int n = lwip_recvfrom(sock, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&from), &flen);
+        if (n < 12) {
+            continue;
+        }
+        uint16_t flags = (static_cast<uint8_t>(buf[2]) << 8) | static_cast<uint8_t>(buf[3]);
+        if (flags & 0x8000) {
+            continue;  // a response, not a query
+        }
+        uint16_t qdcount = (static_cast<uint8_t>(buf[4]) << 8) | static_cast<uint8_t>(buf[5]);
+        uint16_t tid = (static_cast<uint8_t>(buf[0]) << 8) | static_cast<uint8_t>(buf[1]);
+        size_t off = 12;
+        bool want = false;
+        for (int q = 0; q < qdcount && q < 4; q++) {
+            char name[64] = {};
+            mdnsLowerName(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n), off, name, sizeof(name));
+            if (off + 4 > n) {
+                break;
+            }
+            uint16_t qtype = (static_cast<uint8_t>(buf[off]) << 8) | static_cast<uint8_t>(buf[off + 1]);
+            off += 4;
+            if (strcmp(name, kMdnsName) == 0 && (qtype == 1 || qtype == 255)) {
+                want = true;
+            }
+        }
+        if (!want || !lanHasIp()) {
+            continue;
+        }
+        uint8_t pkt[64];
+        size_t rn = mdnsBuildARecord(pkt, sizeof(pkt), mdnsStaIp(), tid);
+        if (rn > 0) {
+            lwip_sendto(sock, pkt, rn, 0, reinterpret_cast<sockaddr*>(&from), sizeof(from));
+        }
+    }
+}
+
 void lanKeepMdns() {
     if (gSoakRunning) {
         return;
@@ -555,28 +720,28 @@ void lanKeepMdns() {
     }
     WiFi.setHostname("showbox");
     if (!gMdnsUp) {
-        bool ok = MDNS.begin("showbox");
         IPAddress ip = lanIP();
-        debugLog("mdns begin=%d ip=%s heap=%u largest=%u",
-            ok ? 1 : 0,
+        debugLog("mdns responder start ip=%s heap=%u largest=%u",
             ip.toString().c_str(),
             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        if (!ok) {
-            mdnsRefreshQueued = true;
-            return;
-        }
-        MDNS.addService("http", "tcp", 80);
-        MDNS.addService("telnet", "tcp", 23);
-        MDNS.addService("_apple-midi", "_udp", 5004);
-        MDNS.enableArduino(3232);
         httpsOnMdnsStart();
         gMdnsUp = true;
+        if (!sMdnsResponderUp) {
+            sMdnsResponderUp = true;
+            if (xTaskCreate(lanMdnsResponderTask, "mdnsrsp", 6144, nullptr, 1, nullptr) != pdPASS) {
+                debugLog("mdnsrsp task create failed");
+                sMdnsResponderUp = false;
+                gMdnsUp = false;
+                mdnsRefreshQueued = true;
+                return;
+            }
+        }
         if (Debug != nullptr) {
             Debug->printf("[  OK  ] mDNS advertised as showbox.local at %s\n", ip.toString().c_str());
         }
     }
-    mdnsPreferStaIp();
+    staJoinMdnsGroup();
     mdnsRefreshQueued = false;
     lastMdnsRefresh = millis();
 }
@@ -1006,9 +1171,7 @@ void lanKeepWifi(const FrontPanel& panel) {
             staProto = 0;
             lanPreferWifiAirtime();
             if (gMdnsUp) {
-                MDNS.end();
                 gMdnsUp = false;
-                mdnsStaBound = false;
                 mdnsIgmpJoined = false;
                 lastIgmpReportMs = 0;
             }
@@ -1026,7 +1189,7 @@ void lanKeepWifi(const FrontPanel& panel) {
             lanSendGratuitousArp();
             lastArpMs = millis();
             if (gMdnsUp) {
-                mdnsPreferStaIp();
+                staJoinMdnsGroup();
             }
         }
         return;

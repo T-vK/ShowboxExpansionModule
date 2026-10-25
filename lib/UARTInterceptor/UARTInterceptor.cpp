@@ -195,6 +195,9 @@ void UARTInterceptor::begin(int u1_rx, int u1_tx, int u2_rx, int u2_tx, uint32_t
     if (pumpLock == nullptr) {
         pumpLock = xSemaphoreCreateMutex();
     }
+    if (txWriteMutex == nullptr) {
+        txWriteMutex = xSemaphoreCreateMutex();
+    }
     allocPend(pendTo1);
     allocPend(pendTo2);
     // Known-good mixer↔base path: HardwareSerial + complete frames only.
@@ -410,10 +413,22 @@ void UARTInterceptor::sendPacket(uint8_t* packet, size_t length, Direction direc
             }
             return;
         }
+        if (txWriteMutex != nullptr) {
+            xSemaphoreTake(txWriteMutex, portMAX_DELAY);
+        }
         Serial1.write(packet, length);
+        if (txWriteMutex != nullptr) {
+            xSemaphoreGive(txWriteMutex);
+        }
         lastTx1Ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
     } else if (direction == DEVICE1_TO_DEVICE2) {
+        if (txWriteMutex != nullptr) {
+            xSemaphoreTake(txWriteMutex, portMAX_DELAY);
+        }
         Serial2.write(packet, length);
+        if (txWriteMutex != nullptr) {
+            xSemaphoreGive(txWriteMutex);
+        }
         lastTx2Ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
     }
     if (took) {
@@ -468,6 +483,12 @@ void UARTInterceptor::processPort(HardwareSerial& rx, HardwareSerial& tx,
             break;
         }
         rxCount = rxCount + static_cast<uint32_t>(n);
+        // Cut-through shares the UART with injected packets (looper presses,
+        // entity writes). Without this lock the two writers interleave
+        // mid-packet and the devices silently drop the corrupted frames.
+        if (txWriteMutex != nullptr) {
+            xSemaphoreTake(txWriteMutex, portMAX_DELAY);
+        }
         size_t sent = 0;
         while (sent < n) {
             size_t w = tx.write(tmp + sent, n - sent);
@@ -480,6 +501,9 @@ void UARTInterceptor::processPort(HardwareSerial& rx, HardwareSerial& tx,
                 }
             }
             sent += w;
+        }
+        if (txWriteMutex != nullptr) {
+            xSemaphoreGive(txWriteMutex);
         }
         cutCount = cutCount + static_cast<uint32_t>(sent);
         if (packetFinder != nullptr) {

@@ -363,21 +363,31 @@ void MackieShowbox::requestMixerDump() {
     }
 }
 
+void MackieShowbox::forceEntityResync() {
+    // Re-request the full dump on demand: a missed announcement window can
+    // leave the cache desynced (the base announces state changes once), and
+    // the boot-time dump request only ever ran while dumpGen was 0.
+    if (!uartStarted) {
+        return;
+    }
+    dumpGen = 0;
+    dumpTries = 0;
+    lastDumpReqMs = 0;
+    dumpLinkLost = true;
+}
+
 void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
     uint8_t packet[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, action, 0xEF, 0xBE };
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
 void MackieShowbox::sendLooperPress() {
-    uint8_t buf[16];
-    size_t n = 0;
+    // A DOWN/UP pair inside one UART burst is a 1.4 ms glitch press; the
+    // base's button scanner drops those intermittently. Send DOWN now and
+    // schedule the UP ~40 ms later, like a real button hold.
     uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
-    uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
-    memcpy(buf + n, down, 8);
-    n += 8;
-    memcpy(buf + n, up, 8);
-    n += 8;
-    interceptor.sendPacket(buf, n, TO_BASE);
+    interceptor.sendPacket(down, sizeof(down), TO_BASE);
+    looperUpAtMs = millis() + 120;
 }
 
 void MackieShowbox::tapLooper(uint8_t times) {
@@ -387,12 +397,15 @@ void MackieShowbox::tapLooper(uint8_t times) {
     if (times > 2) {
         times = 2;
     }
+    if (looperUpAtMs != 0 || looperPressAtMs != 0) {
+        return;  // a press sequence is already in flight
+    }
     sendLooperPress();
     if (times >= 2) {
-        // The base debounces a back-to-back DOWN/UP/DOWN/UP burst into one
-        // press (rec -> play instead of rec -> overdub). The second press
-        // must go out as its own burst, gapped past the debouncer.
-        looperSecondTapAt = millis() + 250;
+        // The base debounces rapid repeat presses into one; the second
+        // press (rec -> overdub) must go out as its own press, gapped past
+        // the double-press window.
+        looperPressAtMs = millis() + 550;
     }
 }
 
@@ -1134,6 +1147,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             }
         }
         dumpGen = dumpGen + 1;
+        dumpUnplugDone = false;
         if (!fromMixer) {
             restoreAtMs = millis() + 120;
         }
@@ -1285,8 +1299,13 @@ void MackieShowbox::tick() {
     if (analogHoldDirty) {
         saveAnalogHold();
     }
-    if (looperSecondTapAt != 0 && (int32_t)(millis() - looperSecondTapAt) >= 0) {
-        looperSecondTapAt = 0;
+    if (looperUpAtMs != 0 && (int32_t)(millis() - looperUpAtMs) >= 0) {
+        looperUpAtMs = 0;
+        uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
+        interceptor.sendPacket(up, sizeof(up), TO_BASE);
+    }
+    if (looperPressAtMs != 0 && (int32_t)(millis() - looperPressAtMs) >= 0) {
+        looperPressAtMs = 0;
         sendLooperPress();
     }
     if (!uartTaskRunning) {
@@ -1313,6 +1332,7 @@ void MackieShowbox::tick() {
         dumpTries = 0;
         lastDumpReqMs = 0;
         dumpLinkLost = false;
+        dumpUnplugDone = false;
         debugLog("uart dump retry after link restore initM=%u initB=%u dumpSeq=%u",
             (unsigned)initMix, (unsigned)initBase, (unsigned)dumpGen);
     }
@@ -1324,6 +1344,15 @@ void MackieShowbox::tick() {
             lastDumpReqMs = nowDump;
             if (dumpTries < 250) {
                 dumpTries = static_cast<uint8_t>(dumpTries + 1);
+            }
+            // The mixer refuses to re-dump after a module reboot it never
+            // saw (its UI still believes the session is synced). The proven
+            // cure is the wire-unplug mixer re-init: force it once after
+            // the request rotation has clearly failed.
+            if (dumpGen == 0 && dumpTries >= 6 && !dumpUnplugDone) {
+                dumpUnplugDone = true;
+                debugLog("uart dump never arrived after %u tries, mixer re-init via wire unplug", (unsigned)dumpTries);
+                interceptor.wireUnplug(300);
             }
             requestMixerDump();
             debugLog("uart request mixer dump try=%u initM=%u initB=%u dumpSeq=%u batt=%u",

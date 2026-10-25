@@ -731,10 +731,19 @@ void RestApiRouter::setup() {
                     value = s == "1" || s == "true" || s == "on";
                 }
                 _showbox->setEntityValue(entityId, value);
+                actionRulesNoteEntityWrite(entityName.c_str(), value ? "1" : "0");
             } else if (entityType == UINT8) {
-                _showbox->setEntityValue(entityId, (uint8_t)doc["value"].as<int>());
+                uint8_t value = (uint8_t)doc["value"].as<int>();
+                _showbox->setEntityValue(entityId, value);
+                char text[12];
+                snprintf(text, sizeof(text), "%u", (unsigned)value);
+                actionRulesNoteEntityWrite(entityName.c_str(), text);
             } else {
-                _showbox->setEntityValue(entityId, doc["value"].as<float>());
+                float value = doc["value"].as<float>();
+                _showbox->setEntityValue(entityId, value);
+                char text[24];
+                snprintf(text, sizeof(text), "%.6g", (double)value);
+                actionRulesNoteEntityWrite(entityName.c_str(), text);
             }
         } else if (requireParam(request, "value", raw)) {
             if (entityType == BOOL) {
@@ -1433,6 +1442,17 @@ void RestApiRouter::setup() {
     });
     // Test hook: feed a MIDI message through the same inbound dispatch the
     // transports use (BLE parser, AppleMIDI, DIN). Test-only; no port gating.
+    // Test/maintenance hook: ask the mixer for a fresh ALL_ENTITIES dump so
+    // the cache re-syncs after a missed announcement window.
+    _server->on("/api/v1/showbox/resync", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_showbox == nullptr) {
+            request->send(503, "text/plain", "Showbox is not available.");
+            return;
+        }
+        _showbox->forceEntityResync();
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
     _server->on("/api/v1/midi/inject", HTTP_POST, [this](AsyncWebServerRequest* request) {
         JsonDocument doc;
         if (!jsonBody(request, doc)) {
@@ -1802,6 +1822,39 @@ void RestApiRouter::setup() {
     _server->on("/actions", HTTP_GET, [](AsyncWebServerRequest* request) {
         sendWebUi(request);
     });
+
+    _server->on("/api/v1/actions/vars", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        if (_actions == nullptr) {
+            request->send(503, "text/plain", "Reactions are not available.");
+            return;
+        }
+        String json = _actions->varsJson();
+        if (json.length() == 0) {
+            request->send(503, "text/plain", "The module did not answer.");
+            return;
+        }
+        request->send(200, "application/json", json);
+    });
+
+    _server->on("/api/v1/actions/vars", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (_actions == nullptr) {
+            request->send(503, "text/plain", "Reactions are not available.");
+            return;
+        }
+        JsonDocument doc;
+        if (!jsonBody(request, doc) || doc["name"].isNull()) {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"name required\"}");
+            return;
+        }
+        String body;
+        serializeJson(doc, body);
+        String error;
+        if (!_actions->setVarJson(body, error)) {
+            request->send(400, "text/plain", error.length() ? error : "The module did not answer.");
+            return;
+        }
+        request->send(200, "application/json", error);
+    }, nullptr, collectBody);
 
     _server->on("/api/v1/actions", HTTP_GET, [this](AsyncWebServerRequest* request) {
         if (_actions == nullptr) {
