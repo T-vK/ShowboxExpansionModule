@@ -119,6 +119,15 @@ export function DiagnosticsPanel() {
     .sort((a, b) => (b.cpu - a.cpu) || (a.n > b.n ? 1 : -1));
   const shownTasks = showAllTasks ? visibleTasks : visibleTasks.filter((t) => t.cpu >= 0.4 || t.hwm < 800);
 
+  // Event log follows the tail unless the reader scrolled up.
+  const logRef = useRef(null);
+  const logStick = useRef(true);
+  useEffect(() => {
+    if (logStick.current && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [data]);
+
   return (
     <section class="page-body diag-page">
       {err ? <p class="banner">{err}</p> : null}
@@ -190,23 +199,25 @@ export function DiagnosticsPanel() {
             {showAllTasks ? "Show active" : "Show all"}
           </button>
         </div>
-        <table class="diag-tasks">
-          <thead>
-            <tr><th>Task</th><th>Core</th><th>Prio</th><th>State</th><th>CPU</th><th>Stack min</th></tr>
-          </thead>
-          <tbody>
-            {shownTasks.map((t, i) => (
-              <tr key={`${t.n}-${i}`}>
-                <td>{t.n}</td>
-                <td>{t.c < 0 || t.c > 100 ? "any" : t.c}</td>
-                <td>{t.p}</td>
-                <td>{t.s}</td>
-                <td class={t.cpu > 40 ? "hot" : ""}>{t.cpu.toFixed(1)}%</td>
-                <td class={t.hwm < 512 ? "hot" : ""}>{t.hwm} B</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div class="diag-tasks-wrap">
+          <table class="diag-tasks">
+            <thead>
+              <tr><th>Task</th><th>Core</th><th>Prio</th><th>State</th><th>CPU</th><th>Stack min</th></tr>
+            </thead>
+            <tbody>
+              {shownTasks.map((t, i) => (
+                <tr key={`${t.n}`}>
+                  <td>{t.n}</td>
+                  <td>{t.c < 0 || t.c > 100 ? "any" : t.c}</td>
+                  <td>{t.p}</td>
+                  <td>{t.s}</td>
+                  <td class={t.cpu > 40 ? "hot" : ""}>{t.cpu.toFixed(1)}%</td>
+                  <td class={t.hwm < 512 ? "hot" : ""}>{t.hwm} B</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <p class="hint tight">Stack min is the free space ever left on that task's stack; close to zero means near-overflow. CPU is approximate (shared tasks counted separately).</p>
       </div>
 
@@ -224,10 +235,13 @@ export function DiagnosticsPanel() {
             {crashLogs.map((c, i) => <p key={i} class="diag-crash-row">{c}</p>)}
           </div>
         ) : null}
-        <ul class="diag-log">
-          {(log || []).slice().reverse().map((row, i) => <LogRow key={i} row={row} />)}
+        <ul class="diag-log" ref={logRef} onScroll={(event) => {
+          const el = event.currentTarget;
+          logStick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}>
+          {(log || []).map((row, i) => <LogRow key={`${row.t}-${row.k}-${i}`} row={row} />)}
         </ul>
-        <p class="hint tight">Events survive a reboot (RTC memory). Crash boots keep a short tail in NVS above.</p>
+        <p class="hint tight">Events survive a reboot (RTC memory). Oldest first, newest at the bottom; the view follows the tail unless you scroll up. Crash boots keep a short tail in NVS above.</p>
       </div>
     </section>
   );

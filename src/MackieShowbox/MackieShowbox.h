@@ -43,6 +43,7 @@ public:
     uint32_t dumpSeq() const { return dumpGen; }
     uint8_t dumpTryCount() const { return dumpTries; }
     void requestMixerDump();
+    void forceEntityResync();
     sd_card_state getSdCardState();
     uint32_t getRecStartMs() const { return recStartMs; }
     bool getRecPreBoot() const { return recPreBoot; }
@@ -268,11 +269,13 @@ private:
     volatile uint32_t ignoreTouchUntil = 0;
     volatile uint32_t looperHoldUntil = 0;
     bool looperOutgoing = false;
-    uint32_t looperSecondTapAt = 0;
+    uint32_t looperUpAtMs = 0;
+    uint32_t looperPressAtMs = 0;
     void sendLooperPress();
     volatile uint32_t restoreCount = 0;
     volatile uint32_t dumpGen = 0;
     uint32_t lastDumpReqMs = 0;
+    bool dumpUnplugDone = false;
     uint8_t dumpTries = 0;
     bool dumpLinkLive = false;
     bool dumpLinkLost = false;

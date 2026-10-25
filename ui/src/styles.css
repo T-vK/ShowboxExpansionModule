@@ -128,6 +128,19 @@ input[type=text], input[type=number], input[type=password], select {
   font: inherit; background: #0f1116; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.6rem;
 }
 .card { padding: 0.85rem 1rem; margin: 0.7rem 0; display: flex; gap: 0.8rem; align-items: flex-start; }
+.rule-group { margin: 1.1rem 0 0.3rem; }
+.rule-group .group-head {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%;
+  background: var(--panel); border: 1px solid var(--border, #2a2d36); border-radius: 5px;
+  padding: 0.45rem 0.7rem; color: var(--text); cursor: pointer; font-size: 0.86rem;
+}
+.rule-group .group-head:hover { filter: brightness(1.15); }
+.rule-group .chev { display: inline-block; transition: transform 0.15s; }
+.rule-group .chev.closed { transform: rotate(-90deg); }
+.rule-group .meta { margin-left: auto; color: var(--muted); font-size: 0.72rem; }
+.inline-vars { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; margin: 0.35rem 0; }
+.inline-vars .labeled { display: flex; align-items: center; gap: 0.35rem; font-size: 0.74rem; color: var(--muted); }
+.inline-vars input[type="number"] { width: 3.2rem; }
 label.field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--muted); margin: 0.35rem 0; }
 .editor-row, .group { background: #101218; border: 1px solid var(--line); border-radius: 10px; padding: 0.55rem 0.7rem; margin: 0.45rem 0; }
 .editor-row .top, .group .top { display: flex; gap: 0.4rem; align-items: center; }
@@ -392,6 +405,13 @@ body:has(.mixer-shell), body:has(.page-shell) {
 .bt-device-row button { flex: none; font-size: 0.68rem; padding: 0.1rem 0.4rem; }
 .bt-page-link { color: var(--accent); text-decoration: none; }
 .bt-page-link:hover { text-decoration: underline; }
+.wifi-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6rem; height: 1.6rem; border-radius: 50%;
+  background: #20242c; border: 1px solid #0a0b0e; color: #8fd6e0;
+}
+.wifi-chip svg { width: 15px; height: 15px; }
+.wifi-chip .dim { opacity: 0.35; }
 .hud-voice { display: flex; align-items: center; padding: 0 0.12rem; flex: none; }
 .rec-banner { background: #3a1414; color: #ff9a8c; }
 
@@ -807,16 +827,18 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
 .strip-fx-pair:has(:only-child) { grid-template-columns: 1fr; }
 .strip-fx-pair .fx-line {
   min-width: 0; min-height: 1.42rem; padding: 0.08rem 0.1rem;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: flex-start; gap: 0.22rem;
 }
 .strip-fx-pair .fx-line-txt {
   font-size: 0.52rem; letter-spacing: 0; line-height: 1.05;
-  white-space: normal; text-overflow: clip; overflow: hidden;
-  text-align: center; width: 100%; max-width: none;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-align: left; flex: 1 1 auto; min-width: 0; max-width: none;
+  display: block;
 }
-.strip-fx-pair .fx-line.compact .fx-line-val { display: none; }
-.strip-fx-pair .fx-line .fx-line-txt { line-height: 1.05; }
+.strip-fx-pair .fx-line .fx-line-val {
+  flex: none; font-size: 0.5rem; text-align: right; min-width: 1.5rem;
+  line-height: 1.05; padding-right: 0.06rem;
+}
 .strip-modes {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1815,6 +1837,8 @@ html.phone-preview .overlay { position: absolute; }
 .diag-chip.ok { border-color: #2e7a88; color: #7ec8d4; }
 .diag-chip.bad { border-color: #8a3a32; color: #ff9a8c; }
 .diag-tasks { width: 100%; border-collapse: collapse; font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+.diag-tasks-wrap { max-height: 17rem; overflow-y: auto; touch-action: pan-y; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.diag-tasks-wrap th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
 .diag-tasks th, .diag-tasks td { text-align: left; padding: 0.14rem 0.4rem 0.14rem 0; border-bottom: 1px solid #1c1f26; }
 .diag-tasks th { color: var(--muted); font-weight: 600; font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase; }
 .diag-tasks td.hot { color: #ff9a8c; font-weight: 700; }

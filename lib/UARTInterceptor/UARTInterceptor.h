@@ -147,6 +147,7 @@ private:
     static constexpr size_t kPendFallback = 4096;
     Pend pendTo2;
     Pend pendTo1;
+    SemaphoreHandle_t txWriteMutex = nullptr;
 
     static constexpr int kInjectQ = 8;
     Inject injectQ[kInjectQ] = {};

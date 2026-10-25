@@ -9,13 +9,13 @@
 #include "SnapshotLoader/SnapshotLoader.h"
 #include "BoosterPedal/BoosterPedal.h"
 #include "MainMutePedal/MainMutePedal.h"
-#include "MidiBoostLoop/MidiBoostLoop.h"
+#include "XtouchCompactAdapter/XtouchCompactAdapter.h"
+#include "Actions/ActionRules.h"
 #include "MultiMidi/UsbMidi.h"
 #include "MultiMidi/UsbMidiHost.h"
 #include <Hid.h>
 #include <Preferences.h>
 #include "RestApiRouter/RestApiRouter.h"
-#include "Actions/ActionRules.h"
 #include "Connections/Connections.h"
 #include "MultiMidi/MultiMidi.h"
 #include <BleRadio.h>
@@ -63,17 +63,6 @@ FrontPanel frontPanel;
 WiredNet wiredNet;
 LiveSocket liveSocket;
 CaptivePortal captivePortal;
-
-constexpr uint8_t MIDI_BOOST_CHANNEL = 15;
-constexpr uint8_t MIDI_BOOST_REC_PLAY_OVERDUB_CC = 102;
-constexpr uint8_t MIDI_BOOST_STOP_CC = 103;
-constexpr uint8_t MIDI_BOOST_DELETE_CC = 104;
-constexpr uint8_t MIDI_BOOST_ON_CC = 105;
-constexpr uint8_t MIDI_BOOST_OFF_CC = 106;
-// CC 107 toggles auto-boost (on by default). Handled in MidiBoostLoop / ActionRules.
-MidiBoostLoop midiBoost(&showbox, MIDI_BOOST_CHANNEL,
-    MIDI_BOOST_REC_PLAY_OVERDUB_CC, MIDI_BOOST_STOP_CC, MIDI_BOOST_DELETE_CC,
-    MIDI_BOOST_ON_CC, MIDI_BOOST_OFF_CC);
 
 bool btRadioOn = true;
 bool wifiRadioOn = true;
@@ -278,13 +267,25 @@ void setup() {
         xtouchAdapter.setDebugSerial(Debug);
         xtouchAdapter.setMidi(&multiMidi);
         xtouchAdapter.begin();
-        midiBoost.setDebugSerial(Debug);
-        midiBoost.setNextHandlers(
-            XtouchCompactAdapter::onNoteOn,
-            XtouchCompactAdapter::onNoteOff,
-            XtouchCompactAdapter::onControlChange,
-            XtouchCompactAdapter::onPitchBend);
-        midiBoost.begin(&multiMidi);
+        // Inbound MIDI feeds the X-Touch adapter and the reaction engine;
+        // the old MidiBoostLoop hop is gone - the looper/booster CCs are
+        // owned by the seeded reaction rules now.
+        multiMidi.action.setCallbackOnNoteOn([](uint8_t channel, uint8_t note, uint8_t velocity) {
+            XtouchCompactAdapter::onNoteOn(channel, note, velocity);
+            actionRulesOnMidi("noteOn", channel, note, velocity);
+        });
+        multiMidi.action.setCallbackOnNoteOff([](uint8_t channel, uint8_t note, uint8_t velocity) {
+            XtouchCompactAdapter::onNoteOff(channel, note, velocity);
+            actionRulesOnMidi("noteOff", channel, note, velocity);
+        });
+        multiMidi.action.setCallbackOnControlChange([](uint8_t channel, uint8_t controller, uint8_t value) {
+            XtouchCompactAdapter::onControlChange(channel, controller, value);
+            actionRulesOnMidi("cc", channel, controller, value);
+        });
+        multiMidi.action.setCallbackOnPitchBend([](uint8_t channel, uint8_t value) {
+            XtouchCompactAdapter::onPitchBend(channel, value);
+            actionRulesOnMidi("pitchBend", channel, value, 0);
+        });
         actionRules.setDebugSerial(Debug);
         actionRules.begin(&multiMidi, &showbox, &connections, &hid);
         looper.setDebugSerial(Debug);
@@ -363,7 +364,6 @@ void loop() {
         xtouchAdapter.tick();
     }
     multiMidi.tick();
-    midiBoost.tick();
     connections.tick();
     if (gDiagWatch) {
         diagTick();

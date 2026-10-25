@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Dropdown } from "../ui/Dropdown.jsx";
-import { IconBattery, IconSignalStream } from "../mixer/Icons.jsx";
-import { IconBluetooth } from "../mixer/Icons.jsx";
+import { IconBattery, IconSignalStream, IconWifi, IconBluetooth } from "../mixer/Icons.jsx";
 import { useLive } from "../live/LiveContext.jsx";
 
 function battClass(pct) {
@@ -131,6 +130,47 @@ function BtPopup() {
   );
 }
 
+function WifiPopup() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/v1/wifi", { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => { if (alive && json) setData(json); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 2500);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  const clients = data && Array.isArray(data.apClients) ? data.apClients : [];
+  return (
+    <div class="link-pop">
+      <p class={"link-pop-state " + (data && data.sta ? "ok" : "bad")}>
+        {data && data.sta ? `WiFi: ${data.ssid || "—"}` : "WiFi not connected"}
+      </p>
+      {data && data.sta ? (
+        <p>IP {data.ip || "—"} · {data.rssi ?? "?"} dBm</p>
+      ) : null}
+      <p>Hotspot: {data && data.ap ? `on · ${data.apSsid || "ShowboxMod"} @ ${data.apIp || "—"}` : "off"}</p>
+      {data && data.ap ? (
+        <>
+          <p>{clients.length} hotspot client(s):</p>
+          {clients.length ? (
+            <ul>
+              {clients.map((c) => <li key={c.mac}>{c.ip} <span class="meta">({c.mac})</span></li>)}
+            </ul>
+          ) : <p class="meta">No clients connected.</p>}
+        </>
+      ) : null}
+      <p class="actions"><a href="/wifi" class="bt-page-link">WiFi settings</a></p>
+    </div>
+  );
+}
+
 export function StatusCluster() {
   const { esp, link } = useLive();
   const [open, setOpen] = useState(false);
@@ -138,6 +178,7 @@ export function StatusCluster() {
   const [now, setNow] = useState(() => Date.now());
   const linkBtn = useRef(null);
   const btBtn = useRef(null);
+  const wifiBtn = useRef(null);
   const battBtn = useRef(null);
   const popAnchor = useRef(null);
   const pct = link.battery == null || link.battery === ""
@@ -158,6 +199,7 @@ export function StatusCluster() {
   function toggle(which) {
     popAnchor.current = which === "batt" ? battBtn.current
       : which === "bt" ? btBtn.current
+      : which === "wifi" ? wifiBtn.current
       : linkBtn.current;
     setPop(which);
     setOpen((v) => !(v && pop === which));
@@ -175,6 +217,15 @@ export function StatusCluster() {
         <span class={"esp-pip " + (live ? "on live" : (esp.connected ? "wait" : "off"))}>
           <IconSignalStream live={live} on={esp.connected} />
         </span>
+      </button>
+      <button
+        ref={wifiBtn}
+        type="button"
+        class="wifi-chip"
+        title="Wi-Fi"
+        onClick={() => toggle("wifi")}
+      >
+        <IconWifi level={1} />
       </button>
       {link.bleOn ? (
         <button
@@ -197,7 +248,7 @@ export function StatusCluster() {
         </span>
       </span>
       <Dropdown anchorRef={popAnchor} open={open} wide onClose={() => setOpen(false)}>
-        {pop === "bt" ? <BtPopup /> : (
+        {pop === "bt" ? <BtPopup /> : pop === "wifi" ? <WifiPopup /> : (
           <div class="link-pop">
             <p class={"link-pop-state " + (live ? "ok" : "bad")}>
               {live ? "Connected to Showbox" : (esp.connected ? "Waiting for Showbox" : "Web UI disconnected")}

@@ -5,6 +5,7 @@
 #include <UltimateBaseFirmware.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_netif.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
@@ -386,6 +387,41 @@ String CaptivePortal::statusJson() const {
     doc["apPassword"] = kApPass;
     doc["apIp"] = WiFi.softAPIP().toString();
     doc["apStations"] = (int)WiFi.softAPgetStationNum();
+    // Hotspot client addresses: station MACs from the WiFi driver, resolved
+    // through the DHCP server's lease table.
+    {
+        wifi_sta_list_t stations = {};
+        if (esp_wifi_ap_get_sta_list(&stations) == ESP_OK && stations.num > 0) {
+            const int kMaxClients = 8;
+            esp_netif_t* apNetif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+            esp_netif_pair_mac_ip_t pairs[kMaxClients] = {};
+            for (int i = 0; i < stations.num && i < kMaxClients; i++) {
+                memcpy(pairs[i].mac, stations.sta[i].mac, 6);
+            }
+            if (apNetif != nullptr
+                && esp_netif_dhcps_get_clients_by_mac(apNetif, stations.num, pairs) == ESP_OK) {
+                JsonArray clients = doc["apClients"].to<JsonArray>();
+                for (int i = 0; i < stations.num && i < kMaxClients; i++) {
+                    if (pairs[i].ip.addr == 0) {
+                        continue;
+                    }
+                    JsonObject row = clients.add<JsonObject>();
+                    char mac[18] = {};
+                    snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                        pairs[i].mac[0], pairs[i].mac[1], pairs[i].mac[2],
+                        pairs[i].mac[3], pairs[i].mac[4], pairs[i].mac[5]);
+                    row["mac"] = mac;
+                    char ipStr[16] = {};
+                    snprintf(ipStr, sizeof(ipStr), "%u.%u.%u.%u",
+                        (unsigned)((pairs[i].ip.addr) & 0xFF),
+                        (unsigned)((pairs[i].ip.addr >> 8) & 0xFF),
+                        (unsigned)((pairs[i].ip.addr >> 16) & 0xFF),
+                        (unsigned)((pairs[i].ip.addr >> 24) & 0xFF));
+                    row["ip"] = ipStr;
+                }
+            }
+        }
+    }
     doc["portal"] = portalOpen();
     doc["radio"] = radioOn();
     JsonArray nets = doc["remembered"].to<JsonArray>();

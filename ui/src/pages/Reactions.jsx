@@ -194,23 +194,54 @@ function describe(group, item) {
   if (item.type === "sleep") return `Wait ${item.ms} ms`;
   if (item.type === "looper") return `Looper ${labelOf(looper, item.button)}`;
   if (item.type === "snapshot") return `Snapshot ${item.slot}`;
+  if (item.type === "showboxReady") return `Showbox entity sync is ready`;
+  if (item.type === "gainBoost") {
+    const target = item.channelVar ? `input ${item.channelVar}` : (item.entity || "input 2").replace("_GAIN", "").replace("INPUT", "input ").toLowerCase();
+    const amount = item.stepsVar ? item.stepsVar : (item.steps || 2) + " steps";
+    const mode = item.on === "toggle" ? "toggle" : item.on === "on" ? "engage" : item.on === "off" ? "release" : item.on;
+    return `Boost ${target} (${amount}) ${mode}`;
+  }
+  if (item.type === "variable") {
+    const target = item.name || "?";
+    if (item.op === "trackTrigger") return `Track ${target} from trigger`;
+    if (item.op === "toggle") return `Toggle ${target}`;
+    if (item.op === "add") return `${target} += ${item.value}`;
+    return `Set ${target} = ${item.valueFromTrigger === "1" ? "trigger value" : item.value}`;
+  }
   return item.type;
 }
 
 export function Reactions() {
   const [data, setData] = useState({ automations: [] });
+  const [vars, setVars] = useState({ vars: [] });
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(null);
+  const [collapsed, setCollapsed] = useState({});
+  const [groupsOpen, setGroupsOpen] = useState(true);
 
   async function refresh() {
-    const next = await getJson("/api/v1/actions");
-    setData(next);
+    const [rules, v] = await Promise.all([
+      getJson("/api/v1/actions"),
+      getJson("/api/v1/actions/vars").catch(() => ({ vars: [] })),
+    ]);
+    setData(rules);
+    setVars(v);
     setError("");
   }
 
   useEffect(() => {
     refresh().catch((err) => setError(String(err.message || err)));
   }, []);
+
+  const varValue = (name, fallback = 0) => {
+    const row = (vars.vars || []).find((v) => v.name === name);
+    return row ? row.value : fallback;
+  };
+
+  async function setVar(name, value) {
+    const next = await postJson("/api/v1/actions/vars", { name, value });
+    setVars(next);
+  }
 
   function openEditor(rule) {
     setEditing({
@@ -226,41 +257,128 @@ export function Reactions() {
 
   const rules = data.automations || [];
 
+  // Managed variables the booster rules expose inline on their cards.
+  const varEditors = {
+    BOOST_CHANNEL: { label: "Boost channel", kind: "channel" },
+    BOOST_AMOUNT: { label: "Boost steps", kind: "steps" },
+    AUTO_BOOST: { label: "Auto boost", kind: "toggle" },
+    BOOST_ENABLED: { label: "Boosted", kind: "readonly" },
+    REMEMBERED_GAIN: { label: "Remembered gain", kind: "gain" },
+  };
+
+  function ruleVars(rule) {
+    const names = new Set();
+    for (const step of rule.actions || []) {
+      for (const key of ["channelVar", "stepsVar", "var", "baseVar"]) {
+        if (step[key] && varEditors[step[key]]) names.add(step[key]);
+      }
+    }
+    for (const item of rule.conditions || []) {
+      if (item.type === "variable" && item.name && varEditors[item.name]) names.add(item.name);
+    }
+    for (const item of rule.triggers || []) {
+      if (item.type === "showbox" && varEditors[item.entity]) names.add(item.entity);
+    }
+    return [...names];
+  }
+
+  const groups = [];
+  {
+    const byGroup = new Map();
+    for (const rule of rules) {
+      const key = rule.group || "Other";
+      if (!byGroup.has(key)) byGroup.set(key, []);
+      byGroup.get(key).push(rule);
+    }
+    for (const [name, list] of byGroup) groups.push([name, list]);
+  }
+
   return (
     <main>
       <h1>Reactions</h1>
       <Nav current="/actions" />
       <p class="hint">When any trigger happens, and every condition is true, the actions run in order. A footswitch trigger replaces the built-in looper, boost, mute, or snapshot for that same gesture. Mouse moves are relative (-127 to 127). Touch coordinates are 0–10000 (5000 is center); X2/Y2 are the swipe end. Reactions are stored as JSON with triggers, conditions, and actions.</p>
       <p id="error">{error}</p>
-      <p class="actions"><button type="button" onClick={() => openEditor(null)}>Add reaction</button></p>
-      <div>
-        {rules.length ? rules.map((rule) => {
-          const lines = []
-            .concat((rule.triggers || []).map((item) => "When " + describe("triggers", item)))
-            .concat((rule.conditions || []).map((item) => "And if " + describe("conditions", item)))
-            .concat((rule.actions || []).map((item) => "Then " + describe("actions", item)));
-          return (
-            <article class="card" key={rule.id}>
-              <label class="switch">
-                <input type="checkbox" checked={!!rule.on} onChange={(event) => {
-                  const next = { ...rule, on: event.target.checked };
-                  postJson("/api/v1/actions", next).then(setData).catch((err) => { event.target.checked = !event.target.checked; setError(err.message); });
-                }} />
-                <span />
-              </label>
-              <div class="body">
-                <strong>{rule.name || ("Reaction " + rule.id)}</strong>
-                <ul class="lines">{lines.map((line, i) => <li key={i}>{line}</li>)}</ul>
-                <div class="actions">
-                  <button type="button" class="ghost" onClick={() => postQuery("/api/v1/actions/run?id=" + rule.id).catch((err) => setError(err.message))}>Run</button>
-                  <button type="button" class="ghost" onClick={() => openEditor(rule)}>Edit</button>
-                  <button type="button" class="warn" onClick={() => postQuery("/api/v1/actions/delete?id=" + rule.id).then(setData).catch((err) => setError(err.message))}>Delete</button>
-                </div>
+      <p class="actions">
+        <button type="button" onClick={() => openEditor(null)}>Add reaction</button>
+        <button type="button" class="ghost" onClick={() => setGroupsOpen(!groupsOpen)}>{groupsOpen ? "Collapse all" : "Expand all"}</button>
+      </p>
+      {groups.map(([groupName, list]) => {
+        const isCollapsed = groupsOpen ? collapsed[groupName] : !collapsed[groupName];
+        return (
+          <section class="rule-group" key={groupName}>
+            <button type="button" class="group-head" onClick={() => setCollapsed({ ...collapsed, [groupName]: !isCollapsed })}>
+              <span class={"chev" + (isCollapsed ? " closed" : "")}>▾</span>
+              <strong>{groupName}</strong>
+              <span class="meta">{list.length} · {list.filter((r) => r.on).length} on</span>
+            </button>
+            {!isCollapsed ? (
+              <div>
+                {list.map((rule) => {
+                  const lines = []
+                    .concat((rule.triggers || []).map((item) => "When " + describe("triggers", item)))
+                    .concat((rule.conditions || []).map((item) => "And if " + describe("conditions", item)))
+                    .concat((rule.actions || []).map((item) => "Then " + describe("actions", item)));
+                  const editableVars = ruleVars(rule);
+                  return (
+                    <article class="card" key={rule.id}>
+                      <label class="switch">
+                        <input type="checkbox" checked={!!rule.on} onChange={(event) => {
+                          const next = { ...rule, on: event.target.checked };
+                          postJson("/api/v1/actions", next).then(setData).catch((err) => { event.target.checked = !event.target.checked; setError(err.message); });
+                        }} />
+                        <span />
+                      </label>
+                      <div class="body">
+                        <strong>{rule.name || ("Reaction " + rule.id)}</strong>
+                        <ul class="lines">{lines.map((line, i) => <li key={i}>{line}</li>)}</ul>
+                        {editableVars.length ? (
+                          <div class="inline-vars">
+                            {editableVars.map((name) => {
+                              const spec = varEditors[name];
+                              const value = varValue(name);
+                              if (spec.kind === "toggle") {
+                                return (
+                                  <label class="labeled" key={name}>
+                                    <span>{spec.label}</span>
+                                    <input type="checkbox" checked={value >= 0.5} onChange={(event) => setVar(name, event.target.checked ? 1 : 0)} />
+                                  </label>
+                                );
+                              }
+                              if (spec.kind === "readonly") {
+                                return <span class="meta" key={name}>{spec.label}: {value >= 0.5 ? "yes" : "no"}</span>;
+                              }
+                              if (spec.kind === "gain") {
+                                return <span class="meta" key={name}>{spec.label}: {value} dB</span>;
+                              }
+                              const min = spec.kind === "channel" ? 1 : 1;
+                              const max = spec.kind === "channel" ? 4 : 8;
+                              return (
+                                <label class="labeled" key={name}>
+                                  <span>{spec.label}</span>
+                                  <input type="number" min={min} max={max} value={value} onChange={(event) => {
+                                    const v = Number(event.target.value);
+                                    if (Number.isFinite(v) && v >= min && v <= max) setVar(name, v);
+                                  }} />
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                        <div class="actions">
+                          <button type="button" class="ghost" onClick={() => postQuery("/api/v1/actions/run?id=" + rule.id).catch((err) => setError(err.message))}>Run</button>
+                          <button type="button" class="ghost" onClick={() => openEditor(rule)}>Edit</button>
+                          <button type="button" class="warn" onClick={() => postQuery("/api/v1/actions/delete?id=" + rule.id).then(setData).catch((err) => setError(err.message))}>Delete</button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
-            </article>
-          );
-        }) : <p class="empty">No reactions yet.</p>}
-      </div>
+            ) : null}
+          </section>
+        );
+      })}
       <datalist id="entities">{entities.map((name) => <option value={name} key={name} />)}</datalist>
       <div class={"overlay" + (editing ? " open" : "")}>
         {editing ? (
