@@ -149,8 +149,6 @@ private:
     uint32_t looperChangedAtMs = 0;
     uint32_t looperTapWatch = 0;
     uint8_t looperTapStateBefore = 0xFF;
-    char pendingLooperOp[8] = {};
-    uint32_t pendingLooperDueMs = 0;
     uint32_t ignoreShowboxUntil = 0;
     uint32_t readyDumpSeq = 0;
     float lastOwnGainWrite = -9999.0f;

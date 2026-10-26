@@ -619,13 +619,6 @@ void ActionRules::tick() {
     }
     drainMidi();
     drainEntityEvents();
-    if (pendingLooperOp[0] != '\0' && (int32_t)(millis() - pendingLooperDueMs) >= 0) {
-        char op[8];
-        strncpy(op, pendingLooperOp, sizeof(op) - 1);
-        op[sizeof(op) - 1] = '\0';
-        pendingLooperOp[0] = '\0';
-        dispatchLooper(String(op));
-    }
     // showboxReady: the first entity dump after boot (and every re-dump
     // after a link restore) means the entity cache mirrors the hardware.
     // Rules use it to undo state that outlived the reboot, e.g. a boost.
@@ -2512,35 +2505,13 @@ void ActionRules::dispatchLooper(const String& op) {
     auto sendAction = [&](looper_button_action action) {
         if (!alreadySent) {
             showbox->sendLooperButtonAction(action);
+            looperTapWatch = millis();
+            looperTapStateBefore = state;
         }
     };
 
-    // The base's looper button handler has a dead zone after every state
-    // transition (measured: presses 0.6-2.5 s after a change are silently
-    // ignored, faster repeats count as its double-press, later ones work).
-    // Hold the action until the zone has passed; the retry re-runs
-    // dispatchLooper with the by-then-current state, so the decision is
-    // always fresh.
-    const bool looperAction = op == "cycle" || op == "stop" || op == "delete"
-        || op == "down" || op == "tap";
-    if (looperAction && pendingLooperOp[0] == '\0'
-        && looperChangedAtMs != 0) {
-        const uint32_t age = millis() - looperChangedAtMs;
-        if (age < 1200) {
-            strncpy(pendingLooperOp, op.c_str(), sizeof(pendingLooperOp) - 1);
-            pendingLooperOp[sizeof(pendingLooperOp) - 1] = '\0';
-            // Hard-capped remaining wait: a late-drained state event must not
-            // postpone the press forever (the gate re-arms on re-dispatch).
-            pendingLooperDueMs = millis() + (1200 - age) + 20;
-            return;
-        }
-    }
-
-    // The cache is hardware truth: send the button action and let the base's
-    // own LOOPER_STATE announcement drive every state rule. Predicting the
-    // outcome here desynced the cache whenever the hardware disagreed (a
-    // swallowed press, a double-press window), and every state-driven rule
-    // then acted on the wrong state.
+    // Record/play/overdub must never be delayed - the packets go out
+    // immediately, exactly like the physical button.
     if (op == "stop") {
         sendAction(looper_button_action::DOUBLE_PRESS);
         return;
