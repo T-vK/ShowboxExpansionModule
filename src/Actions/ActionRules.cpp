@@ -664,9 +664,43 @@ void ActionRules::tick() {
             looperTapWatch = 0;
         } else if ((int32_t)(millis() - looperTapWatch) > 2000) {
             looperTapWatch = 0;
-            showbox->forceEntityResync();
+            // Don't fire a resync here: the dump traffic interferes with the
+            // next looper press (the e2e sends one ~1.2 s later). The cache
+            // re-syncs on the next natural dump or looper action.
             if (debug != nullptr) {
-                debug->printf("[looper] no announcement after press, resyncing (state %u)\n", nowState);
+                debug->printf("[looper] no announcement after press (state %u)\n", nowState);
+            }
+        }
+    }
+    // Recovery: after a looper action, if the base didn't announce a state
+    // change within 1.5 s, request a fresh dump. When the dump arrives,
+    // check the true state: if the press was ignored, re-send it once.
+    // Never re-press without dump confirmation (a lost announcement with a
+    // successful press would double-advance the looper).
+    if (looperTapWatch != 0) {
+        const uint8_t nowState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
+        if (nowState != looperTapStateBefore) {
+            looperTapWatch = 0;
+            looperTapPhase = 0;
+        } else if (looperTapPhase == 0 && (int32_t)(millis() - looperTapWatch) > 1500) {
+            looperTapPhase = 1;
+            looperTapDumpSeq = showbox->dumpSeq();
+            showbox->forceEntityResync();
+            looperTapWatch = millis();
+        } else if (looperTapPhase == 1) {
+            const bool dumpArrived = showbox->dumpSeq() != looperTapDumpSeq;
+            if (dumpArrived || (int32_t)(millis() - looperTapWatch) > 5000) {
+                looperTapPhase = 0;
+                looperTapWatch = 0;
+                const uint8_t still = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
+                if (dumpArrived && still == looperTapStateBefore) {
+                    // The dump confirms the press was ignored: re-dispatch.
+                    dispatchLooper(String(looperTapOp));
+                    if (debug != nullptr) {
+                        debug->printf("[looper] press ignored, re-dispatched %s (state %u)\n",
+                            looperTapOp, still);
+                    }
+                }
             }
         }
     }
@@ -1056,6 +1090,11 @@ void ActionRules::onShowbox(const char* entity, const char* value) {
         if (overdubFollowUp && value != nullptr && atoi(value) == looper_state::PLAY) {
             overdubFollowUp = false;
             showbox->tapLooper(1);
+            // The follow-up tap can also be ignored; arm the recovery.
+            looperTapWatch = millis();
+            looperTapStateBefore = looper_state::PLAY;
+            strncpy(looperTapOp, "cycle", sizeof(looperTapOp) - 1);
+            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
         }
     }
     if (inAction || (int32_t)(millis() - ignoreShowboxUntil) < 0) {
@@ -2509,6 +2548,8 @@ void ActionRules::dispatchLooper(const String& op) {
             showbox->tapLooper(times);
             looperTapWatch = millis();
             looperTapStateBefore = state;
+            strncpy(looperTapOp, "cycle", sizeof(looperTapOp) - 1);
+            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
         }
     };
     auto sendAction = [&](looper_button_action action) {
@@ -2516,6 +2557,11 @@ void ActionRules::dispatchLooper(const String& op) {
             showbox->sendLooperButtonAction(action);
             looperTapWatch = millis();
             looperTapStateBefore = state;
+            const char* name = action == looper_button_action::DOUBLE_PRESS ? "stop"
+                : action == looper_button_action::LONG_PRESS ? "delete"
+                : "up";
+            strncpy(looperTapOp, name, sizeof(looperTapOp) - 1);
+            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
         }
     };
 

@@ -37,7 +37,7 @@ def cc_retry(number, value=127, channel=1):
     """Send a CC; the base occasionally ignores a press (like the physical
     button), so re-send once after a pause if needed."""
     cc(number, value, channel)
-    time.sleep(1.0)
+    time.sleep(2.0)
 
 
 def var(name, fallback=None):
@@ -103,7 +103,7 @@ def wait_ready(seconds=90):
             count = 0
         if count > 50:
             return True
-        time.sleep(1.0)
+        time.sleep(2.0)
     return False
 
 
@@ -133,7 +133,7 @@ for attempt in range(4):
     cc(104)
     if wait_state(0, 5):
         break
-time.sleep(1.0)
+time.sleep(2.0)
 GAIN0 = entity("INPUT2_GAIN")
 BOOSTED = GAIN0 + 8.0
 print(f"reset: INPUT2_GAIN={GAIN0} LOOPER_STATE={entity('LOOPER_STATE')}")
@@ -155,36 +155,36 @@ check("autoboost armed via vars", ensure_armed())
 print("--- CC102: record; NO boost while recording")
 cc(102)
 check("recording starts", wait_state(1))
-time.sleep(1.0)
-time.sleep(1.5)
+time.sleep(2.0)
+time.sleep(2.0)
 g = entity("INPUT2_GAIN")
 check("no boost while recording", abs(g - GAIN0) < 0.05, f"gain={g}")
 
 print("--- CC102: cycle -> play; boost +2 steps, exactly once")
 cc(102)
 check("play after record", wait_state(3))
-time.sleep(1.0)
+time.sleep(2.0)
 g = wait_gain(BOOSTED)
 check("boost on play", abs(g - BOOSTED) < 0.05, f"gain={g} (want {BOOSTED})")
 
 print("--- CC103: stop; boost undone")
 cc(103)
 check("stop", wait_state(2))
-time.sleep(1.0)
+time.sleep(2.0)
 g = wait_gain(GAIN0)
 check("boost undone on stop", abs(g - GAIN0) < 0.05, f"gain={g}")
 
 print("--- CC102 from stop: resumes play; boost again")
 cc(102)
 check("resume play from stop", wait_state(3))
-time.sleep(1.0)
+time.sleep(2.0)
 g = wait_gain(BOOSTED)
 check("boost on resumed play", abs(g - BOOSTED) < 0.05, f"gain={g}")
 
 print("--- CC102: play -> overdub; boost undone")
 cc(102)
 check("overdub after play", wait_state(4))
-time.sleep(1.0)
+time.sleep(2.0)
 g = wait_gain(GAIN0)
 check("boost undone on overdub", abs(g - GAIN0) < 0.05, f"gain={g}")
 
@@ -192,7 +192,7 @@ print("--- repeated overdub cycles: no stacking")
 for want in (3, 4, 3, 4):
     cc(102)
     wait_state(want)
-    time.sleep(1.0)
+    time.sleep(2.0)
 g = entity("INPUT2_GAIN")
 check("gain stable across overdub cycles", abs(g - GAIN0) < 0.05, f"gain={g}")
 
@@ -201,7 +201,7 @@ cc(102)
 wait_state(3)
 cc(104)
 check("delete", wait_state(0))
-time.sleep(1.0)
+time.sleep(2.0)
 g = wait_gain(GAIN0)
 check("boost undone after delete", abs(g - GAIN0) < 0.05, f"gain={g}")
 
@@ -210,11 +210,11 @@ api("/api/v1/actions/vars", {"name": "AUTO_BOOST", "value": 0})
 time.sleep(0.3)
 cc(102)
 check("recording starts", wait_state(1))
-time.sleep(1.0)
+time.sleep(2.0)
 cc(102)
 check("play after record", wait_state(3))
-time.sleep(1.0)
-time.sleep(1.5)
+time.sleep(2.0)
+time.sleep(2.0)
 g = entity("INPUT2_GAIN")
 check("no boost while disarmed", abs(g - GAIN0) < 0.05, f"gain={g}")
 api("/api/v1/actions/vars", {"name": "AUTO_BOOST", "value": 1})  # re-arm
@@ -227,13 +227,13 @@ cc(104)
 wait_state(0)
 cc(102)
 check("recording starts", wait_state(1))
-time.sleep(1.0)
+time.sleep(2.0)
 cc(102)
 check("overdub after record (2 taps)", wait_state(4))
-time.sleep(1.0)
+time.sleep(2.0)
 cc(102)
 check("play after overdub", wait_state(3))
-time.sleep(1.0)
+time.sleep(2.0)
 api("/api/v1/showbox/looper_overdub?value=0")
 time.sleep(0.3)
 
