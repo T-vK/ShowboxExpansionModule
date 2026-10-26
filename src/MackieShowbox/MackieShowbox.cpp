@@ -381,15 +381,6 @@ void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
 }
 
-void MackieShowbox::sendLooperPress() {
-    // A DOWN/UP pair inside one UART burst is a 1.4 ms glitch press; the
-    // base's button scanner drops those intermittently. Send DOWN now and
-    // schedule the UP ~40 ms later, like a real button hold.
-    uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
-    interceptor.sendPacket(down, sizeof(down), TO_BASE);
-    looperUpAtMs = millis() + 280;
-}
-
 void MackieShowbox::tapLooper(uint8_t times) {
     if (times < 1) {
         times = 1;
@@ -397,28 +388,20 @@ void MackieShowbox::tapLooper(uint8_t times) {
     if (times > 2) {
         times = 2;
     }
-    if (looperUpAtMs != 0 || looperPressAtMs != 0) {
-        return;  // a press sequence is already in flight
-    }
-    sendLooperPress();
-    if (times >= 2) {
-        // The base debounces rapid repeat presses into one; the second
-        // press (rec -> overdub) must go out as its own press, gapped past
-        // the double-press window.
-        looperPressAtMs = millis() + 550;
-    }
-}
-
-void MackieShowbox::advanceLooperPress() {
-    if (looperUpAtMs != 0 && (int32_t)(millis() - looperUpAtMs) >= 0) {
-        looperUpAtMs = 0;
+    // Original form: DOWN/UP pairs back-to-back in one burst. This is what
+    // the firmware sent for weeks without issue - record/play/overdub must
+    // never be delayed.
+    uint8_t buf[32];
+    size_t n = 0;
+    for (uint8_t i = 0; i < times; i++) {
+        uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
         uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
-        interceptor.sendPacket(up, sizeof(up), TO_BASE);
+        memcpy(buf + n, down, 8);
+        n += 8;
+        memcpy(buf + n, up, 8);
+        n += 8;
     }
-    if (looperPressAtMs != 0 && (int32_t)(millis() - looperPressAtMs) >= 0) {
-        looperPressAtMs = 0;
-        sendLooperPress();
-    }
+    interceptor.sendPacket(buf, n, TO_BASE);
 }
 
 void MackieShowbox::noteLooperOutgoing() {
@@ -1286,7 +1269,6 @@ void MackieShowbox::uartTask(void* arg) {
         // The looper press sequencing lives here: this task keeps running
         // through BLE-coex radio windows that stall the loop task for
         // seconds, and a delayed UP would read as a long press.
-        self->advanceLooperPress();
         {
             static uint32_t lastEmitFlushMs = 0;
             uint32_t now = millis();
@@ -1316,7 +1298,6 @@ void MackieShowbox::tick() {
         saveAnalogHold();
     }
     if (!uartTaskRunning) {
-        advanceLooperPress();
         interceptor.tick();
         flushEmits();
     }
