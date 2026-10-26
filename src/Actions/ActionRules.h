@@ -151,6 +151,9 @@ private:
     uint32_t overdubFollowUpUntil = 0;
     uint32_t looperTapWatch = 0;
     uint8_t looperTapStateBefore = 0xFF;
+    uint8_t looperTapPhase = 0;
+    uint32_t looperTapDumpSeq = 0;
+    char looperTapOp[8] = {};
     uint32_t ignoreShowboxUntil = 0;
     uint32_t readyDumpSeq = 0;
     float lastOwnGainWrite = -9999.0f;
