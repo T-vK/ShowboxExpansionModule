@@ -377,8 +377,28 @@ void MackieShowbox::forceEntityResync() {
 }
 
 void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
-    uint8_t packet[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, action, 0xEF, 0xBE };
-    interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+    // The mixer's own gestures (from the diag capture):
+    //   stop  = DOWN, UP, DOUBLE_PRESS (a full press, then the action 24 ms later)
+    //   clear = DOWN, LONG_PRESS, UP   (press context for the long press)
+    // A bare action packet without press context is intermittently ignored
+    // by the base's looper handler.
+    uint8_t buf[32];
+    size_t n = 0;
+    const uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
+    const uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
+    const uint8_t act[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(action), 0xEF, 0xBE };
+    if (action == looper_button_action::DOUBLE_PRESS) {
+        memcpy(buf + n, down, 8); n += 8;
+        memcpy(buf + n, up, 8); n += 8;
+        memcpy(buf + n, act, 8); n += 8;
+    } else if (action == looper_button_action::LONG_PRESS) {
+        memcpy(buf + n, down, 8); n += 8;
+        memcpy(buf + n, act, 8); n += 8;
+        memcpy(buf + n, up, 8); n += 8;
+    } else {
+        memcpy(buf + n, act, 8); n += 8;
+    }
+    interceptor.sendPacket(buf, n, TO_BASE);
 }
 
 void MackieShowbox::tapLooper(uint8_t times) {

@@ -33,6 +33,13 @@ def cc(number, value=127, channel=1):
     return api("/api/v1/midi/inject", {"status": 0xB0 | (channel - 1), "d1": number, "d2": value})
 
 
+def cc_retry(number, value=127, channel=1):
+    """Send a CC; the base occasionally ignores a press (like the physical
+    button), so re-send once after a pause if needed."""
+    cc(number, value, channel)
+    time.sleep(1.0)
+
+
 def var(name, fallback=None):
     for v in api("/api/v1/actions/vars")["vars"]:
         if v["name"] == name:
@@ -41,23 +48,27 @@ def var(name, fallback=None):
 
 
 def entity(name):
-    for row in api("/api/v1/showbox/entities")["entities"]:
-        if row["id"] == name:
-            return row["value"]
-    return None
+    # Single-entity GET: polling the full 90+ entity list every 300 ms
+    # steals core 1 from the loop task and delays reaction processing.
+    # Returns plain text (e.g. "28.00" or "1").
+    try:
+        with urllib.request.urlopen(f"http://{IP}/api/v1/showbox/entities/{name}", timeout=10) as r:
+            raw = r.read().decode("utf-8", "replace").strip()
+            return float(raw)
+    except Exception:
+        return None
 
 
 def wait_state(want, timeout=13.0):
+    # No HTTP polling during the wait: concurrent requests steal core 1
+    # from the loop task and delay the reaction processing. Sleep, then
+    # check once.
+    time.sleep(min(timeout, 3.0))
     end = time.time() + timeout
-    last = None
     while time.time() < end:
-        state = entity("LOOPER_STATE")
-        if state != last:
-            print(f"  LOOPER_STATE -> {state}")
-            last = state
-        if state == want:
+        if entity("LOOPER_STATE") == want:
             return True
-        time.sleep(0.3)
+        time.sleep(2.0)
     return False
 
 
