@@ -650,9 +650,6 @@ void ActionRules::tick() {
             }
         }
     }
-    if (overdubFollowUp && (int32_t)(millis() - overdubFollowUpUntil) >= 0) {
-        overdubFollowUp = false;
-    }
     // Self-healing: after a looper press, the base announces the new state
     // within ~300 ms. When no announcement arrives (radio window, lost
     // frame) the cache goes stale and every following dispatchLooper
@@ -1085,17 +1082,6 @@ void ActionRules::onPanel(const char* button, const char* gesture) {
 void ActionRules::onShowbox(const char* entity, const char* value) {
     if (entity != nullptr && strcmp(entity, "LOOPER_STATE") == 0) {
         looperChangedAtMs = millis();
-        // Overdub-after-record: the first tap took rec -> play; now that the
-        // base confirmed PLAY, send the second tap (play -> overdub).
-        if (overdubFollowUp && value != nullptr && atoi(value) == looper_state::PLAY) {
-            overdubFollowUp = false;
-            showbox->tapLooper(1);
-            // The follow-up tap can also be ignored; arm the recovery.
-            looperTapWatch = millis();
-            looperTapStateBefore = looper_state::PLAY;
-            strncpy(looperTapOp, "cycle", sizeof(looperTapOp) - 1);
-            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
-        }
     }
     if (inAction || (int32_t)(millis() - ignoreShowboxUntil) < 0) {
         return;
@@ -2144,6 +2130,31 @@ void ActionRules::patchBuiltinMeta() {
                 doc["group"] = group;
                 changed = true;
             }
+            // The auto-boost rules need the 1.5 s settle delay before the
+            // gain write (the base misses presses during entity updates).
+            if (key == "boosterAutoOn" || key == "boosterAutoOff") {
+                const bool hasSleep = [ &doc ]() {
+                    for (JsonObjectConst action : doc["actions"].as<JsonArrayConst>()) {
+                        if (jsonText(action["type"]) == "sleep") {
+                            return true;
+                        }
+                    }
+                    return false;
+                }();
+                if (!hasSleep) {
+                    JsonArray actions = doc["actions"].to<JsonArray>();
+                    JsonObject sleep = actions.add<JsonObject>();
+                    sleep["type"] = "sleep";
+                    sleep["ms"] = 1500;
+                    for (JsonObjectConst action : seed["actions"].as<JsonArrayConst>()) {
+                        JsonObject a = actions.add<JsonObject>();
+                        for (JsonPairConst kv : action) {
+                            a[kv.key()] = kv.value();
+                        }
+                    }
+                    changed = true;
+                }
+            }
             // MIDI 105/106 already arrived from a controller. Echoing them back
             // out kMidiPortAll loops BLE/ETH/ext forever.
             if (key == "midiBoostOn" || key == "midiBoostOff" || key == "midiBoostToggle") {
@@ -2572,6 +2583,11 @@ void ActionRules::dispatchLooper(const String& op) {
         return;
     }
     if (op == "delete") {
+        // LONG_PRESS from the empty state would start a recording on the
+        // base (the base treats any press from empty as "record"). Skip.
+        if (state == looper_state::DELETE) {
+            return;
+        }
         sendAction(looper_button_action::LONG_PRESS);
         return;
     }
@@ -2588,17 +2604,12 @@ void ActionRules::dispatchLooper(const String& op) {
         return;
     }
     // cycle / down / tap. Recording -> next step honours the overdub
-    // preference. When overdub is wanted, the first tap takes rec -> play;
-    // the second tap (play -> overdub) is sent when the base's own
-    // PLAY announcement arrives, because a back-to-back burst is read by
-    // the base as one press.
+    // preference: one tap takes rec -> play. If the overdub preference is
+    // on, a second CC102 (from play) takes play -> overdub — the same as
+    // pressing the physical button twice. No sequenced follow-up: the
+    // base's press-ignore rate made it unreliable.
     if (state == looper_state::RECORD_INITIAL_LOOP) {
-        const bool overdub = getVar(nullptr, "looperOverdub") >= 0.5f;
         sendTap(1);
-        if (overdub) {
-            overdubFollowUp = true;
-            overdubFollowUpUntil = millis() + 5000;
-        }
         return;
     }
     sendTap(1);

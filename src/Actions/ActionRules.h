@@ -147,8 +147,6 @@ private:
     uint8_t lastMidiInCc = 0xFF;
     uint8_t lastMidiInCh = 0xFF;
     uint32_t looperChangedAtMs = 0;
-    bool overdubFollowUp = false;
-    uint32_t overdubFollowUpUntil = 0;
     uint32_t looperTapWatch = 0;
     uint8_t looperTapStateBefore = 0xFF;
     uint8_t looperTapPhase = 0;
