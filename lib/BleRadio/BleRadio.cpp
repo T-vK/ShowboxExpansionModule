@@ -5,6 +5,8 @@
 #include <host/ble_gap.h>
 #include <host/ble_gatt.h>
 #include <host/ble_hs.h>
+#include <host/ble_store.h>
+#include <nvs.h>
 #include <os/os_mbuf.h>
 #include <cstdio>
 #include <cstring>
@@ -19,6 +21,97 @@ constexpr char kMidiService[] = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700";
 void requestAttMtu(uint16_t connId) {
     ble_att_set_preferred_mtu(256);
     ble_gattc_exchange_mtu(connId, nullptr, nullptr);
+}
+
+// NimBLE's NVS store (namespace nimble_bond) returns BLE_HS_ESTORE_FAIL for
+// both a full partition and a blob it cannot read. ble_store_write only
+// retries on ESTORE_CAP, so a full NVS drops the new LTK. The link still
+// encrypts from RAM; after reboot the controller answers PIN or Key Missing.
+// HID CCCDs are optional (the host rewrites them on every connect). Drop
+// those, erase any key that no longer reads, and retry so peer/our sec land.
+int (*sStoreWrite)(int, const union ble_store_value*) = nullptr;
+int (*sStoreDelete)(int, const union ble_store_key*) = nullptr;
+
+void scrubNimbleBondNvs() {
+    nvs_handle_t handle;
+    if (nvs_open("nimble_bond", NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    const char* prefixes[] = {"cccd_sec_", "peer_sec_", "our_sec_", "csfc_sec_", "p_dev_rec_"};
+    const int limits[] = {16, 8, 8, 8, 8};
+    bool dirty = false;
+    for (int p = 0; p < 5; p++) {
+        for (int i = 1; i <= limits[p]; i++) {
+            char key[16];
+            snprintf(key, sizeof(key), "%s%d", prefixes[p], i);
+            size_t size = 0;
+            esp_err_t err = nvs_get_blob(handle, key, nullptr, &size);
+            const bool cccd = p == 0;
+            if (err == ESP_ERR_NVS_NOT_FOUND) {
+                continue;
+            }
+            if (cccd || err != ESP_OK) {
+                nvs_erase_key(handle, key);
+                dirty = true;
+            }
+        }
+    }
+    if (dirty) {
+        nvs_commit(handle);
+    }
+    nvs_close(handle);
+}
+
+void logStoreFail(const char* what, int objType, int rc) {
+    nvs_stats_t stats = {};
+    nvs_get_stats(nullptr, &stats);
+    Serial.printf("[blestore] %s type=%d rc=%d nvs used=%u free=%u\r\n",
+        what, objType, rc, stats.used_entries, stats.free_entries);
+}
+
+int cccdStoreWrite(int objType, const union ble_store_value* val) {
+    int rc = sStoreWrite != nullptr ? sStoreWrite(objType, val) : 0;
+    if (rc == 0) {
+        return 0;
+    }
+    const bool bond = objType == BLE_STORE_OBJ_TYPE_OUR_SEC || objType == BLE_STORE_OBJ_TYPE_PEER_SEC;
+    const bool cccd = objType == BLE_STORE_OBJ_TYPE_CCCD;
+    if (bond || cccd) {
+        logStoreFail("fail", objType, rc);
+        scrubNimbleBondNvs();
+        rc = sStoreWrite != nullptr ? sStoreWrite(objType, val) : rc;
+        if (rc != 0) {
+            logStoreFail("retry", objType, rc);
+        }
+    }
+    // A failed CCCD persist must not reject the ATT write. The subscription
+    // is already in RAM; BlueZ treats the error as "notifications off".
+    if (cccd && rc != 0) {
+        return 0;
+    }
+    return rc;
+}
+
+int cccdStoreDelete(int objType, const union ble_store_key* key) {
+    int rc = sStoreDelete != nullptr ? sStoreDelete(objType, key) : 0;
+    if (objType == BLE_STORE_OBJ_TYPE_CCCD && rc != 0) {
+        scrubNimbleBondNvs();
+        rc = sStoreDelete != nullptr ? sStoreDelete(objType, key) : 0;
+        if (rc != 0) {
+            return 0;
+        }
+    }
+    return rc;
+}
+
+void relaxCccdStore() {
+    if (ble_hs_cfg.store_write_cb == cccdStoreWrite) {
+        return;
+    }
+    sStoreWrite = ble_hs_cfg.store_write_cb;
+    sStoreDelete = ble_hs_cfg.store_delete_cb;
+    ble_hs_cfg.store_write_cb = cccdStoreWrite;
+    ble_hs_cfg.store_delete_cb = cccdStoreDelete;
 }
 
 void copyAddress(const ble_addr_t& addr, char* out, size_t size) {
@@ -87,6 +180,14 @@ bool skipHas(const char skip[][18], int count, const BleRadio::Incoming& in) {
 class RadioSecurity : public BLESecurityCallbacks {
 public:
     BleRadio* radio = nullptr;
+    // BlueZ KeyboardDisplay + ESP NoInputNoOutput fails SMP with reason 3
+    // ("Authentication requirements cannot be met with these IO capabilities").
+    // DisplayYesNo + auto-confirm lets numeric comparison complete so the
+    // bond lands on both sides; otherwise BlueZ says paired and ESP does not.
+    uint32_t onPassKeyRequest() override { return 0; }
+    void onPassKeyNotify(uint32_t) override {}
+    bool onSecurityRequest() override { return true; }
+    bool onConfirmPIN(uint32_t) override { return true; }
     void onAuthenticationComplete(ble_gap_conn_desc* desc) override {
         if (radio != nullptr && desc != nullptr) {
             radio->onBonded(desc);
@@ -312,13 +413,18 @@ void BleRadio::apply() {
     static bool pairingReady = false;
     if (!pairingReady) {
         BLESecurity* security = new BLESecurity();
-        security->setAuthenticationMode(ESP_LE_AUTH_BOND);
+        // DisplayYesNo + BlueZ KeyboardDisplay uses numeric comparison (MITM).
+        // SC_BOND without MITM left the link encrypted-but-unauthenticated, so
+        // BlueZ HOGP CCC writes failed with "Attribute requires authentication"
+        // and never created /dev/input nodes.
+        security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
         security->setForceAuthentication(false);
-        security->setCapability(ESP_IO_CAP_NONE);
+        security->setCapability(ESP_IO_CAP_IO);
         security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
         security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
         radioSecurity.radio = this;
         BLEDevice::setSecurityCallbacks(&radioSecurity);
+        relaxCccdStore();
         pairingReady = true;
     }
     // Scan-response RX after every adv eats Wi-Fi when a 200 ms pedal is live.
@@ -360,7 +466,16 @@ void BleRadio::service() {
         if (!incoming[i].intervalPending || incoming[i].connId == 0) {
             continue;
         }
-        if ((int32_t)(millis() - incoming[i].sinceMs) < 500) {
+        // BlueZ HOGP reads HID Information / Report Reference in the first
+        // few seconds. A conn-param update in that window returns ATT
+        // Unlikely Error and bluetoothd drops the input device.
+        // Android is similar; wait until bonded discovery can finish.
+        uint32_t settleMs = hidOn ? 8000 : 500;
+        if ((int32_t)(millis() - incoming[i].sinceMs) < (int32_t)settleMs) {
+            continue;
+        }
+        if (hidOn && !incoming[i].bonded
+            && (int32_t)(millis() - incoming[i].sinceMs) < 12000) {
             continue;
         }
         incoming[i].intervalPending = false;
@@ -424,18 +539,25 @@ void BleRadio::queryIncomingNames() {
     uint32_t now = millis();
     portENTER_CRITICAL(&mux);
     for (int i = 0; i < incomingCount; i++) {
-        if (incoming[i].name[0] != '\0' || incoming[i].namePending || incoming[i].nameTries >= 1
-            || incoming[i].connId == 0) {
+        if (incoming[i].name[0] != '\0' || incoming[i].namePending || incoming[i].connId == 0) {
             continue;
         }
-        if ((int32_t)(now - incoming[i].sinceMs) < 2500) {
+        // Do not GATT-read the host's GAP name while BlueZ/Android HOGP is
+        // still discovering — bidirectional ATT on a fresh dual-role link
+        // is what produced bluetoothd "Unlikely Error" on HID reads.
+        // HOGP input nodes usually appear by ~5s; start name reads after that.
+        // Retry a few times: the first 2A00 read often lands before encryption.
+        if (incoming[i].nameTries >= 3) {
             continue;
         }
-        if (!incoming[i].bonded && (int32_t)(now - incoming[i].sinceMs) < 5000) {
+        if ((int32_t)(now - incoming[i].sinceMs) < 6000 + (int32_t)incoming[i].nameTries * 3000) {
+            continue;
+        }
+        if (!incoming[i].bonded && (int32_t)(now - incoming[i].sinceMs) < 10000) {
             continue;
         }
         incoming[i].namePending = true;
-        incoming[i].nameTries = 1;
+        incoming[i].nameTries = incoming[i].nameTries + 1;
         addSkipLocked(nameSkip, nameSkipCount, incoming[i].address);
         addSkipLocked(nameSkip, nameSkipCount, incoming[i].otaAddress);
         addSkipLocked(nameSkip, nameSkipCount, incoming[i].idAddress);

@@ -294,6 +294,22 @@ struct EntityEventRing {
 };
 EntityEventRing sEntityRing;
 
+// LOOPER_STATE and the boost channel's gain are edge-triggered and must
+// not be evicted by analog jitter filling the ring (same lesson as the
+// MIDI clock realtime slot). Latest-wins, never dropped.
+struct CriticalEntitySlot {
+    uint8_t id = 0;
+    char value[24] = {};
+    bool pending = false;
+};
+CriticalEntitySlot sLooperSlot;
+CriticalEntitySlot sBoostGainSlot;
+portMUX_TYPE sEntitySlotMux = portMUX_INITIALIZER_UNLOCKED;
+
+bool isCriticalEntity(entity_id id) {
+    return id == LOOPER_STATE || id == INPUT2_GAIN;
+}
+
 void entityHeard(entity_id id, const char* value) {
     if (instance == nullptr) {
         return;
@@ -305,7 +321,15 @@ void entityHeard(entity_id id, const char* value) {
     // Entity events are edge-triggered (the base announces a state change
     // once), so they must never be dropped by an action's ignore window -
     // queue them and let tick() decide when to run them.
-    if (!sEntityRing.push(id, value == nullptr ? "" : value)) {
+    if (isCriticalEntity(id)) {
+        portENTER_CRITICAL(&sEntitySlotMux);
+        CriticalEntitySlot& slot = (id == LOOPER_STATE) ? sLooperSlot : sBoostGainSlot;
+        slot.id = static_cast<uint8_t>(id);
+        strncpy(slot.value, value == nullptr ? "" : value, sizeof(slot.value) - 1);
+        slot.value[sizeof(slot.value) - 1] = '\0';
+        slot.pending = true;
+        portEXIT_CRITICAL(&sEntitySlotMux);
+    } else if (!sEntityRing.push(id, value == nullptr ? "" : value)) {
         static uint32_t lastDropLog = 0;
         uint32_t now = millis();
         if (now - lastDropLog > 5000) {
@@ -1048,6 +1072,28 @@ void ActionRules::drainMidi() {
 }
 
 void ActionRules::drainEntityEvents() {
+    const bool gated = inAction || (int32_t)(millis() - ignoreShowboxUntil) < 0;
+    CriticalEntitySlot crit[2];
+    portENTER_CRITICAL(&sEntitySlotMux);
+    if (!gated) {
+        crit[0] = sLooperSlot;
+        crit[1] = sBoostGainSlot;
+        sLooperSlot.pending = false;
+        sBoostGainSlot.pending = false;
+    } else {
+        crit[0].pending = false;
+        crit[1].pending = false;
+    }
+    portEXIT_CRITICAL(&sEntitySlotMux);
+    for (const CriticalEntitySlot& slot : crit) {
+        if (!slot.pending) {
+            continue;
+        }
+        auto name = entity_id_to_string.find(static_cast<entity_id>(slot.id));
+        if (name != entity_id_to_string.end()) {
+            onShowbox(name->second.c_str(), slot.value);
+        }
+    }
     EntityEventRing::Item item;
     while (sEntityRing.pop(item)) {
         if (inAction || (int32_t)(millis() - ignoreShowboxUntil) < 0) {

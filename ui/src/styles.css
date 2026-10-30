@@ -826,18 +826,21 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
 .strip-fx-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.1rem; min-width: 0; }
 .strip-fx-pair:has(:only-child) { grid-template-columns: 1fr; }
 .strip-fx-pair .fx-line {
-  min-width: 0; min-height: 1.42rem; padding: 0.08rem 0.1rem;
-  display: flex; align-items: center; justify-content: flex-start; gap: 0.22rem;
+  min-width: 0; min-height: 1.72rem; padding: 0.1rem 0.14rem;
+  display: flex; align-items: center; justify-content: flex-start;
+}
+.strip-fx-pair .fx-line-stack {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 0.02rem; min-width: 0; width: 100%; position: relative; z-index: 1;
 }
 .strip-fx-pair .fx-line-txt {
-  font-size: 0.52rem; letter-spacing: 0; line-height: 1.05;
+  font-size: 0.54rem; font-weight: 700; letter-spacing: 0; line-height: 1.1;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  text-align: left; flex: 1 1 auto; min-width: 0; max-width: none;
-  display: block;
+  text-align: left; width: 100%; max-width: none; display: block;
 }
 .strip-fx-pair .fx-line .fx-line-val {
-  flex: none; font-size: 0.5rem; text-align: right; min-width: 1.5rem;
-  line-height: 1.05; padding-right: 0.06rem;
+  flex: none; font-size: 0.42rem; font-weight: 600; text-align: left;
+  line-height: 1; min-width: 0; padding: 0; color: #b8b4a8; opacity: 0.92;
 }
 .strip-modes {
   display: grid;
@@ -981,7 +984,23 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
   flex: 0 0 auto; max-width: 46%; text-align: right; font-variant-numeric: tabular-nums; color: #d8d4c8;
 }
 .fx-line { min-height: 1.22rem; }
-.fx-line .fx-line-txt, .fx-line .fx-line-val { line-height: 1.22rem; }
+.fx-line:not(.stacked) .fx-line-txt, .fx-line:not(.stacked) .fx-line-val { line-height: 1.22rem; }
+.fx-line.stacked {
+  min-height: 1.72rem; align-items: stretch; justify-content: flex-start;
+  padding: 0.1rem 0.18rem;
+}
+.fx-line.stacked .fx-line-stack {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 0.04rem; min-width: 0; width: 100%; position: relative; z-index: 1;
+}
+.fx-line.stacked .fx-line-txt {
+  flex: none; width: 100%; line-height: 1.1; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.fx-line.stacked .fx-line-val {
+  flex: none; max-width: none; font-size: 0.45rem; font-weight: 600;
+  line-height: 1; text-align: left; color: #b8b4a8; padding: 0;
+}
 .fx-line.off { opacity: 0.5; }
 .fx-line.off .fx-line-fill { background: #2a2e38; }
 .fx-line.tone-fx1 .fx-line-fill { background: var(--fx1); }

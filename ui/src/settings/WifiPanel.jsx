@@ -54,6 +54,14 @@ export function WifiPanel() {
       <section>
         <h2>Join a network</h2>
         <p class="meta">{status.sta ? `Joined ${status.ssid} · ${status.ip} · ${status.rssi} dBm` : "Not joined to a network"}</p>
+        {status.sta && status.ip ? (
+          <p class="hint">
+            Prefer <code>http://showbox.local/</code> (Android 12+ mDNS, Private DNS off).
+            If a phone still has a stale NXDOMAIN, toggle Wi‑Fi once or bookmark{" "}
+            <a href={`http://${status.ip}/`}>{`http://${status.ip}/`}</a>
+            {" "}or add a router DNS override <code>showbox → {status.ip}</code>.
+          </p>
+        ) : null}
         <label class="field">Network
           <input type="text" value={ssid} placeholder={status.ssid || "SSID"} onInput={(event) => setSsid(event.target.value)} />
         </label>

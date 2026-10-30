@@ -91,8 +91,19 @@ def transition(cc_num, want, label, timeout=8.0):
     return False
 
 
+def boost_snapshot():
+    return (
+        f"gain={entity('INPUT2_GAIN')} state={entity('LOOPER_STATE')} "
+        f"BOOST_ENABLED={var('BOOST_ENABLED')} REMEMBERED_GAIN={var('REMEMBERED_GAIN')} "
+        f"AUTO_BOOST={var('AUTO_BOOST')}"
+    )
+
+
 def check(label, ok, detail=""):
-    print(f"[{time.time() - T0:6.1f}s] {'PASS' if ok else 'FAIL'}: {label} {detail}")
+    extra = detail
+    if not ok and "boost" in label.lower():
+        extra = (detail + " " + boost_snapshot()).strip()
+    print(f"[{time.time() - T0:6.1f}s] {'PASS' if ok else 'FAIL'}: {label} {extra}")
     if not ok:
         FAILS.append(label)
 

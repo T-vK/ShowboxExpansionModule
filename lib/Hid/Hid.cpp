@@ -474,9 +474,11 @@ bool Hid::ensureBleStarted() {
     }
     if (!bleSecurityReady) {
         BLESecurity* security = new BLESecurity();
-        security->setAuthenticationMode(ESP_LE_AUTH_BOND);
+        // Match BleRadio: DisplayYesNo so BlueZ KeyboardDisplay can finish SC
+        // numeric comparison. IO_CAP_NONE + KeyboardDisplay fails SMP reason 3.
+        security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
         security->setForceAuthentication(false);
-        security->setCapability(ESP_IO_CAP_NONE);
+        security->setCapability(ESP_IO_CAP_IO);
         security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
         security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
         bleSecurityReady = true;
