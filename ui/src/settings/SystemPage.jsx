@@ -140,7 +140,7 @@ export function SystemPage() {
           </ServiceNode>
           {hideUnsupported ? null : (
             <>
-              <ServiceNode title="mDNS" info="Advertises showbox.local whenever an IP is up." checked available={false} />
+              <ServiceNode title="mDNS" info="Advertises showbox.local whenever an IP is up. Answers Android one-shot mDNS (legacy unicast). If a phone still fails, use the STA IP or a router DNS override showbox → that IP; keep Private DNS off." checked available={false} />
               <ServiceNode title="DHCP client" info="Gets the station address from the access point. Always on with Wi-Fi." checked available={false} />
               <ServiceNode title="OTA" info="Arduino OTA on port 3232. Flash still works over USB serial/JTAG and the UART connector." checked available={false} danger />
             </>

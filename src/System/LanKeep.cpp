@@ -565,7 +565,9 @@ uint32_t mdnsStaIp() {
         | (static_cast<uint32_t>(ip[2]) << 16) | (static_cast<uint32_t>(ip[3]) << 24);
 }
 
-size_t mdnsBuildARecord(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid) {    if (cap < 41) {
+// Multicast / full-mDNS announce+answer: qd=0, cache-flush bit set.
+size_t mdnsBuildARecord(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid) {
+    if (cap < 41) {
         return 0;
     }
     size_t p = 0;
@@ -583,6 +585,47 @@ size_t mdnsBuildARecord(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid)
     out[p++] = 0x80; out[p++] = 0x01;  // IN + cache-flush
     out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 120;  // ttl
     out[p++] = 0; out[p++] = 4;        // rdlength
+    out[p++] = static_cast<uint8_t>(ipAddr);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 8);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 16);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 24);
+    return p;
+}
+
+// RFC 6762 §6.7 legacy unicast (Android/DnsResolver one-shot mDNS): echo the
+// question, clear cache-flush, and cap TTL. Without this, getaddrinfo for
+// showbox.local on Android 12+ times out even when the module heard the query.
+size_t mdnsBuildLegacyA(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid, uint16_t qtype) {
+    // header(12) + qname(15) + qtype/qclass(4) + aname(15) + rr(10) + rdata(4|0)
+    const bool answerA = (qtype == 1 || qtype == 255);
+    const size_t need = answerA ? 60 : 31;
+    if (cap < need) {
+        return 0;
+    }
+    size_t p = 0;
+    out[p++] = static_cast<uint8_t>(tid >> 8);
+    out[p++] = static_cast<uint8_t>(tid & 0xFF);
+    out[p++] = 0x84; out[p++] = 0x00;  // response, authoritative
+    out[p++] = 0; out[p++] = 1;        // qdcount 1
+    out[p++] = 0; out[p++] = answerA ? 1 : 0;
+    out[p++] = 0; out[p++] = 0;        // nscount 0
+    out[p++] = 0; out[p++] = 0;        // arcount 0
+    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
+    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
+    out[p++] = 0;
+    out[p++] = static_cast<uint8_t>(qtype >> 8);
+    out[p++] = static_cast<uint8_t>(qtype & 0xFF);
+    out[p++] = 0; out[p++] = 1;        // IN (no QU bit)
+    if (!answerA) {
+        return p;  // NODATA for AAAA etc. so dual-stack resolvers do not hang
+    }
+    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
+    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
+    out[p++] = 0;
+    out[p++] = 0; out[p++] = 1;        // type A
+    out[p++] = 0; out[p++] = 1;        // IN, no cache-flush
+    out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 10;  // ttl <= 10s
+    out[p++] = 0; out[p++] = 4;
     out[p++] = static_cast<uint8_t>(ipAddr);
     out[p++] = static_cast<uint8_t>(ipAddr >> 8);
     out[p++] = static_cast<uint8_t>(ipAddr >> 16);
@@ -683,6 +726,7 @@ static void lanMdnsResponderTask(void*) {
         uint16_t tid = (static_cast<uint8_t>(buf[0]) << 8) | static_cast<uint8_t>(buf[1]);
         size_t off = 12;
         bool want = false;
+        uint16_t wantType = 1;
         for (int q = 0; q < qdcount && q < 4; q++) {
             char name[64] = {};
             mdnsLowerName(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n), off, name, sizeof(name));
@@ -690,16 +734,22 @@ static void lanMdnsResponderTask(void*) {
                 break;
             }
             uint16_t qtype = (static_cast<uint8_t>(buf[off]) << 8) | static_cast<uint8_t>(buf[off + 1]);
-            off += 4;
-            if (strcmp(name, kMdnsName) == 0 && (qtype == 1 || qtype == 255)) {
+            off += 4;  // type + class (class may carry QU bit)
+            if (strcmp(name, kMdnsName) == 0 && (qtype == 1 || qtype == 28 || qtype == 255)) {
                 want = true;
+                wantType = qtype;
             }
         }
         if (!want || !lanHasIp()) {
             continue;
         }
+        // Source port != 5353 → one-shot / legacy unicast (Android DnsResolver,
+        // dig @224.0.0.251, etc.). Full mDNS peers stay on the compact form.
+        const bool legacy = lwip_ntohs(from.sin_port) != kMdnsPort;
         uint8_t pkt[64];
-        size_t rn = mdnsBuildARecord(pkt, sizeof(pkt), mdnsStaIp(), tid);
+        size_t rn = legacy
+            ? mdnsBuildLegacyA(pkt, sizeof(pkt), mdnsStaIp(), tid, wantType)
+            : mdnsBuildARecord(pkt, sizeof(pkt), mdnsStaIp(), tid);
         if (rn > 0) {
             lwip_sendto(sock, pkt, rn, 0, reinterpret_cast<sockaddr*>(&from), sizeof(from));
         }

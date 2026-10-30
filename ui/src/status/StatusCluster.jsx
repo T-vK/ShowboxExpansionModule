@@ -153,7 +153,13 @@ function WifiPopup() {
         {data && data.sta ? `WiFi: ${data.ssid || "—"}` : "WiFi not connected"}
       </p>
       {data && data.sta ? (
-        <p>IP {data.ip || "—"} · {data.rssi ?? "?"} dBm</p>
+        <p>
+          {data.ip ? <a href={`http://${data.ip}/`}>http://{data.ip}/</a> : "IP —"}
+          {" · "}{data.rssi ?? "?"} dBm
+        </p>
+      ) : null}
+      {data && data.sta ? (
+        <p class="meta">If <code>showbox.local</code> fails on the phone, use the IP link (Private DNS off; same Wi‑Fi).</p>
       ) : null}
       <p>Hotspot: {data && data.ap ? `on · ${data.apSsid || "ShowboxMod"} @ ${data.apIp || "—"}` : "off"}</p>
       {data && data.ap ? (

@@ -271,6 +271,9 @@ void Connections::applyAdvertisingPolicy() {
     if (radio == nullptr) {
         return;
     }
+    if (!radio->hasIncoming()) {
+        applyPairingMixIfIdle();
+    }
     if (!bluetoothRadioEnabled) {
         radio->setAdvertiseAllowed(false);
         radio->apply();
@@ -923,17 +926,8 @@ bool Connections::setBleHidPart(const String& name, bool enabled, String& error)
 }
 
 void Connections::advertisePairingMix() {
-    if (hid == nullptr) {
-        return;
-    }
-    // Live incoming host: keep the map that host already cached.
-    if (radio != nullptr && radio->hasIncoming()) {
-        return;
-    }
-    if (hid->bleMix().asBleMap().same(blePairMix.asBleMap())) {
-        return;
-    }
-    hid->setBleMix(blePairMix);
+    // New-host defaults must not replace a remembered host's map.
+    applyPairingMixIfIdle();
 }
 
 void Connections::applyPairingMixIfIdle() {
@@ -943,13 +937,22 @@ void Connections::applyPairingMixIfIdle() {
     if (radio != nullptr && radio->hasIncoming()) {
         return;
     }
-    // A remembered HID host keeps the report map it last selected. Rewriting
-    // it to blePairMix on a transient drop makes BlueZ reconnect with a
-    // stale cache (abs after-reconnect would snap back to kb+mouse).
-    if (anyHostHid()) {
-        return;
+    // One HOGP map for every host. While nobody is connected, advertise the
+    // mix the remembered host last selected so the next connect reads that
+    // map. Falling back to the new-host default here is what made BlueZ
+    // recreate Keyboard+Mouse after an absolute or touch role change.
+    Hid::Mix want = blePairMix;
+    BlePeers::Peer saved[BlePeers::kMax];
+    int count = peers.copy(saved, BlePeers::kMax);
+    for (int i = 0; i < count; i++) {
+        if (saved[i].host && saved[i].hid) {
+            want = mixFromPeer(saved[i]);
+            break;
+        }
     }
-    hid->setBleMix(blePairMix);
+    if (!hid->bleMix().asBleMap().same(want.asBleMap())) {
+        hid->setBleMix(want);
+    }
 }
 
 void Connections::bleConnectedNames(char* out, size_t cap) const {
@@ -1746,7 +1749,7 @@ bool Connections::setOption(const String& name, bool enabled, String& error) {
         saveHid();
         if (hid != nullptr) {
             if (enabled) {
-                hid->setBleMix(blePairMix);
+                applyPairingMixIfIdle();
             }
             hid->setBleEnabled(enabled);
         }

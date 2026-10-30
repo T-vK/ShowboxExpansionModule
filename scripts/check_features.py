@@ -1009,6 +1009,9 @@ def ensure_airstep(session: Session, results: Results) -> None:
 
 
 def bt_script(lines: list[str], timeout: float = 25.0) -> str:
+    """Fire-and-forget bluetoothctl commands. Do not use for pair/connect:
+    those are async and need bt_ctl_pair / bt_ctl_connect to wait for the result.
+    """
     payload = "\n".join(lines) + "\nquit\n"
     try:
         proc = subprocess.run(
@@ -1022,6 +1025,144 @@ def bt_script(lines: list[str], timeout: float = 25.0) -> str:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return str(exc)
     return strip_ansi((proc.stdout or "") + "\n" + (proc.stderr or ""))
+
+
+# Prompt becomes [ShowboxMod]> once connected; do not require "bluetoothctl".
+_BT_PROMPT = r"\[[^\]]+\]>"
+
+
+def _bt_pexpect_spawn(timeout: float = 60.0) -> Any:
+    import pexpect
+
+    child = pexpect.spawn("bluetoothctl", encoding="utf-8", timeout=timeout, maxread=8000)
+    child.expect(_BT_PROMPT)
+    return child
+
+
+def _bt_pexpect_cmd(child: Any, line: str) -> None:
+    child.sendline(line)
+    child.expect(_BT_PROMPT)
+
+
+def _bt_pexpect_quit(child: Any) -> None:
+    try:
+        child.sendline("quit")
+        child.expect(pexpect_eof(), timeout=3)
+    except Exception:
+        try:
+            child.close(force=True)
+        except Exception:
+            pass
+
+
+def pexpect_eof() -> Any:
+    import pexpect
+
+    return pexpect.EOF
+
+
+def bt_ctl_pair(addr: str, timeout: float = 55.0) -> tuple[bool, str]:
+    """Interactive pair with a live KeyboardDisplay agent.
+
+    NoInputNoOutput cannot handle BlueZ ConfirmPasskey (request type 2) →
+    AuthenticationFailed. Dumping pair+quit on stdin also exits before the
+    async bond finishes. Keep one bluetoothctl process, auto-accept prompts,
+    and wait for Pairing successful / Failed to pair.
+    """
+    import pexpect
+
+    try:
+        child = _bt_pexpect_spawn(timeout=timeout + 10)
+    except Exception as exc:
+        return False, f"bluetoothctl spawn failed: {exc}"
+    blob: list[str] = []
+    try:
+        for line in ("power on", "pairable on", "agent KeyboardDisplay", "default-agent"):
+            _bt_pexpect_cmd(child, line)
+        child.sendline(f"pair {addr}")
+        deadline = now() + timeout
+        while now() < deadline:
+            idx = child.expect(
+                [
+                    r"(?i)Confirm passkey",
+                    r"(?i)Request confirmation",
+                    r"(?i)Authorize service",
+                    r"(?i)\[agent\] Confirm",
+                    r"Pairing successful",
+                    r"Failed to pair[^\r\n]*",
+                    r"AuthenticationFailed",
+                    r"org\.bluez\.Error\.[A-Za-z]+",
+                    r"Device .+ not available",
+                    pexpect.TIMEOUT,
+                ],
+                timeout=min(8.0, max(0.5, deadline - now())),
+            )
+            after = child.after if isinstance(child.after, str) else ""
+            before = child.before if isinstance(child.before, str) else ""
+            blob.append(strip_ansi(before[-400:] + after))
+            if idx in (0, 1, 2, 3):
+                child.sendline("yes")
+                continue
+            if idx == 4:
+                try:
+                    child.expect(_BT_PROMPT, timeout=3)
+                except pexpect.TIMEOUT:
+                    pass
+                try:
+                    _bt_pexpect_cmd(child, f"trust {addr}")
+                except Exception:
+                    # Bond may already be up; trust is best-effort.
+                    pass
+                return True, "Pairing successful"
+            if idx in (5, 6, 7, 8):
+                return False, strip_ansi(after).strip() or "pair failed"
+        return False, "pair timed out"
+    except Exception as exc:
+        return False, f"pair session error: {exc}"
+    finally:
+        _bt_pexpect_quit(child)
+
+
+def bt_ctl_connect(addr: str, timeout: float = 25.0) -> tuple[bool, str]:
+    """Connect with a live agent and wait for Connection successful."""
+    import pexpect
+
+    try:
+        child = _bt_pexpect_spawn(timeout=timeout + 10)
+    except Exception as exc:
+        return False, f"bluetoothctl spawn failed: {exc}"
+    try:
+        for line in ("power on", "pairable on", "agent KeyboardDisplay", "default-agent"):
+            _bt_pexpect_cmd(child, line)
+        _bt_pexpect_cmd(child, f"trust {addr}")
+        child.sendline(f"connect {addr}")
+        deadline = now() + timeout
+        while now() < deadline:
+            idx = child.expect(
+                [
+                    r"(?i)Confirm passkey",
+                    r"(?i)Authorize service",
+                    r"Connection successful",
+                    r"Failed to connect[^\r\n]*",
+                    r"org\.bluez\.Error\.[A-Za-z]+",
+                    r"Connected: yes",
+                    pexpect.TIMEOUT,
+                ],
+                timeout=min(6.0, max(0.5, deadline - now())),
+            )
+            after = child.after if isinstance(child.after, str) else ""
+            if idx in (0, 1):
+                child.sendline("yes")
+                continue
+            if idx in (2, 5):
+                return True, "Connection successful"
+            if idx in (3, 4):
+                return False, strip_ansi(after).strip() or "connect failed"
+        return False, "connect timed out"
+    except Exception as exc:
+        return False, f"connect session error: {exc}"
+    finally:
+        _bt_pexpect_quit(child)
 
 
 def bt_find_showbox() -> Optional[str]:
@@ -1049,97 +1190,166 @@ def bt_connected(addr: str) -> bool:
 
 
 def laptop_pair(addr: str, session: Optional["Session"] = None) -> tuple[bool, str]:
-    run_cmd(["bluetoothctl", "power", "on"], timeout=4)
-    run_cmd(["bluetoothctl", "pairable", "on"], timeout=4)
-    run_cmd(["bluetoothctl", "agent", "NoInputNoOutput"], timeout=4)
-    run_cmd(["bluetoothctl", "default-agent"], timeout=4)
+    """Bond the laptop to ShowboxMod.
+
+    Critical: agent must stay alive through the async bond, and must be able to
+    ConfirmPasskey (KeyboardDisplay). NoInputNoOutput + fire-and-forget stdin
+    both produce AuthenticationFailed / silent no-pair on this BlueZ.
+    """
     last_reason = "no pair result"
     for attempt in range(3):
+        # AIRSTEP holds PTA: ads die unless acceptNewHosts is re-asserted
+        # before every attempt. Pairing a stale cached address with ads off
+        # is exactly "Device … not available".
+        if session is not None and not laptop_open_ads(session):
+            last_reason = "module advertising never came up before pair"
+            time.sleep(1.0)
+            continue
         bt_disconnect_named("ShowBox")
         info = bt_info(addr)
         if "Paired: yes" in info or "Bonded: yes" in info or "Connected: yes" in info:
             laptop_disconnect(addr, forget=True)
             time.sleep(2.0)
-        run_cmd(["bluetoothctl", "scan", "on"], timeout=4)
-        seen = now() + 6
-        while now() < seen:
-            blob = (bt_find_showbox() or "") + "\n" + bt_info(addr)
-            if addr.lower() in blob.lower() and ("RSSI" in blob or "ShowboxMod" in blob):
-                break
-            time.sleep(0.6)
-        pair = run_cmd(["bluetoothctl", "pair", addr], timeout=25)
-        pair_blob = strip_ansi((pair.stdout or "") + "\n" + (pair.stderr or ""))
-        run_cmd(["bluetoothctl", "trust", addr], timeout=4)
-        if not bt_connected(addr):
-            run_cmd(["bluetoothctl", "connect", addr], timeout=15)
-        deadline = now() + 10
-        paired_up = False
-        while now() < deadline:
-            info = bt_info(addr)
-            if "Connected: yes" in info and ("Paired: yes" in info or "Pairing successful" in pair_blob):
-                paired_up = True
-                break
-            time.sleep(0.4)
-        if paired_up or ("Paired: yes" in bt_info(addr)):
-            # The pairing connection often fails HID CCC writes. Drop it and
-            # connect on the bond so BlueZ can subscribe to reports.
+            if session is not None and not laptop_open_ads(session):
+                last_reason = "module advertising never came up after forget"
+                continue
+        if session is not None and not session.midi().get("advertising"):
+            laptop_open_ads(session)
+        scan_status, scan_detail, seen_addr = host_le_scan(6.0)
+        if seen_addr:
+            addr = seen_addr
+        # A name-less scan still passes on the MIDI UUID. The caller already
+        # has ShowboxMod's address, and the module API says it is advertising.
+        api_adv = bool(session is not None and session.midi().get("advertising"))
+        live = scan_status == "pass" and (bool(seen_addr) or (bool(addr) and api_adv))
+        if not live:
+            midi = session.midi() if session is not None else {}
+            last_reason = (
+                f"no live LE ad for ShowboxMod ({scan_detail}; "
+                f"api advertising={midi.get('advertising')} pairingMs={midi.get('pairingMs')})"
+            )
             bt_scan_off()
-            hogp = laptop_bond_connect(addr, session)
-            how = "pairing successful"
-            if attempt:
-                how += f" attempt {attempt + 1}"
-            if hogp:
-                return True, how
-            last_reason = "paired but HOGP reconnect failed"
-            # Keep the bond. Ads are off while AIRSTEP is up unless the
-            # pairing window is open; the caller retries with the window up.
-            break
+            time.sleep(1.0)
+            continue
+        ok, detail = bt_ctl_pair(addr, timeout=55.0)
+        if not ok:
+            last_reason = detail
+            # Device disappeared from cache — next loop rescans.
+            if "not available" in detail.lower():
+                run_cmd(["bluetoothctl", "remove", addr], timeout=6)
+            laptop_disconnect(addr, forget=True)
+            time.sleep(1.5)
+            continue
         info = bt_info(addr)
-        paired = "Paired: yes" in info
-        connected = "Connected: yes" in info
-        last_reason = "no pair result"
-        for line in pair_blob.splitlines():
-            low = line.lower()
-            if "fail" in low or "error" in low or "pairing" in low or "not available" in low:
-                last_reason = line.strip()
-                break
-        laptop_disconnect(addr, forget=True)
-        time.sleep(1.5)
+        if "Paired: yes" not in info and "Bonded: yes" not in info:
+            last_reason = f"{detail} but info still unpaired"
+            laptop_disconnect(addr, forget=True)
+            time.sleep(1.5)
+            continue
+        # Prefer settling on the pairing link when BlueZ already resolved
+        # services. Otherwise drop and reconnect on the bond for HID CCC.
+        bt_scan_off()
+        info = bt_info(addr)
+        hogp = False
+        if "Connected: yes" in info:
+            settle = now() + 20.0
+            while now() < settle:
+                info = bt_info(addr)
+                if not bt_connected(addr):
+                    break
+                if "ServicesResolved: yes" in info or evdev_names():
+                    hogp = True
+                    break
+                time.sleep(0.5)
+        if not hogp:
+            hogp = laptop_bond_connect(addr, session)
+        how = detail if detail else "pairing successful"
+        if attempt:
+            how += f" attempt {attempt + 1}"
+        if hogp:
+            return True, how
+        last_reason = "paired but HOGP reconnect failed"
+        # Stay on this bond: a forget+retry here races AIRSTEP PTA and
+        # leaves BlueZ with a half-resolved HID map.
+        break
     bt_scan_off()
     info = bt_info(addr)
-    paired = "Paired: yes" in info
+    paired = "Paired: yes" in info or "Bonded: yes" in info
     connected = "Connected: yes" in info
     return False, f"paired={int(paired)} connected={int(connected)} ({last_reason})"
 
 
-def laptop_open_ads(session: Optional["Session"]) -> None:
-    """AIRSTEP holds PTA; ShowboxMod only advertises while the pairing window is open."""
+def laptop_open_ads(session: Optional["Session"] = None) -> bool:
+    """AIRSTEP holds PTA; ShowboxMod only advertises while the pairing window is open.
+
+    Returns True once /api/v1/midi reports advertising=true with a live pairingMs
+    window (acceptNewHosts opens a ~90s window; without it ads stay off while
+    a pedal like AIRSTEP is connected).
+    """
     if session is None:
-        return
+        return False
     session.post_settings(acceptNewHosts=True)
-    deadline = now() + 10
+    deadline = now() + 12
     while now() < deadline:
-        if session.midi().get("advertising"):
-            return
+        midi = session.midi()
+        pairing_ms = int(midi.get("pairingMs") or 0)
+        if midi.get("advertising") and pairing_ms > 1000:
+            return True
         session.post_settings(acceptNewHosts=True)
         time.sleep(0.6)
+    midi = session.midi()
+    return bool(midi.get("advertising") and int(midi.get("pairingMs") or 0) > 0)
 
 
 def laptop_bond_connect(addr: str, session: Optional["Session"] = None) -> bool:
-    """Connect on an existing bond. HID CCC writes fail on the pairing link."""
+    """Connect on an existing bond and wait for HOGP input nodes.
+
+    BlueZ often needs ~5s after ACL-up before ShowboxMod Keyboard/Mouse
+    appear. Do not thrash reconnects in that window.
+    """
     bt_scan_off()
+    # Already linked with HID nodes — nothing to do.
+    if bt_connected(addr) and evdev_names():
+        return True
     laptop_open_ads(session)
+    # A fresh pairing ACL often already has Connected: yes. Do not drop it
+    # to "reconnect HOGP" — that is what produced Unlikely Error / no evdev.
     if bt_connected(addr):
-        run_cmd(["bluetoothctl", "disconnect", addr], timeout=6)
+        settle = now() + 18.0
+        while now() < settle:
+            if evdev_names() or "ServicesResolved: yes" in bt_info(addr):
+                return True
+            if not bt_connected(addr):
+                break
+            time.sleep(0.5)
+        if evdev_names():
+            return True
+        # Still connected but BlueZ never published input nodes. One reconnect.
+        run_cmd(["bluetoothctl", "disconnect", addr], timeout=8)
         time.sleep(2.5)
         laptop_open_ads(session)
-    run_cmd(["bluetoothctl", "connect", addr], timeout=15)
-    deadline = now() + 12
-    while now() < deadline:
-        if bt_connected(addr):
+    for attempt in range(2):
+        bt_ctl_connect(addr, timeout=25.0)
+        settle_deadline = now() + 20.0
+        saw_connected = False
+        while now() < settle_deadline:
+            if not bt_connected(addr):
+                if saw_connected:
+                    break
+                time.sleep(0.4)
+                continue
+            saw_connected = True
+            if evdev_names():
+                return True
+            time.sleep(0.5)
+        if bt_connected(addr) and evdev_names():
             return True
-        time.sleep(0.4)
-    return bt_connected(addr)
+        if attempt == 0:
+            if bt_connected(addr):
+                run_cmd(["bluetoothctl", "disconnect", addr], timeout=8)
+            time.sleep(2.5)
+            laptop_open_ads(session)
+    return bool(bt_connected(addr) and evdev_names())
 
 
 def laptop_reconnect(mod_addr: str, session: Optional["Session"] = None) -> None:
@@ -1265,6 +1475,18 @@ def tablet_close_ads(session: Optional["Session"]) -> None:
         session.post_settings(acceptNewHosts=False)
 
 
+def wait_tablet_input_nodes(serial: str, seconds: float = 25.0) -> list[str]:
+    """HOGP 'connected' can land before /dev/input nodes exist after a rebond."""
+    deadline = now() + seconds
+    nodes: list[str] = []
+    while now() < deadline:
+        nodes = tablet_input_nodes(serial)
+        if nodes:
+            return nodes
+        time.sleep(0.5)
+    return nodes
+
+
 def tablet_rebond(session: Session, serial: str) -> tuple[bool, str]:
     # Pair only. Caller already applied the new mix; resetting to kb+mouse
     # here made Android cache the wrong report map for abs/touch cases.
@@ -1279,10 +1501,13 @@ def tablet_rebond(session: Session, serial: str) -> tuple[bool, str]:
     hogp = ok or tablet_showbox_connected(serial)
     if not hogp:
         hogp = tablet_wait_hogp(serial, 60.0, session=session)
+    nodes = wait_tablet_input_nodes(serial, 25.0) if hogp else []
     tablet_close_ads(session)
     if not hogp:
         return False, how + " no-hogp"
-    return True, how
+    if not nodes:
+        return False, how + " hogp-up no-input-nodes"
+    return True, how + f" nodes={len(nodes)}"
 
 
 def evdev_showbox() -> list[Any]:
@@ -1340,6 +1565,11 @@ def evdev_collect(seconds: float = 2.0) -> list[tuple[str, int, int]]:
     if not devices:
         return []
     fds = {dev.fd: dev for dev in devices}
+    for dev in devices:
+        try:
+            dev.grab()
+        except OSError:
+            pass
     got: list[tuple[str, int, int]] = []
     deadline = now() + seconds
     try:
@@ -1355,6 +1585,10 @@ def evdev_collect(seconds: float = 2.0) -> list[tuple[str, int, int]]:
                     continue
     finally:
         for dev in devices:
+            try:
+                dev.ungrab()
+            except OSError:
+                pass
             try:
                 dev.close()
             except OSError:
@@ -1422,10 +1656,11 @@ def aseqdump_heard(proc: Optional[subprocess.Popen[str]]) -> bool:
 
 
 def during_laptop(action: Callable[[], None]) -> dict[str, bool]:
-    midi_proc = aseqdump_start(2.2)
+    midi_proc = aseqdump_start(3.5)
     pool = ThreadPoolExecutor(max_workers=1)
-    hid_fut = pool.submit(evdev_collect, 2.0)
-    time.sleep(0.2)
+    hid_fut = pool.submit(evdev_collect, 3.5)
+    # Let select() arm on the input fds before the HID HTTP posts.
+    time.sleep(0.5)
     try:
         action()
     finally:
@@ -1489,8 +1724,10 @@ def during_tablet(serial: str) -> Callable[[Callable[[], None]], dict[str, bool]
         # Piped getevent block-buffers, so a live readline loop sees nothing
         # until the process exits. timeout(1) kills it and libc flushes.
         try:
+            args = ["adb", "-s", serial, "shell", "timeout", "4", "getevent", "-lt"]
+            args.extend(nodes[:4] if nodes else [])
             proc = subprocess.Popen(
-                ["adb", "-s", serial, "shell", "timeout", "3.5", "getevent", "-lt"],
+                args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -1729,7 +1966,10 @@ def tablet_swipe_available(serial: str, xml: str) -> None:
 
 
 def tablet_keep_pairing(session: Optional["Session"]) -> None:
-    if session is not None:
+    """Re-open the ESP pairing window and wait until it is actually advertising."""
+    if session is None:
+        return
+    if not laptop_open_ads(session):
         session.post_settings(acceptNewHosts=True)
 
 
@@ -1903,12 +2143,16 @@ def tablet_wait_hogp(
         if session is not None and now() - last_keep > 25:
             tablet_keep_pairing(session)
             last_keep = now()
-        if confirm:
+        elapsed = now() - started
+        # uiautomator dump during GATT discovery stalls HIDH. Only dump while
+        # a Pair dialog might still be on screen.
+        if confirm and elapsed < 12.0:
             xml = tablet_dump_xml(serial) or ""
             if tablet_pairing_dialog(xml):
                 tablet_confirm_pair_dialog(serial)
                 confirm = False
-        elapsed = now() - started
+        elif confirm:
+            confirm = False
         if not tried_connect and elapsed >= 25:
             tried_connect = True
             print(STYLE.dim("  opening ShowboxMod device details to tap Connect"))
@@ -1920,15 +2164,61 @@ def tablet_wait_hogp(
     return tablet_showbox_connected(serial)
 
 
+def tablet_forget_dialog_open(xml: str) -> bool:
+    low = xml.lower()
+    return "forget device?" in low or (
+        "no longer be paired" in low and "showboxmod" in low
+    )
+
+
+def tablet_confirm_forget_dialog(serial: str, xml: Optional[str] = None) -> bool:
+    """Samsung/Android confirmation is exactly 'Forget device', not 'Forget'/'OK'."""
+    blob = xml if xml is not None else (tablet_dump_xml(serial) or "")
+    if not blob or not tablet_forget_dialog_open(blob):
+        return False
+    if tablet_tap_from_xml(serial, blob, "Forget device", exact=True):
+        time.sleep(0.8)
+        return True
+    # Fallback: positive button resource id.
+    try:
+        root = ET.fromstring(blob)
+    except ET.ParseError:
+        return False
+    for node in root.iter("node"):
+        rid = node.attrib.get("resource-id") or ""
+        if not rid.endswith("button1"):
+            continue
+        box = tablet_bounds(node.attrib.get("bounds") or "")
+        if box:
+            tablet_tap_xy(serial, box)
+            time.sleep(0.8)
+            return True
+    return False
+
+
 def tablet_try_unpair(serial: str) -> str:
-    xml = tablet_open_bt(serial)
+    xml = tablet_open_bt(serial) or ""
+    # Leftover confirmation from a previous run blocks the list.
+    if tablet_confirm_forget_dialog(serial, xml):
+        xml = tablet_dump_xml(serial) or ""
+        return "confirmed Forget device dialog"
     if xml and tablet_tap_from_xml(serial, xml, BLE_NAME, exact=True):
         time.sleep(0.8)
         xml = tablet_dump_xml(serial) or ""
-        tablet_tap_from_xml(serial, xml, "Disconnect") or tablet_tap_from_xml(serial, xml, "Forget") or tablet_tap_from_xml(serial, xml, "Unpair")
+        if tablet_confirm_forget_dialog(serial, xml):
+            return "disconnect/forget from Bluetooth settings"
+        tablet_tap_from_xml(serial, xml, "Disconnect", exact=True) or tablet_tap_from_xml(
+            serial, xml, "Forget device", exact=True
+        ) or tablet_tap_from_xml(serial, xml, "Forget", exact=True) or tablet_tap_from_xml(
+            serial, xml, "Unpair", exact=True
+        )
         time.sleep(0.5)
         xml = tablet_dump_xml(serial) or ""
-        tablet_tap_from_xml(serial, xml, "Forget") or tablet_tap_from_xml(serial, xml, "Unpair") or tablet_tap_from_xml(serial, xml, "OK")
+        if tablet_confirm_forget_dialog(serial, xml):
+            return "disconnect/forget from Bluetooth settings"
+        tablet_tap_from_xml(serial, xml, "Forget device", exact=True) or tablet_tap_from_xml(
+            serial, xml, "Unpair", exact=True
+        )
         return "disconnect/forget from Bluetooth settings"
     # dumpsys always mentions ShowboxMod after a scan. Only reset for a real bond.
     if tablet_showbox_in_config(serial):
@@ -1945,6 +2235,34 @@ def wait_host(session: Session, timeout: float = 20.0) -> Optional[dict[str, Any
             return hosts[0]
         time.sleep(0.4)
     return None
+
+
+def host_stored_name(host: Optional[dict[str, Any]]) -> str:
+    """GAP/NVS name the module stored for a host. Empty means not resolved yet."""
+    if not host:
+        return ""
+    name = str(host.get("name") or "").strip()
+    addr = str(host.get("address") or "").strip()
+    # Reject placeholders that are just the address / OUI.
+    if not name or name.lower() == addr.lower():
+        return ""
+    if re.fullmatch(r"[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}", name):
+        return ""
+    return name
+
+
+def wait_host_named(session: Session, timeout: float = 25.0) -> Optional[dict[str, Any]]:
+    """Wait until a connected host has a real name stored on the ESP (GAP 2A00)."""
+    deadline = now() + timeout
+    last: Optional[dict[str, Any]] = None
+    while now() < deadline:
+        hosts = connected_hosts(session.midi())
+        if hosts:
+            last = hosts[0]
+            if host_stored_name(last):
+                return last
+        time.sleep(0.5)
+    return last if host_stored_name(last) else None
 
 
 def apply_case(session: Session, address: str, case: tuple[Any, ...]) -> tuple[int, str]:
@@ -2181,9 +2499,17 @@ def run_pairing_matrix(
                 reconnects += 1
                 reconnect()
                 wait_evdev(8.0, need_mouse=True)
-            time.sleep(0.6)
+            time.sleep(1.0)
         elif hid:
-            time.sleep(0.8)
+            if prefix == "tablet":
+                serials = adb_devices()
+                if serials:
+                    nodes = wait_tablet_input_nodes(serials[0], 20.0)
+                    if not nodes:
+                        print(STYLE.dim(f"  {prefix} {cid}: HOGP up but no input nodes yet"))
+                    time.sleep(0.4)
+            else:
+                time.sleep(0.8)
         if midi and prefix == "laptop":
             until = now() + 4.0
             while now() < until and not alsa_midi_ports():
@@ -2202,6 +2528,10 @@ def run_pairing_matrix(
                 reconnect()
                 if prefix == "laptop":
                     wait_evdev(8.0, need_mouse=want_mouse)
+                elif prefix == "tablet":
+                    serials = adb_devices()
+                    if serials:
+                        wait_tablet_input_nodes(serials[0], 20.0)
                 time.sleep(0.5)
                 retry_ok, retry_detail = run_hid_probes(session, case, during, require_midi_wire)
                 if retry_ok:
@@ -2620,15 +2950,32 @@ def run(args: argparse.Namespace) -> int:
                 r.skip("laptop-pair", "ShowboxMod address not in bluetoothctl")
             else:
                 print(STYLE.dim(f"  pairing this laptop to {addr} (temporary)"))
-                paired, how = laptop_pair(addr, s)
-                if not paired:
-                    r.fail("laptop-pair", how)
+                host: Optional[dict[str, Any]] = None
+                if not laptop_open_ads(s):
+                    r.fail("laptop-pair", "module advertising never came up before pair")
+                    paired, how = False, "no advertising"
                 else:
-                    host = wait_host(s, 18)
+                    paired, how = laptop_pair(addr, s)
+                if not paired:
+                    if not any(row[2] == "laptop-pair" and row[0] == "FAIL" for row in r.rows):
+                        r.fail("laptop-pair", how)
+                else:
+                    host = wait_host_named(s, 25)
                     if host is None:
-                        r.fail("laptop-pair", f"{how}; module never listed a connected host")
+                        bare = wait_host(s, 2)
+                        if bare is None:
+                            r.fail("laptop-pair", f"{how}; module never listed a connected host")
+                        else:
+                            r.pass_("laptop-pair", f"{bare.get('address')} via {how}")
+                            r.fail(
+                                "laptop-host-name",
+                                f"connected as {bare.get('address')} but ESP stored no GAP name",
+                            )
+                            host = bare
                     else:
-                        r.pass_("laptop-pair", f"{host.get('name') or host.get('address')} via {how}")
+                        r.pass_("laptop-pair", f"{host_stored_name(host)} via {how}")
+                        r.pass_("laptop-host-name", f"ESP stored {host_stored_name(host)!r}")
+                    if host is not None:
                         # Leftover NVS mix from the last matrix case can be digitizer-only.
                         apply_case(s, host.get("address") or addr, HOST_CASES[1])
                         mix_deadline = now() + 8
@@ -2721,17 +3068,35 @@ def run(args: argparse.Namespace) -> int:
                     print(STYLE.dim("  dropping leftover Android ShowboxMod bond/cache"))
                     tablet_try_unpair(serial)
                     time.sleep(1.0)
-                ok_tab, how = tablet_try_pair(serial, s)
-                host = wait_host(s, 16 if ok_tab else 10)
-                if host is None and not ok_tab:
-                    if "tapped ShowboxMod" in how:
+                if not laptop_open_ads(s):
+                    r.fail("tablet-pair", "module advertising never came up before pair")
+                    ok_tab, how = False, "no advertising"
+                else:
+                    ok_tab, how = tablet_try_pair(serial, s)
+                host = wait_host_named(s, 25) if ok_tab else None
+                if not ok_tab:
+                    if any(row[2] == "tablet-pair" and row[0] == "FAIL" for row in r.rows):
+                        pass  # already failed (e.g. advertising never came up)
+                    elif "tapped ShowboxMod" in how:
                         r.fail("tablet-pair", how)
                     else:
                         r.skip("tablet-pair", how)
                 elif host is None:
-                    r.fail("tablet-pair", f"{how}; module never listed a connected host")
+                    bare = wait_host(s, 2)
+                    if bare is None:
+                        r.fail("tablet-pair", f"{how}; module never listed a connected host")
+                    else:
+                        r.pass_("tablet-pair", f"{bare.get('address')} {how}")
+                        r.fail(
+                            "tablet-host-name",
+                            f"connected as {bare.get('address')} but ESP stored no GAP name",
+                        )
+                        host = bare
                 else:
-                    r.pass_("tablet-pair", f"{host.get('name') or host.get('address')} {how}")
+                    stored = host_stored_name(host)
+                    r.pass_("tablet-pair", f"{stored} {how}")
+                    r.pass_("tablet-host-name", f"ESP stored {stored!r}")
+                if ok_tab and host is not None:
                     # Leftover NVS mix from the laptop matrix can be digitizer-only.
                     apply_case(s, host.get("address") or "", HOST_CASES[1])
                     mix_deadline = now() + 8

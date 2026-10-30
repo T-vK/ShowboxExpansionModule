@@ -2,7 +2,7 @@ import { useState, useEffect } from "preact/hooks";
 import { useLive } from "../live/LiveContext.jsx";
 import { Fader, ModeToggle, formatValue } from "./Controls.jsx";
 import { EqGraph, CompGraph, VoicingGraph } from "./Graphs.jsx";
-import { FX1, FX2, fx1Id, fx2Id, fxName, fxShort } from "./fx.js";
+import { FX1, FX2, fx1Id, fx2Id, fxName } from "./fx.js";
 import { loopButtons, looperLabel, formatLoopMs } from "./ToolViews.jsx";
 import { controlOn } from "./views.js";
 
@@ -92,10 +92,12 @@ function GainRect({ value, min, max, onClick }) {
 function FxLine({ label, amount, on, tone, onClick, title, compact }) {
   const pct = clamp01(amount) * 100;
   return (
-    <button type="button" class={"fx-line" + (tone ? " tone-" + tone : "") + (on ? " on" : " off") + (compact ? " compact" : "")} title={title || label} onClick={onClick}>
+    <button type="button" class={"fx-line stacked" + (tone ? " tone-" + tone : "") + (on ? " on" : " off") + (compact ? " compact" : "")} title={title || label} onClick={onClick}>
       <span class="fx-line-fill" style={{ width: `${pct}%` }} />
-      <span class="fx-line-txt">{label}</span>
-      <span class="fx-line-val">{Math.round(pct)}%</span>
+      <span class="fx-line-stack">
+        <span class="fx-line-txt">{label}</span>
+        <span class="fx-line-val">{Math.round(pct)}%</span>
+      </span>
     </button>
   );
 }
@@ -157,29 +159,33 @@ export function ChannelStrip({ ch, entities, selected, name, view, onSelect, onR
     const fxPair = [];
     const fxRest = [];
     if (shown("fx1")) {
+      const fx1Label = fx1Type ? fxName(FX1, fx1Type) : "FX1";
+      const fx1Pct = Math.round(clamp01(val(entities, `${p}EFFECT_1_AMOUNT`, 0)) * 100);
       fxPair.push(
         <FxLine
           key="fx1"
           tone="fx1"
-          label={fx1Type ? fxShort(FX1, fx1Type) : "FX1"}
+          label={fx1Label}
           amount={val(entities, `${p}EFFECT_1_AMOUNT`, 0)}
           on={!!fx1Type && !fx1Mute}
           compact
-          title={`${fxName(FX1, fx1Type) || "FX1"} ${Math.round(clamp01(val(entities, `${p}EFFECT_1_AMOUNT`, 0)) * 100)}%`}
+          title={`${fx1Label} ${fx1Pct}%`}
           onClick={() => onProc && onProc("fx")}
         />
       );
     }
     if (shown("fx2")) {
+      const fx2Label = fx2Type ? fxName(FX2, fx2Type) : "FX2";
+      const fx2Pct = Math.round(clamp01(val(entities, `${p}EFFECT_2_AMOUNT`, 0)) * 100);
       fxPair.push(
         <FxLine
           key="fx2"
           tone="fx2"
-          label={fx2Type ? fxShort(FX2, fx2Type) : "FX2"}
+          label={fx2Label}
           amount={val(entities, `${p}EFFECT_2_AMOUNT`, 0)}
           on={!!fx2Type && !fx2Mute}
           compact
-          title={`${fxName(FX2, fx2Type) || "FX2"} ${Math.round(clamp01(val(entities, `${p}EFFECT_2_AMOUNT`, 0)) * 100)}%`}
+          title={`${fx2Label} ${fx2Pct}%`}
           onClick={() => onProc && onProc("fx")}
         />
       );
