@@ -1355,13 +1355,13 @@ void MackieShowbox::tick() {
                 dumpTries = static_cast<uint8_t>(dumpTries + 1);
             }
             // The mixer refuses to re-dump after a module reboot it never
-            // saw (its UI still believes the session is synced). The proven
-            // cure is the wire-unplug mixer re-init: force it once after
-            // the request rotation has clearly failed.
+            // saw (its UI still believes the session is synced). Floating
+            // the base UART for 300 ms does not make it re-init; 3 s does,
+            // and the full entity dump follows. Do this once.
             if (dumpGen == 0 && dumpTries >= 6 && !dumpUnplugDone) {
                 dumpUnplugDone = true;
                 debugLog("uart dump never arrived after %u tries, mixer re-init via wire unplug", (unsigned)dumpTries);
-                interceptor.wireUnplug(300);
+                interceptor.wireUnplug(3000);
             }
             requestMixerDump();
             debugLog("uart request mixer dump try=%u initM=%u initB=%u dumpSeq=%u batt=%u",

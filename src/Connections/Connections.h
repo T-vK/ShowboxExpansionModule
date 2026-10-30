@@ -178,6 +178,9 @@ private:
     bool blePairDirty = false;
     bool slotsDirty = false;
     uint32_t pairingUntilMs = 0;
+    // Set from the NimBLE host callback. GAP start/stop must run on the loop.
+    volatile bool pendingRadioPolicy = false;
+    bool statusForce = false;
     int hostSlots = 1;
     int periSlots = 2;
     bool rebootPending = false;

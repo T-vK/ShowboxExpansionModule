@@ -2415,12 +2415,16 @@ def run_pairing_matrix(
     rebond: Optional[Callable[[], tuple[bool, str]]] = None,
     forget: Optional[Callable[[], None]] = None,
     initial_desc: Optional[tuple[int, int, int]] = None,
+    include_touch: bool = True,
 ) -> None:
     prev_desc = initial_desc
     host_addr = address
     for case in HOST_CASES:
         reconnects = 0
         cid, title, midi, hid, kb, mouse, abs_p, dig = case
+        if dig and not include_touch:
+            results.skip(f"{prefix} {title}", "laptop touch is off unless --laptop-touch")
+            continue
         name = f"{prefix} {title}"
         session.assert_uart(results, f"uart-before-{prefix}-{cid}", stale_ms=SCAN_STALE_MS)
         desc = hid_descriptor_key(case)
@@ -2625,52 +2629,55 @@ def run(args: argparse.Namespace) -> int:
     else:
         r.fail("pwa-icon", f"http={code} size={len(body)}")
 
-    https = {}
-    code = 0
-    for _ in range(12):
-        code, body = http_get(f"{s.base}/api/v1/https", timeout=2.0)
-        try:
-            https = json.loads(body.decode("utf-8", "replace")) if code == 200 else {}
-        except json.JSONDecodeError:
-            https = {}
+    if not args.https:
+        r.skip("https", "off unless --https")
+    else:
+        https = {}
+        code = 0
+        for _ in range(12):
+            code, body = http_get(f"{s.base}/api/v1/https", timeout=2.0)
+            try:
+                https = json.loads(body.decode("utf-8", "replace")) if code == 200 else {}
+            except json.JSONDecodeError:
+                https = {}
+            if code == 200 and https.get("enabled") is True and https.get("listening"):
+                break
+            if code == 200 and https.get("enabled") is not True:
+                break
+            time.sleep(0.5)
         if code == 200 and https.get("enabled") is True and https.get("listening"):
-            break
-        if code == 200 and https.get("enabled") is not True:
-            break
-        time.sleep(0.5)
-    if code == 200 and https.get("enabled") is True and https.get("listening"):
-        r.pass_("https-on", f"listening={https.get('listening')} hasCa={https.get('hasCa')}")
-    elif https.get("enabled") is True:
-        r.fail("https-on", f"http={code} enabled={https.get('enabled')} listening={https.get('listening')}")
-    else:
-        r.skip("https-on", "HTTPS not enabled")
-    if tcp_open(args.ip, 443):
-        r.pass_("https-port", "443 open")
-    elif https.get("enabled") is True:
-        r.fail("https-port", "443 closed while HTTPS is enabled")
-    else:
-        r.skip("https-port", "HTTPS not enabled")
-    ca_code, ca_body = http_get(f"{s.base}/api/v1/https/ca.pem", timeout=2.0)
-    if https.get("enabled") is not True:
-        r.skip("https-ca", "HTTPS not enabled")
-    elif ca_code == 200 and b"BEGIN CERTIFICATE" in ca_body:
-        r.pass_("https-ca", f"{len(ca_body)} bytes")
-    elif https.get("listening"):
-        r.fail("https-ca", f"http={ca_code} size={len(ca_body)}")
-    else:
-        r.skip("https-ca", "TLS still starting")
-    if https.get("enabled") is True:
-        try:
-            ver, payload = https_get(args.ip, "/services", timeout=8.0)
-            ok = b"HTTP/1." in payload[:32] and b" 301" not in payload[:48] and b" 302" not in payload[:48]
-            if ok and len(payload) > 200:
-                r.pass_("https-handshake", f"{ver} {len(payload)} bytes")
-            else:
-                r.fail("https-handshake", f"{ver} {payload[:120]!r}")
-        except Exception as exc:
-            r.fail("https-handshake", str(exc))
-    else:
-        r.skip("https-handshake", "HTTPS not enabled")
+            r.pass_("https-on", f"listening={https.get('listening')} hasCa={https.get('hasCa')}")
+        elif https.get("enabled") is True:
+            r.fail("https-on", f"http={code} enabled={https.get('enabled')} listening={https.get('listening')}")
+        else:
+            r.skip("https-on", "HTTPS not enabled")
+        if tcp_open(args.ip, 443):
+            r.pass_("https-port", "443 open")
+        elif https.get("enabled") is True:
+            r.fail("https-port", "443 closed while HTTPS is enabled")
+        else:
+            r.skip("https-port", "HTTPS not enabled")
+        ca_code, ca_body = http_get(f"{s.base}/api/v1/https/ca.pem", timeout=2.0)
+        if https.get("enabled") is not True:
+            r.skip("https-ca", "HTTPS not enabled")
+        elif ca_code == 200 and b"BEGIN CERTIFICATE" in ca_body:
+            r.pass_("https-ca", f"{len(ca_body)} bytes")
+        elif https.get("listening"):
+            r.fail("https-ca", f"http={ca_code} size={len(ca_body)}")
+        else:
+            r.skip("https-ca", "TLS still starting")
+        if https.get("enabled") is True:
+            try:
+                ver, payload = https_get(args.ip, "/services", timeout=8.0)
+                ok = b"HTTP/1." in payload[:32] and b" 301" not in payload[:48] and b" 302" not in payload[:48]
+                if ok and len(payload) > 200:
+                    r.pass_("https-handshake", f"{ver} {len(payload)} bytes")
+                else:
+                    r.fail("https-handshake", f"{ver} {payload[:120]!r}")
+            except Exception as exc:
+                r.fail("https-handshake", str(exc))
+        else:
+            r.skip("https-handshake", "HTTPS not enabled")
 
     code, body = http_get(f"{s.base}/", timeout=8.0, ua="Mozilla/5.0")
     # The SPA always arrives gzip-encoded. Split build: "/" is a ~1 KB gz
@@ -3003,6 +3010,7 @@ def run(args: argparse.Namespace) -> int:
                             rebond=lambda: laptop_rebond(s, addr),
                             forget=lambda: laptop_forget(s, addr),
                             initial_desc=(1, 1, 0),
+                            include_touch=args.laptop_touch,
                         )
                         autos_later = auto_peripherals(s.midi())
                         down = [p.get("name") for p in autos_later if not p.get("connected")]
@@ -3229,6 +3237,8 @@ def main() -> int:
     parser.add_argument("--host-scan", type=float, default=8.0, help="seconds for local LE advertisement scan")
     parser.add_argument("--soak", type=float, default=12.0, help="final soak seconds")
     parser.add_argument("--interval", type=float, default=0.8)
+    parser.add_argument("--https", action="store_true", help="run the HTTPS checks (off unless HTTPS is in use)")
+    parser.add_argument("--laptop-touch", action="store_true", help="include laptop digitizer cases in --pair (BlueZ often keeps the mouse map)")
     parser.add_argument("--pair", dest="pair", action="store_true", default=False, help="pair laptop/tablet HID+MIDI matrix (slow, opt-in)")
     parser.add_argument("--no-pair", dest="pair", action="store_false", help="skip HID+MIDI host matrix (default)")
     parser.add_argument("--laptop", dest="laptop", action="store_true", default=True)

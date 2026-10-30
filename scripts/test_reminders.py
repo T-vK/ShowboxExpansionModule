@@ -23,7 +23,7 @@ def print_run_reminders() -> None:
     print("      test_gain_tracker_fast.py     user gain move clears BOOST_ENABLED")
     print("      test_boost_ratchet_fast.py    desynced flag must not add another +2")
     print("      check_live.py                 ~30s  ping + /services + midi + mDNS soak")
-    print("      check_https_repeat.py         HTTPS GET / while mixer+AIRSTEP stay up (skip if HTTPS off)")
+    print("      check_https_repeat.py         opt-in; HTTPS GET / while mixer+AIRSTEP stay up")
     print("      check_features Core           ICMP, UART, HTTP health, MIDI JSON")
     print("      check_uart.py                 mixer↔base reconnect / ALL_ENTITIES soak")
     print("      names POST + mixer gzip GET   caught NVS-on-AsyncTCP crash and BLE PTA stalls")

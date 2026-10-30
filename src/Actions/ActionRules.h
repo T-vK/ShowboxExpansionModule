@@ -89,7 +89,7 @@ private:
     float getVar(Job* job, const String& name) const;
     void setVar(Job* job, const String& name, float value, bool local, bool persist);
     void applyGainBoost(Job& job, JsonObjectConst step);
-    void dispatchLooper(const String& op);
+    void dispatchLooper(const String& op, bool fromRetry = false);
     void startLooper(Job& job, const String& op);
     void runLooper(Job& job);
     void runSystem(const String& command);

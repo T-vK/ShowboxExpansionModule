@@ -674,55 +674,29 @@ void ActionRules::tick() {
             }
         }
     }
-    // Self-healing: after a looper press, the base announces the new state
-    // within ~300 ms. When no announcement arrives (radio window, lost
-    // frame) the cache goes stale and every following dispatchLooper
-    // decision is wrong. One resync restores the truth; the missed press
-    // behaves like a missed physical button press (press again).
-    if (looperTapWatch != 0) {
-        const uint8_t nowState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-        if (nowState != looperTapStateBefore) {
-            looperTapWatch = 0;
-        } else if ((int32_t)(millis() - looperTapWatch) > 2000) {
-            looperTapWatch = 0;
-            // Don't fire a resync here: the dump traffic interferes with the
-            // next looper press (the e2e sends one ~1.2 s later). The cache
-            // re-syncs on the next natural dump or looper action.
-            if (debug != nullptr) {
-                debug->printf("[looper] no announcement after press (state %u)\n", nowState);
-            }
-        }
-    }
-    // Recovery: after a looper action, if the base didn't announce a state
-    // change within 1.5 s, request a fresh dump. When the dump arrives,
-    // check the true state: if the press was ignored, re-send it once.
-    // Never re-press without dump confirmation (a lost announcement with a
-    // successful press would double-advance the looper).
-    if (looperTapWatch != 0) {
+    // The base sometimes ignores one press. Re-send that same press once.
+    // Do not force an entity dump here: dumpGen=0 starts the boot dump
+    // ladder, the dump never arrives mid-session, and the wire-unplug
+    // recovery then drops every later looper announcement. The boost
+    // rules follow that stale LOOPER_STATE and stay on.
+    if (looperTapWatch != 0 && showbox != nullptr) {
         const uint8_t nowState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
         if (nowState != looperTapStateBefore) {
             looperTapWatch = 0;
             looperTapPhase = 0;
-        } else if (looperTapPhase == 0 && (int32_t)(millis() - looperTapWatch) > 1500) {
+        } else if (looperTapPhase == 0 && (int32_t)(millis() - looperTapWatch) > 800) {
             looperTapPhase = 1;
-            looperTapDumpSeq = showbox->dumpSeq();
-            showbox->forceEntityResync();
-            looperTapWatch = millis();
-        } else if (looperTapPhase == 1) {
-            const bool dumpArrived = showbox->dumpSeq() != looperTapDumpSeq;
-            if (dumpArrived || (int32_t)(millis() - looperTapWatch) > 5000) {
-                looperTapPhase = 0;
-                looperTapWatch = 0;
-                const uint8_t still = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-                if (dumpArrived && still == looperTapStateBefore) {
-                    // The dump confirms the press was ignored: re-dispatch.
-                    dispatchLooper(String(looperTapOp));
-                    if (debug != nullptr) {
-                        debug->printf("[looper] press ignored, re-dispatched %s (state %u)\n",
-                            looperTapOp, still);
-                    }
-                }
+            if (debug != nullptr) {
+                debug->printf("[looper] no announcement, re-press %s (state %u)\n",
+                    looperTapOp, nowState);
             }
+            dispatchLooper(String(looperTapOp), true);
+        } else if (looperTapPhase != 0 && (int32_t)(millis() - looperTapWatch) > 2500) {
+            if (debug != nullptr) {
+                debug->printf("[looper] re-press missed (state %u)\n", nowState);
+            }
+            looperTapWatch = 0;
+            looperTapPhase = 0;
         }
     }
     pump();
@@ -2594,9 +2568,12 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
     }
 }
 
-void ActionRules::dispatchLooper(const String& op) {
+void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
     if (showbox == nullptr) {
         return;
+    }
+    if (!fromRetry) {
+        looperTapPhase = 0;
     }
     const uint8_t state = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
     const bool alreadySent = showbox->takeLooperOutgoing();
