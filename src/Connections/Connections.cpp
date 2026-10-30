@@ -369,6 +369,13 @@ void Connections::startAfterBle() {
 
 void Connections::tick() {
     applyPending();
+    // onDisconnect used to call this on the NimBLE host task. adv start/stop
+    // then waits for that same task and the loop never runs again.
+    if (pendingRadioPolicy) {
+        pendingRadioPolicy = false;
+        applyPairingMixIfIdle();
+        applyAdvertisingPolicy();
+    }
     if (hidEnabled && hid != nullptr && !hid->bleEnabled()) {
         bool pedal = multiMidi != nullptr && multiMidi->outgoingCount() > 0;
         // ble_gatts_add_svcs while AIRSTEP is up returns HCI timeout 15
@@ -382,6 +389,8 @@ void Connections::tick() {
         pairingUntilMs = 0;
         noteLog("Pairing window closed");
         applyAdvertisingPolicy();
+        statusForce = true;
+        refreshStatusCache();
     }
     bool uartHot = showbox != nullptr && showbox->uartHot();
     // JSON walk lives in flash on core 1 with the UART ISR. When the mixer
@@ -666,8 +675,8 @@ void Connections::onIncoming(const char* address, uint16_t connId, bool connecte
         if (hid != nullptr) {
             hid->clearConnMix(connId);
         }
-        applyPairingMixIfIdle();
-        applyAdvertisingPolicy();
+        // Host-task context. The loop applies the map and the advert.
+        pendingRadioPolicy = true;
         return;
     }
     if (radio != nullptr) {
@@ -1273,7 +1282,8 @@ void Connections::refreshStatusCache() {
     uint32_t age = lastStatusMs == 0 ? 0xFFFFFFFFu : (uint32_t)(millis() - lastStatusMs);
     int links = radio != nullptr ? radio->gapLinkCount() : 0;
     int out = outgoingUsed();
-    bool force = empty || links != lastCacheLinks || out != lastCacheOut;
+    bool force = empty || links != lastCacheLinks || out != lastCacheOut || statusForce;
+    statusForce = false;
     if (!empty && !force && age < 400) {
         return;
     }
@@ -1957,10 +1967,14 @@ void Connections::openPairingWindow(uint32_t ms) {
         pairingUntilMs = 0;
         applyAdvertisingPolicy();
         noteLog("Pairing window closed");
+        statusForce = true;
+        refreshStatusCache();
         return;
     }
     pairingUntilMs = now + ms;
     applyAdvertisingPolicy();
+    statusForce = true;
+    refreshStatusCache();
     char line[48];
     snprintf(line, sizeof(line), "Pairing window %u s", (unsigned)((ms + 999) / 1000));
     noteLog(line);
@@ -1972,6 +1986,8 @@ void Connections::closePairingWindow() {
     applyAdvertisingPolicy();
     if (wasOpen) {
         noteLog("Pairing window closed");
+        statusForce = true;
+        refreshStatusCache();
     }
 }
 
