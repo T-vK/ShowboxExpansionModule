@@ -4,15 +4,24 @@ Gain more control over your Mackie Showbox. An ESP32-S3 sits between the Showbox
 
 ### Features
 
-- **Full mixer control** — read and change essentially everything the Breakaway Mixer exposes (gains, faders, mute, EQ, compressors, FX sends/types, looper, snapshots, tuner, SD record, and more)
-- **Web UI** — live mixer board, snapshots, tuner, looper, actions editor, and connection settings over Wi‑Fi or Ethernet at `http://showbox.local`
-- **Actions engine** — map any trigger to any reaction in the browser (no firmware rebuild). Built-ins cover TRS/MIDI looper control, gain booster, and the front-panel buttons
+- **Remote control from anywhere on the LAN** — tablet, phone, or laptop over Wi‑Fi or Ethernet, with as many clients in parallel as you want (`http://showbox.local`)
+- **Full mixer control** — gains, faders, mute, EQ, compressors, FX sends/types, looper, snapshots, tuner, SD record, and more
+- **Custom channel & snapshot names** — label strips and slots the way you actually use them
+- **Full MIDI** — 5‑pin DIN, USB (device + host), Bluetooth LE (host + peripheral), and Wi‑Fi/Ethernet AppleMIDI / RTP‑MIDI
+- **USB / Bluetooth page turner** — drive tablet scrolling from a regular TRS pedal, MIDI pedal, or wireless MIDI
+- **Sophisticated web UI** — EQ graphs, compressor graphs, customizable mixer views, snapshots, tuner, looper, and system pages
+- **Fully customizable actions** — any trigger → any action (edited in the browser, no firmware rebuild), for example:
+  - Two-button looper
+  - Boost pedal
+  - FX change pedal
+  - Snapshot load pedal
+  - Sync a Behringer X‑Touch Compact with the Showbox
 - **Footswitches & expression pedals** — up to 4 dual TRS jacks (tip + ring per jack)
-- **MIDI everywhere** — 5‑pin DIN, Bluetooth LE (host + peripheral), USB device + host, AppleMIDI / RTP‑MIDI over Wi‑Fi, and Ethernet MIDI (W5500)
-- **Bluetooth & USB HID** — keyboard, mouse, absolute pointer, and touch for page-turning and similar uses
-- **Behringer X‑Touch Compact** — MIDI surface mirroring for hands-on Showbox control
-- **Radios & networking** — Wi‑Fi station/AP, captive portal setup, mDNS, optional Ethernet
-- **Front panel** — RGB status rings plus blue / green / red buttons for Bluetooth, Wi‑Fi, and USB mode
+- **DC jacks** — power your 9 V and 12 V pedals from the module
+- **USB ports** — power USB devices from the module
+- **3D-printable case** — [GrabCAD model](https://grabcad.com/library/showboxexpansionmodule-v1-1)
+- **Wiring diagrams** — electrical schematics included below
+- **Front panel** — four LED buttons: white (module on/off), plus red, green, and blue (each with its own on/off LED — not RGB rings)
 - **Updates** — browser [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/), OTA over the network
 
 ### Web interface
