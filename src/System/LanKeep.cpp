@@ -163,7 +163,11 @@ static bool lanPcbHttpSilent(const struct tcp_pcb* pcb) {
     if (pcb->unsent != nullptr || pcb->unacked != nullptr) {
         return false;
     }
-    return (tcp_ticks - pcb->tmr) >= 20;  // 10s leftover HTTP, not WS
+    // After a cold SPA under BLE, leftover ESTABLISHED :80 with nothing
+    // in flight (AsyncTCP never attached) blocks Chromium's next
+    // navigation while /services still answers on a fresh PCB. 2s is
+    // enough; 10s left the suite webui snapshot hung on page.goto.
+    return (tcp_ticks - pcb->tmr) >= (bleLive ? 4 : 20);
 }
 
 static int lanAbortSilentHttpPcbs() {
@@ -566,10 +570,10 @@ void lanTickUnicastHealth() {
     }
     lastStuckMs = now;
     debugLog("wifi abort zombie pcbs=%d silent=%d", zombies, silent);
-    // Rebind only when no websocket is live. webServer.end() would drop
-    // the suite/UI client; between passes (ws=0) it frees AsyncTCP slots
-    // left by SYN-ACK-no-body zombies.
-    if (silent > 0 && lanWsClients() == 0) {
+    // Rebind even with a live /ws. liveSocket.dropClients() runs first;
+    // the suite and UI reconnect. Holding the listen forever for one WS
+    // left Chromium page.goto hung after cold-load (SYN-ACK, no body).
+    if (silent > 0) {
         lanRequestHttpRestart();
     }
 }

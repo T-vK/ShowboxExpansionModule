@@ -1412,6 +1412,11 @@ def case_webui(s: Suite) -> None:
             break
         s.info(f"webui cold-load attempt {attempt + 1} exit={r1.returncode}")
     s.check("webui cold-load", r1 is not None and r1.returncode == 0, f"exit={None if r1 is None else r1.returncode}")
+    # Cold-load leaves SYN-ACK-no-body PCBs. Small /services still works;
+    # Chromium page.goto does not. Range-resume SPA + wait clears slots.
+    wait_http_quiet(s.ip, timeout=8.0)
+    http_get_resumable(url, timeout=2.5, ua="Mozilla/5.0", attempts=4, min_bytes=500, deadline=8.0)
+    wait_http_quiet(s.ip, timeout=8.0)
     r2 = None
     for attempt in range(3):
         if not wait_http_quiet(s.ip, timeout=12.0):

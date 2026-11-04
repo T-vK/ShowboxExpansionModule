@@ -42,22 +42,36 @@ page.on("websocket", (ws) => {
   });
 });
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Same boot gate as webui_cold_load.mjs. waitUntil:"load" waits for every
 // icon/asset; BLE-coex can stall one of those for 30s and drop STA while
 // the mixer already mounted (L3: cold-load PASS, snapshot goto timeout,
-// ping dead).
-await page.goto(url, { waitUntil: "commit", timeout: 30000 });
-const booted = await page.waitForFunction(() => window.__uiBooted === true, { timeout: 45000 })
-  .then(() => true).catch(() => false);
+// ping dead). Retry commit — cold-load can leave SYN-ACK-no-body PCBs.
+let booted = false;
+for (let attempt = 0; attempt < 3; attempt++) {
+  try {
+    await page.goto(url, { waitUntil: "commit", timeout: 30000 });
+  } catch (err) {
+    console.log(`goto attempt ${attempt + 1}: ${err.message}`);
+    await sleep(1500);
+    continue;
+  }
+  booted = await page.waitForFunction(() => window.__uiBooted === true, { timeout: 45000 })
+    .then(() => true).catch(() => false);
+  if (booted) {
+    break;
+  }
+  console.log(`boot attempt ${attempt + 1}: __uiBooted never set`);
+  await sleep(1500);
+}
 if (!booted) {
   console.log("FAIL: webui did not boot");
   process.exit(1);
 }
 console.log("booted OK");
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function apiGain() {
   return page.evaluate(async () => {
