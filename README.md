@@ -4,29 +4,29 @@ Gain more control over your Mackie Showbox. An ESP32-S3 sits between the Showbox
 
 ### Features
 
-- **Remote control from anywhere on the LAN** — tablet, phone, or laptop over Wi‑Fi or Ethernet, with as many clients in parallel as you want (`http://showbox.local`)
-- **Full mixer control** — gains, faders, mute, EQ, compressors, FX sends/types, looper, snapshots, tuner, SD record, and more
-- **Custom channel & snapshot names** — label strips and slots the way you actually use them
-- **Full MIDI** — 5‑pin DIN, USB (device + host), Bluetooth LE (host + peripheral), and Wi‑Fi/Ethernet AppleMIDI / RTP‑MIDI
-- **USB / Bluetooth page turner** — drive tablet scrolling from a regular TRS pedal, MIDI pedal, or wireless MIDI
-- **Sophisticated web UI** — EQ graphs, compressor graphs, customizable mixer views, snapshots, tuner, looper, and system pages
-- **Fully customizable actions** — any trigger → any action (edited in the browser, no firmware rebuild), for example:
+- **Remote control** via tablet, phone, or laptop over Wi‑Fi or Ethernet, with as many devices in parallel as you want (`http://showbox.local`)
+- **Full mixer control**: gains, faders, mute, EQ, compressors, FX sends/types, looper, snapshots, tuner, SD record, and more
+- **Custom channel and snapshot names**
+- **Full MIDI** via 5‑pin DIN, USB, Bluetooth, and Wi‑Fi/Ethernet (AppleMIDI / RTP‑MIDI)
+- **USB/Bluetooth page turner**: use any pedal (TRS jack, MIDI, or wireless MIDI) to scroll on your tablet
+- **Sophisticated web UI** with EQ graphs, compressor graphs, customizable views, etc.
+- **Fully customizable actions** (any trigger, any action, any direction), for example:
   - Two-button looper
   - Boost pedal
   - FX change pedal
   - Snapshot load pedal
   - Sync a Behringer X‑Touch Compact with the Showbox
-- **Footswitches & expression pedals** — up to 4 dual TRS jacks (tip + ring per jack)
-- **DC jacks** — power your 9 V and 12 V pedals from the module
-- **USB ports** — power USB devices from the module
-- **3D-printable case** — [GrabCAD model](https://grabcad.com/library/showboxexpansionmodule-v1-1)
-- **Wiring diagrams** — electrical schematics included below
-- **Front panel** — four LED buttons: white (module on/off), plus red, green, and blue (each with its own on/off LED — not RGB rings)
-- **Updates** — browser [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/), OTA over the network
+- **Footswitches and expression pedals**: up to 4 dual TRS jacks (tip + ring per jack)
+- **DC jacks** to power your 9 V and 12 V pedals
+- **USB ports** to power your USB devices
+- **3D-printable case** ([GrabCAD model](https://grabcad.com/library/showboxexpansionmodule-v1-1))
+- **Wiring diagrams** provided below
+- **Front panel** with 3 customizable LED buttons
+- **Updates** via browser [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/) or OTA over the network
 
 ### Web interface
 
-Open the module on your LAN (typically `http://showbox.local`) for a live mixer, snapshots, tuner, looper, and system pages.
+Open `http://showbox.local` for a live mixer, snapshots, tuner, looper, and system pages.
 
 ![Web UI mixer](./docs/webui-mixer.gif)
 
@@ -56,7 +56,7 @@ Actions are *when → (optional if) → then* rules stored on the module and edi
 - Flip module radios / USB mode
 - Set variables used by other rules
 
-Groups of rules can be enabled or disabled together. Built-in groups ship ready for a TRS or MIDI looper pedal, a MIDI/TRS booster, and the front-panel buttons — edit or replace them as you like.
+Groups of rules can be enabled or disabled together. Built-in groups ship ready for a TRS or MIDI looper pedal, a MIDI/TRS booster, and the front-panel buttons. Edit or replace them as you like.
 
 ### Getting started
 
