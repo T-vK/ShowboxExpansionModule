@@ -1430,8 +1430,13 @@ button.ghost.tight { padding: 0.22rem 0.48rem; min-width: 2rem; }
   width: 100%;
 }
 .eq-board-curve { flex: 0.72 1 0; min-height: 4.8rem; max-height: 36%; display: flex; }
-.eq-board-curve .eq-graph, .eq-board-curve .voice-graph { height: 100%; min-height: 0; width: 100%; }
+.eq-board-curve .eq-graph, .eq-board-curve .voice-graph,
+.eq-board-curve .comp-viz, .eq-board-curve .comp-graph { height: 100%; min-height: 0; width: 100%; }
+.eq-board-curve .comp-viz { display: flex; flex-direction: column; min-height: 0; }
+.eq-board-curve .comp-graph { flex: 1 1 auto; min-height: 0; }
+.eq-board-curve .comp-readout { flex: none; margin: 0.15rem 0 0; font-size: 0.62rem; }
 .eq-board-curve.off { opacity: 0.45; filter: grayscale(1); }
+.comp-board .eq-board-curve { max-height: 42%; }
 .eq-graph.full { height: 100%; }
 .eq-graph.interactive { touch-action: none; overflow: visible; }
 .eq-dot-hit { cursor: ns-resize; }

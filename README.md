@@ -5,7 +5,7 @@ Gain more control over your Mackie Showbox. An ESP32-S3 sits between the Showbox
 ### Features
 
 - **Full mixer control** — read and change essentially everything the Breakaway Mixer exposes (gains, faders, mute, EQ, compressors, FX sends/types, looper, snapshots, tuner, SD record, and more)
-- **Web UI (PWA)** — live mixer board, snapshots, tuner, looper, actions editor, and connection settings over Wi‑Fi or Ethernet at `http://showbox.local`
+- **Web UI** — live mixer board, snapshots, tuner, looper, actions editor, and connection settings over Wi‑Fi or Ethernet at `http://showbox.local`
 - **Actions engine** — map any trigger to any reaction in the browser (no firmware rebuild). Built-ins cover TRS/MIDI looper control, gain booster, and the front-panel buttons
 - **Footswitches & expression pedals** — up to 4 dual TRS jacks (tip + ring per jack)
 - **MIDI everywhere** — 5‑pin DIN, Bluetooth LE (host + peripheral), USB device + host, AppleMIDI / RTP‑MIDI over Wi‑Fi, and Ethernet MIDI (W5500)

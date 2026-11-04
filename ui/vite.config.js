@@ -240,8 +240,18 @@ function mockShowbox() {
   };
 }
 
+const proxyTarget = process.env.SHOWBOX_PROXY || "";
+
 export default defineConfig({
-  plugins: [preact(), mockShowbox(), viteSingleFile()],
+  plugins: [preact(), ...(proxyTarget ? [] : [mockShowbox()]), viteSingleFile()],
+  server: proxyTarget
+    ? {
+        proxy: {
+          "/api": { target: proxyTarget, changeOrigin: true },
+          "/ws": { target: proxyTarget.replace(/^http/, "ws"), ws: true, changeOrigin: true }
+        }
+      }
+    : undefined,
   build: {
     cssCodeSplit: false,
     // Single-file build: one response, browser-native loading, the new
