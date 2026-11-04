@@ -167,13 +167,14 @@ public:
         BLEService* service = pServer->createService(BLEUUID(MIDI_SERVICE_UUID));
         pCharacteristic = service->createCharacteristic(
             BLEUUID(MIDI_CHARACTERISTIC_UUID),
-            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE_NR |
-                BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
-        if (pMidiAction != nullptr) {
-            pCharacteristic->setCallbacks(new BleMidiDecode(pMidiAction));
-        }
+            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
+                BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_NOTIFY |
+                BLECharacteristic::PROPERTY_INDICATE);
+        // MidiBleServer(name, MidiAction*) stores the parser, not pMidiAction.
+        // Skipping this when pMidiAction is null left onWrite empty: ATT writes
+        // updated the characteristic value but never reached the looper.
+        pCharacteristic->setCallbacks(new BleMidiDecode(pMidiAction));
         pCharacteristic->addDescriptor(new BLE2902());
-        pCharacteristic->setBroadcastProperty(true);
         service->start();
     }
 };
@@ -601,6 +602,7 @@ void MultiMidi::begin() {
     // Initialize BLE MIDI if enabled
     if (bleMidiEnabled && !bleServer) {
         bleServer = new ExposedMidiBleServer(bluetoothName, &action);
+        bleServer->setMidiAction(action);
         static_cast<ExposedMidiBleServer*>(bleServer)->beginServices();
     }
 

@@ -120,6 +120,18 @@ void UltimateBaseFirmware::tick() {
             }
             _remoteDebug.handle();
             bool connected = _remoteDebug.isConnected();
+            static uint32_t telnetHeldSinceMs = 0;
+            if (connected) {
+                if (telnetHeldSinceMs == 0) {
+                    telnetHeldSinceMs = millis();
+                } else if ((int32_t)(millis() - telnetHeldSinceMs) > 8000) {
+                    _remoteDebug.disconnect(true);
+                    connected = false;
+                    telnetHeldSinceMs = 0;
+                }
+            } else {
+                telnetHeldSinceMs = 0;
+            }
             Debug.setPrint2Live(connected);
             if (connected && !_remoteDebugWasConnected) {
                 size_t buffered = Debug.wifiBuffered();

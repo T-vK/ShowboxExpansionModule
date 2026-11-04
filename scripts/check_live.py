@@ -237,7 +237,21 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--stale-ms", type=int, default=STALE_MS)
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="run this soak instead of scripts/run.py --case simultaneous",
+    )
     args = parser.parse_args()
+    if not args.legacy:
+        print("check_live default path is scripts/run.py --case simultaneous (pass --legacy for this soak).")
+        from pathlib import Path
+        here = Path(__file__).resolve().parent
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
+        from run import main_cases
+
+        return main_cases("simultaneous", ip=args.ip, host=args.host)
 
     print_run_reminders()
     print(

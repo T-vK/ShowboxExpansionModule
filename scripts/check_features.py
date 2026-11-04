@@ -254,19 +254,24 @@ def http_post(url: str, fields: Optional[dict[str, str]] = None, timeout: float 
 def http_json(url: str, timeout: float = HTTP_TIMEOUT) -> tuple[int, dict[str, Any]]:
     last_code = 0
     last_raw = b""
-    for attempt in range(3):
-        last_code, last_raw = http_get(url, timeout=timeout)
-        if last_code != 200:
-            if attempt + 1 < 3:
-                time.sleep(0.3)
-            continue
-        try:
-            data = json.loads(last_raw.decode("utf-8", "replace"))
-        except json.JSONDecodeError:
-            if attempt + 1 < 3:
-                time.sleep(0.3)
-            continue
-        return last_code, data if isinstance(data, dict) else {}
+    deadline = now() + max(0.2, timeout)
+    while now() < deadline:
+        remaining = deadline - now()
+        per = min(1.5, remaining)
+        if per < 0.15:
+            break
+        last_code, last_raw = http_get(url, timeout=per)
+        if last_code == 200:
+            try:
+                data = json.loads(last_raw.decode("utf-8", "replace"))
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, dict):
+                return last_code, data
+        leftover = deadline - now()
+        if leftover <= 0:
+            break
+        time.sleep(min(0.05, leftover))
     return last_code, {}
 
 
@@ -479,42 +484,47 @@ def udp_open(ip: str, port: int) -> bool:
 
 
 def telnet_messages(ip: str, port: int = TELNET_PORT, want: int = 2, timeout: float = 6.0) -> tuple[bool, str]:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    try:
-        sock.connect((ip, port))
+    last = "telnet failed"
+    deadline = now() + timeout
+    while now() < deadline:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.settimeout(min(2.0, max(0.3, deadline - now())))
         try:
-            sock.sendall(b"\r\n")
-        except OSError:
-            pass
-        sock.settimeout(1.0)
-        chunks = b""
-        deadline = now() + timeout
-        while now() < deadline:
+            sock.connect((ip, port))
             try:
-                part = sock.recv(512)
-            except socket.timeout:
-                if chunks.count(b"\n") >= want:
+                sock.sendall(b"\r\nhelp\r\n")
+            except OSError:
+                pass
+            sock.settimeout(0.6)
+            chunks = b""
+            slice_end = min(deadline, now() + 1.5)
+            while now() < slice_end:
+                try:
+                    part = sock.recv(512)
+                except socket.timeout:
+                    if chunks.count(b"\n") >= want:
+                        break
+                    continue
+                if not part:
                     break
-                continue
-            if not part:
-                break
-            chunks += part
-            if chunks.count(b"\n") >= want or len(chunks) >= 400:
-                break
-        sock.close()
-        text = chunks.decode("utf-8", "replace").replace("\r", "")
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        if not lines:
-            return False, "connected but no banner or log line"
-        preview = " | ".join(lines[:want])[:120]
-        return True, f"{len(lines)} line(s): {preview}"
-    except OSError as exc:
-        try:
+                chunks += part
+                if chunks.count(b"\n") >= want or len(chunks) >= 400:
+                    break
             sock.close()
-        except OSError:
-            pass
-        return False, str(exc)
+            text = chunks.decode("utf-8", "replace").replace("\r", "")
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            if lines:
+                preview = " | ".join(lines[:want])[:120]
+                return True, f"{len(lines)} line(s): {preview}"
+            last = "connected but no banner or log line"
+        except OSError as exc:
+            last = str(exc)
+            try:
+                sock.close()
+            except OSError:
+                pass
+    return False, last
 
 
 def strip_ansi(text: str) -> str:
@@ -1289,14 +1299,19 @@ def laptop_open_ads(session: Optional["Session"] = None) -> bool:
     if session is None:
         return False
     session.post_settings(acceptNewHosts=True)
-    deadline = now() + 12
+    deadline = now() + 25
+    last_post = now()
     while now() < deadline:
         midi = session.midi()
         pairing_ms = int(midi.get("pairingMs") or 0)
         if midi.get("advertising") and pairing_ms > 1000:
             return True
-        session.post_settings(acceptNewHosts=True)
-        time.sleep(0.6)
+        # Re-POST at most every 8s. 0.6s POSTs after webui wedge :80
+        # (L3: ads never came up, then ECONNREFUSED).
+        if now() - last_post >= 8.0:
+            session.post_settings(acceptNewHosts=True)
+            last_post = now()
+        time.sleep(0.4)
     midi = session.midi()
     return bool(midi.get("advertising") and int(midi.get("pairingMs") or 0) > 0)
 
@@ -1542,7 +1557,7 @@ def wait_evdev(timeout: float, need_mouse: bool = False) -> list[str]:
         names = evdev_names()
         if names and (not need_mouse or evdev_has_mouse(names)):
             return names
-        time.sleep(0.3)
+        time.sleep(0.05)
     return names
 
 
@@ -2230,10 +2245,15 @@ def tablet_try_unpair(serial: str) -> str:
 def wait_host(session: Session, timeout: float = 20.0) -> Optional[dict[str, Any]]:
     deadline = now() + timeout
     while now() < deadline:
-        hosts = connected_hosts(session.midi())
+        remaining = max(0.2, min(1.2, deadline - now()))
+        _code, midi = http_json(f"{session.base}/api/v1/midi", timeout=remaining)
+        hosts = connected_hosts(midi)
         if hosts:
             return hosts[0]
-        time.sleep(0.4)
+        leftover = deadline - now()
+        if leftover <= 0:
+            break
+        time.sleep(min(0.05, leftover))
     return None
 
 
@@ -2252,16 +2272,32 @@ def host_stored_name(host: Optional[dict[str, Any]]) -> str:
 
 
 def wait_host_named(session: Session, timeout: float = 25.0) -> Optional[dict[str, Any]]:
-    """Wait until a connected host has a real name stored on the ESP (GAP 2A00)."""
+    """Wait until a connected host has a real name stored on the ESP (GAP 2A00).
+
+    Do not POST acceptNewHosts here. After a successful pair the 2A00 read
+    does not need ads, and the POSTs wedge :80 under L3 (SPA + AIRSTEP),
+    after which this poll reports host=None.
+    """
     deadline = now() + timeout
     last: Optional[dict[str, Any]] = None
     while now() < deadline:
-        hosts = connected_hosts(session.midi())
+        remaining = max(0.3, min(1.2, deadline - now()))
+        code, midi = http_json(f"{session.base}/api/v1/midi", timeout=remaining)
+        if code != 200:
+            leftover = deadline - now()
+            if leftover <= 0:
+                break
+            time.sleep(min(0.4, leftover))
+            continue
+        hosts = connected_hosts(midi)
         if hosts:
             last = hosts[0]
             if host_stored_name(last):
                 return last
-        time.sleep(0.5)
+        leftover = deadline - now()
+        if leftover <= 0:
+            break
+        time.sleep(min(0.25, leftover))
     return last if host_stored_name(last) else None
 
 
@@ -3250,7 +3286,31 @@ def main() -> int:
     parser.add_argument("--ethernet", action="store_true", help="require a live W5500 Ethernet MIDI link")
     parser.add_argument("--usb", action="store_true", help="reserved USB MIDI cable tests")
     parser.add_argument("--no-color", action="store_true")
-    return run(parser.parse_args())
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="run the kitchen-sink checker instead of scripts/run.py",
+    )
+    args = parser.parse_args()
+    opt_in = args.pair or args.din or args.ethernet or args.usb or args.legacy
+    if opt_in:
+        return run(args)
+    print("check_features default path is scripts/run.py (pass --legacy for the kitchen-sink).")
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    from run import main as run_main
+
+    argv = ["--level", "1", "--host", args.host]
+    if args.ip:
+        argv.extend(["--ip", args.ip])
+    if args.https:
+        argv.append("--https")
+    if args.keep_host:
+        argv.append("--keep-host")
+    return run_main(argv)
 
 
 if __name__ == "__main__":

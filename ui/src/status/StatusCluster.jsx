@@ -231,7 +231,7 @@ export function StatusCluster() {
         title="Wi-Fi"
         onClick={() => toggle("wifi")}
       >
-        <IconWifi level={1} />
+        <IconWifi />
       </button>
       {link.bleOn ? (
         <button

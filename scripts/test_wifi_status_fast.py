@@ -38,4 +38,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from pathlib import Path
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from run import main_cases
+
+    raise SystemExit(main_cases("wifi-sta", "hotspot"))

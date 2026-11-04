@@ -335,6 +335,8 @@ void loop() {
     if (lanTakeHttpRestart()) {
         // JTAG: after AIRSTEP, ICMP and :80 SYN-ACK stay up, AsyncTCP
         // slots are free, but GET bodies never start. Rebind listen.
+        // Drop WS first: webServer.end() while a client is live leaks it.
+        liveSocket.dropClients();
         webServer.end();
         webServer.begin();
         debugLog("http listen restart");
@@ -351,6 +353,7 @@ void loop() {
     connections.setDebugStatus(ubfw.wifiLogConnected(), ubfw.wifiLogBytes());
     lanKeepWifi(frontPanel);
     lanTickUnicastHealth();
+    lanTickHeapGuard();
     captivePortal.tick();
     liveSocket.tick();
     restApiRouter.tick();

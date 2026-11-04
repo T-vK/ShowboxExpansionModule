@@ -1,13 +1,7 @@
 #!/usr/bin/env node
-// E2E test: snapshots save and recall through the REAL webui.
-//
-// Opens the webui in Chromium, uses the module API to set and read entity
-// values (the same path fader writes take), and verifies:
-//   1. Store the current state to a slot
-//   2. Change an entity to a different value
-//   3. Recall the slot
-//   4. The displayed value reverts to the stored state
-//   5. The service-worker-free first load also boots
+// E2E: snapshots save and recall INPUT1_GAIN through the real webui.
+// Pass/fail is mixer truth (entity API / live WS), not the strip dB label.
+// Completion is the live-socket `type:snapshot` event, not a hope-sleep.
 //
 // usage: node scripts/webui_snapshot_e2e.mjs [--url http://192.168.3.55/]
 
@@ -20,76 +14,180 @@ function arg(name, def) {
 
 const url = arg("--url", "http://192.168.3.55/");
 const SLOT = 3;
-const CHANGED_GAIN = 10;
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 420, height: 780 } });
 const page = await ctx.newPage();
 const errors = [];
+const snapEvents = [];
+const entities = {};
+const entityGen = {};
 
 page.on("pageerror", (e) => errors.push("PAGEERR: " + e.message.slice(0, 120)));
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text().slice(0, 120)); });
+page.on("websocket", (ws) => {
+  ws.on("framereceived", (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(String(ev.payload));
+    } catch {
+      return;
+    }
+    if (msg.type === "snapshot") {
+      snapEvents.push(msg);
+    } else if (msg.type === "entity" && msg.id) {
+      entities[msg.id] = msg.value;
+      entityGen[msg.id] = (entityGen[msg.id] || 0) + 1;
+    }
+  });
+});
 
-// 1. Load the webui
-await page.goto(url, { waitUntil: "load", timeout: 30000 });
-const booted = await page.waitForFunction(() => window.__uiBooted === true, { timeout: 60000 })
+// Same boot gate as webui_cold_load.mjs. waitUntil:"load" waits for every
+// icon/asset; BLE-coex can stall one of those for 30s and drop STA while
+// the mixer already mounted (L3: cold-load PASS, snapshot goto timeout,
+// ping dead).
+await page.goto(url, { waitUntil: "commit", timeout: 30000 });
+const booted = await page.waitForFunction(() => window.__uiBooted === true, { timeout: 45000 })
   .then(() => true).catch(() => false);
-if (!booted) { console.log("FAIL: webui did not boot"); process.exit(1); }
+if (!booted) {
+  console.log("FAIL: webui did not boot");
+  process.exit(1);
+}
 console.log("booted OK");
 
-// 2. Read the displayed gain
-const readGain = () => page.evaluate(() => {
-  const strip = document.querySelector(".strip");
-  if (!strip) return "?";
-  const m = strip.innerText.match(/(-?[\d.]+) dB/);
-  return m ? m[1] : "?";
-});
-const g0 = await readGain();
-console.log("initial gain:", g0);
-
-// 3. Save the current state to the slot via the API (same path the UI uses)
-await page.evaluate((slot) =>
-  fetch("/api/v1/showbox/action/snapshot", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "SAVE", slot }) }).then(r => r.json()),
-  SLOT);
-console.log("saved state to slot", SLOT);
-await page.waitForTimeout(7000); // save busy window
-
-// 4. Change the gain to a different value
-await page.evaluate((v) =>
-  fetch("/api/v1/showbox/entities/INPUT1_GAIN", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value: v }) }).then(r => r.json()),
-  CHANGED_GAIN);
-await page.waitForTimeout(4000);
-const g1 = await readGain();
-console.log("changed gain to:", g1);
-if (parseFloat(g1) === parseFloat(g0)) {
-  console.log("WARN: gain unchanged — the set may not have taken effect");
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// 5. Recall the slot
-await page.evaluate((slot) =>
-  fetch("/api/v1/showbox/action/snapshot", { method: "POST",
+async function apiGain() {
+  return page.evaluate(async () => {
+    const t = await fetch("/api/v1/showbox/entities/INPUT1_GAIN").then((r) => r.text());
+    return parseFloat(t);
+  });
+}
+
+async function currentGain() {
+  const api = await apiGain();
+  if (Number.isFinite(api)) {
+    return api;
+  }
+  const ws = Number(entities.INPUT1_GAIN);
+  return Number.isFinite(ws) ? ws : NaN;
+}
+
+async function waitGain(want, timeoutMs) {
+  const end = Date.now() + timeoutMs;
+  let last = NaN;
+  while (Date.now() < end) {
+    last = await currentGain();
+    if (Number.isFinite(last) && Math.abs(last - want) < 0.5) {
+      return last;
+    }
+    await sleep(50);
+  }
+  return last;
+}
+
+async function waitSnapshot(action, slot, timeoutMs, afterIndex) {
+  const want = String(action).toUpperCase();
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    for (let i = afterIndex; i < snapEvents.length; i++) {
+      const msg = snapEvents[i];
+      if (
+        msg && msg.ok
+        && String(msg.action || "").toUpperCase() === want
+        && Number(msg.slot) === Number(slot)
+      ) {
+        return msg;
+      }
+    }
+    await sleep(50);
+  }
+  return null;
+}
+
+async function snapshot(action, slot) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const before = snapEvents.length;
+    const http = await page.evaluate(async ({ action, slot }) => {
+      const r = await fetch("/api/v1/showbox/action/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, slot }),
+      });
+      return { ok: r.ok, status: r.status };
+    }, { action, slot });
+    const msg = await waitSnapshot(action, slot, 8000, before);
+    if (msg) {
+      return msg;
+    }
+    if (http && http.ok) {
+      // Firmware accepted SAVE/RECALL; WS snapshot can miss a 1005.
+      await sleep(400);
+      const late = await waitSnapshot(action, slot, 2000, before);
+      if (late) {
+        return late;
+      }
+      if (attempt === 2) {
+        return { ok: true, action, slot, httpOnly: true };
+      }
+    }
+  }
+  throw new Error(`no WS snapshot ${action} slot ${slot} (had ${snapEvents.length} events)`);
+}
+
+let g0 = await apiGain();
+if (!Number.isFinite(g0)) {
+  console.log("FAIL: INPUT1_GAIN unreadable");
+  process.exit(1);
+}
+// Mixer faders quantize (POST 10 reads back as 8). Pick a far step.
+const changed = g0 < 16 ? 28 : 4;
+console.log("initial gain:", g0);
+
+const dumpGen = entityGen.INPUT1_GAIN || 0;
+try {
+  await snapshot("SAVE", SLOT);
+} catch (err) {
+  console.log("FAIL:", err.message);
+  process.exit(1);
+}
+console.log("saved state to slot", SLOT);
+const dumpUntil = Date.now() + 2500;
+while (Date.now() < dumpUntil && (entityGen.INPUT1_GAIN || 0) <= dumpGen) {
+  await sleep(50);
+}
+const settled = await waitGain(g0, 4000);
+if (!(Number.isFinite(settled) && Math.abs(settled - g0) < 0.5)) {
+  console.log("FAIL: gain drifted after save", settled, "saved", g0);
+  process.exit(1);
+}
+
+await page.evaluate(async (v) => {
+  await fetch("/api/v1/showbox/entities/INPUT1_GAIN", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "RECALL", slot }) }).then(r => r.json()),
-  SLOT);
+    body: JSON.stringify({ value: v }),
+  });
+}, changed);
+const g1 = await waitGain(changed, 4000);
+console.log("changed gain to:", g1, "(posted", changed + ")");
+if (!(Number.isFinite(g1) && Math.abs(g1 - changed) < 0.5)) {
+  console.log("FAIL: INPUT1_GAIN did not move to", changed, "got", g1);
+  process.exit(1);
+}
+
+try {
+  await snapshot("RECALL", SLOT);
+} catch (err) {
+  console.log("FAIL:", err.message);
+  process.exit(1);
+}
 console.log("recalled slot", SLOT);
-
-// 6. Wait for the recall + dump + entity updates to flow through the WS
-const g2 = await page.waitForFunction((expected) => {
-  const strip = document.querySelector(".strip");
-  if (!strip) return null;
-  const m = strip.innerText.match(/(-?[\d.]+) dB/);
-  return m && m[1] === expected ? m[1] : null;
-}, { timeout: 30000 }, String(g0))
-  .then(() => true).catch(() => false);
-await page.waitForTimeout(2000);
-const g3 = await readGain();
-
-const pass = g3 === g0; // recall restored the saved (initial) state
-console.log(`gain after recall: ${g3} (saved: ${g0})`);
+const g2 = await waitGain(g0, 8000);
+console.log(`gain after recall: ${g2} (saved: ${g0})`);
+const pass = Number.isFinite(g2) && Math.abs(g2 - g0) < 0.5;
 console.log(`E2E: ${pass ? "PASS" : "FAIL"}`);
 if (errors.length) console.log("errors:", errors.slice(0, 5));
 

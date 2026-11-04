@@ -11,6 +11,7 @@ public:
     void begin(AsyncWebServer* server, MackieShowbox* showbox);
     void setConnections(Connections* conn) { connections = conn; }
     void tick();
+    void dropClients();
     void noteEntity(const char* id, const char* value);
     void pushEntity(const char* id, uint8_t value);
     void pushEntityJson(const char* id, const char* jsonValue);

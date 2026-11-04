@@ -1,7 +1,6 @@
-"""E2E (slower, reboot test): the booster must undo its boost after a reboot.
+"""Standalone inject-based reboot e2e. Prefer the leveled runner:
 
-Run after flashing or whenever the reboot path needs re-verification.
-Takes ~60 s (module reboot + mixer link re-establish).
+  python3 scripts/run.py --case boost-reboot
 """
 import json
 import sys

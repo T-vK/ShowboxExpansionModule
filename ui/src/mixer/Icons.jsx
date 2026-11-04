@@ -185,10 +185,13 @@ export function IconBattery({ pct }) {
 export function IconSignalStream({ live, on }) {
   return (
     <svg class={"signal-icon" + (live ? " live" : "") + (on && !live ? " wait" : "")} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <circle cx="5" cy="12" r="2.35" />
-      <path class="stream-arc a1" d="M8.86 7.4A6 6 0 0 1 8.86 16.6" />
-      <path class="stream-arc a2" d="M11.69 4.03A10.4 10.4 0 0 1 11.69 19.97" />
-      <path class="stream-arc a3" d="M14.39.82A14.6 14.6 0 0 1 14.39 23.18" />
+      <path class="stream-arc a2" d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9" />
+      <path class="stream-arc a1" d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5" />
+      <path class="stream-arc a1" d="M16.2 4.8c2 2 2.26 5.11.8 7.47" />
+      <path class="stream-arc a2" d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1" />
+      <circle cx="12" cy="9" r="2" />
+      <path class="tower" d="M9.5 18h5" />
+      <path class="tower" d="m8 22 4-11 4 11" />
     </svg>
   );
 }
@@ -295,13 +298,13 @@ export function IconInstall() {
 }
 
 export function IconWifi({ level }) {
-  const bars = level == null ? 0 : level;
+  const bars = level == null ? 3 : level;
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-      <path d="M3.4 9.2a13 13 0 0 1 17.2 0" />
-      <path d="M6.6 12.6a8.6 8.6 0 0 1 10.8 0" />
-      <path d="M9.8 16a4.4 4.4 0 0 1 4.4 0" class={bars >= 1 ? "" : "dim"} />
-      <circle cx="12" cy="19.2" r="1.15" fill="currentColor" stroke="none" class={bars >= 1 ? "" : "dim"} />
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M2 8.82a15 15 0 0 1 20 0" class={bars >= 3 ? "" : "dim"} />
+      <path d="M5 12.859a10 10 0 0 1 14 0" class={bars >= 2 ? "" : "dim"} />
+      <path d="M8.5 16.429a5 5 0 0 1 7 0" class={bars >= 1 ? "" : "dim"} />
+      <circle cx="12" cy="20" r="1.45" fill="currentColor" stroke="none" />
     </svg>
   );
 }

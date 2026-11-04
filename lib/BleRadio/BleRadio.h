@@ -25,9 +25,11 @@ public:
         char name[32];
         bool namePending;
         uint8_t nameTries;
+        uint32_t nameLastMs;
         uint32_t sinceMs;
         bool intervalPending;
         bool bonded;
+        bool bondedAtConnect;
     };
 
     void setName(const char* name);

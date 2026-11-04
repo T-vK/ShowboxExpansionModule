@@ -619,8 +619,32 @@ void UARTInterceptor::stampAgesFromTask() {
 }
 
 void UARTInterceptor::updateResyncPause(uint32_t now) {
-    (void)now;
-    pauseTx1 = false;
+    if (unplugActive) {
+        pauseTx1 = true;
+        return;
+    }
+    const bool neverHeard = rxCount1 == 0 && lastRx1Ms == 0;
+    const bool silent = neverHeard || (lastRx1Ms != 0 && (int32_t)(now - lastRx1Ms) > 3000);
+    if (!silent) {
+        pauseTx1 = false;
+        pauseUntilMs = 0;
+        return;
+    }
+    // Idle HIGH so a wedged base can re-lock, then a short mixer burst.
+    if (pauseUntilMs == 0) {
+        pauseTx1 = true;
+        pauseUntilMs = now + 1500;
+        return;
+    }
+    if ((int32_t)(now - pauseUntilMs) >= 0) {
+        if (pauseTx1) {
+            pauseTx1 = false;
+            pauseUntilMs = now + 200;
+        } else {
+            pauseTx1 = true;
+            pauseUntilMs = now + 1500;
+        }
+    }
 }
 
 void UARTInterceptor::flushToBase() {
@@ -637,16 +661,17 @@ void UARTInterceptor::wireUnplug(uint32_t ms) {
     if (pumpLock != nullptr && xSemaphoreTake(pumpLock, pdMS_TO_TICKS(20)) != pdTRUE) {
         return;
     }
-    // Detach both base-side pins: the base's RX floats, exactly like the
-    // physical unplug the user demonstrated clears a wedged base.
-    // NOTE: uart_set_pin with UART_PIN_NO_CHANGE keeps pins ATTACHED — it
-    // never floats the wire (the first implementation was a silent no-op,
-    // which is why three software unplug rounds achieved nothing while the
-    // user's physical unplug worked). gpio_reset_pin returns the pad to
-    // plain GPIO input — the UART peripheral keeps clocking into the void.
-    // unplugTick re-matrixes the UART signals back via uart_set_pin.
+    // Detach both base-side pins. gpio_reset_pin leaves the pad as GPIO
+    // input WITH pull-up, which still looks like UART idle-high to the
+    // base — not an unplug. Float RX, then drive TX low (line break) so
+    // a wedged base parser actually resets.
+    pauseTx1 = true;
     gpio_reset_pin(static_cast<gpio_num_t>(pinTx1));
     gpio_reset_pin(static_cast<gpio_num_t>(pinRx1));
+    gpio_set_pull_mode(static_cast<gpio_num_t>(pinTx1), GPIO_FLOATING);
+    gpio_set_pull_mode(static_cast<gpio_num_t>(pinRx1), GPIO_FLOATING);
+    gpio_set_direction(static_cast<gpio_num_t>(pinTx1), GPIO_MODE_OUTPUT);
+    gpio_set_level(static_cast<gpio_num_t>(pinTx1), 0);
     uart_ll_txfifo_rst(UART_LL_GET_HW(UART_NUM_1));
     uart_ll_rxfifo_rst(UART_LL_GET_HW(UART_NUM_1));
     pendTo1.head = 0;
@@ -655,6 +680,8 @@ void UARTInterceptor::wireUnplug(uint32_t ms) {
     framerState1 = FramerState();
     holdW1 = 0;
     holdR1 = 0;
+    holdW2 = 0;
+    holdR2 = 0;
     unplugUntilMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL) + ms;
     unplugActive = true;
     if (pumpLock != nullptr) {
@@ -670,6 +697,8 @@ void UARTInterceptor::unplugTick() {
     if ((int32_t)(now - unplugUntilMs) < 0) {
         return;
     }
+    gpio_reset_pin(static_cast<gpio_num_t>(pinTx1));
+    gpio_reset_pin(static_cast<gpio_num_t>(pinRx1));
     uart_set_pin(UART_NUM_1, pinTx1, pinRx1, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     uart_ll_txfifo_rst(UART_LL_GET_HW(UART_NUM_1));
     uart_ll_rxfifo_rst(UART_LL_GET_HW(UART_NUM_1));
@@ -679,8 +708,13 @@ void UARTInterceptor::unplugTick() {
     framerState1 = FramerState();
     holdW1 = 0;
     holdR1 = 0;
+    holdW2 = 0;
+    holdR2 = 0;
     unplugActive = false;
     unplugCount = unplugCount + 1;
+    pauseTx1 = true;
+    pauseUntilMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL) + 1500;
+    armRx();
 }
 
 void UARTInterceptor::tick() {

@@ -196,6 +196,7 @@ BleMidiPkt bleMidiQ[kBleMidiQ];
 volatile uint8_t bleMidiQHead = 0;
 volatile uint8_t bleMidiQTail = 0;
 volatile uint32_t bleMidiRx = 0;
+volatile uint32_t bleMidiHostWrites = 0;
 portMUX_TYPE bleMidiQMux = portMUX_INITIALIZER_UNLOCKED;
 
 void enqueueBleMidi(const uint8_t* data, size_t length) {
@@ -242,6 +243,22 @@ void drainBleMidi(BleMidiDecode& decoder) {
 }
 }
 
+void bleMidiEnqueueIncoming(const uint8_t* data, size_t length) {
+    enqueueBleMidi(data, length);
+}
+
+void bleMidiNoteHostWrite() {
+    bleMidiHostWrites++;
+}
+
+uint32_t bleMidiIncomingCount() {
+    return bleMidiRx;
+}
+
+uint32_t bleMidiHostWriteCount() {
+    return bleMidiHostWrites;
+}
+
 void BleMidi::tick() {
     drainBleMidi(decoder);
 }
@@ -282,8 +299,11 @@ void BleMidi::scanLoop() {
         int outCount = connectedCount();
         lanNoteBleLive(outCount > 0 || hostLive);
         bool recentFail = lastOutgoingFailMs != 0 && (int32_t)(millis() - lastOutgoingFailMs) < 8000;
-        bool bootQuiet = !outgoingAllowed || (int32_t)(millis() - outgoingReadyMs) < 15000;
-        if (bootQuiet) {
+        // Quiet only at boot. Re-arming outgoingReadyMs on every
+        // allowOutgoing(true) (PWA yield restore) used to lock out AIRSTEP
+        // and POST /connect for 15s, and this continue skipped directConnect.
+        bool bootQuiet = !outgoingAllowed || millis() < 12000;
+        if (bootQuiet && !directConnect) {
             keepAdvertising();
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
@@ -340,8 +360,6 @@ void BleMidi::scanLoop() {
             }
             const uint32_t quiet = lanHttpQuietMs();
             const bool httpBusy = quiet != 0xFFFFFFFFu && quiet < 300;
-            // Wake often enough to drop MIDI CCC before a 64 KB SPA
-            // starts HOL-blocking. JTAG: midi=1 left :80 nrtx=7 unacked nil.
             vTaskDelay(pdMS_TO_TICKS(needGatt ? (httpBusy ? 400 : 250) : (lanHoldMidi() ? 200 : 60)));
             continue;
         }
@@ -1195,30 +1213,34 @@ void BleMidi::onDisconnect(BLEClient* client) {
         clearSlot(slot);
     }
     debugLog("ble gap down");
+    if (policy != nullptr) {
+        policy->outgoingChanged();
+    }
 }
 
 void BleMidi::syncNotifyHold() {
-    const bool hold = lanHoldMidi();
+    // Do not unsubscribe CCC during SPA. AIRSTEP treats CCC-off as the
+    // host leaving, drops the link, and then sleeps (no advertise), so
+    // the next suite pass cannot scan-wake it. Incoming notifies are
+    // already ignored in onNotify while lanHoldMidi() — that is enough
+    // to keep MIDI off the Wi-Fi HOL without a GATT write.
+    if (lanHoldMidi()) {
+        return;
+    }
     for (int i = 0; i < kMaxOutgoing; i++) {
-        if (!outgoing[i].connected || outgoing[i].characteristic == nullptr) {
+        if (!outgoing[i].connected || outgoing[i].characteristic == nullptr || !outgoing[i].midiHeld) {
             continue;
         }
-        if (hold && !outgoing[i].midiHeld) {
-            outgoing[i].characteristic->unsubscribe(false);
-            outgoing[i].midiHeld = true;
-            debugLog("ble midi hold");
-        } else if (!hold && outgoing[i].midiHeld) {
-            bool notifications = outgoing[i].characteristic->canNotify();
-            if (!notifications && !outgoing[i].characteristic->canIndicate()) {
-                outgoing[i].midiHeld = false;
-                continue;
-            }
-            if (outgoing[i].characteristic->subscribe(notifications, BleMidi::onNotify, false)) {
-                outgoing[i].midiHeld = false;
-                debugLog("ble midi resume");
-            } else {
-                outgoing[i].gattAt = millis() + 2000;
-            }
+        bool notifications = outgoing[i].characteristic->canNotify();
+        if (!notifications && !outgoing[i].characteristic->canIndicate()) {
+            outgoing[i].midiHeld = false;
+            continue;
+        }
+        if (outgoing[i].characteristic->subscribe(notifications, BleMidi::onNotify, false)) {
+            outgoing[i].midiHeld = false;
+            debugLog("ble midi resume");
+        } else {
+            outgoing[i].gattAt = millis() + 2000;
         }
     }
 }
@@ -1378,8 +1400,9 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
     uint16_t handle = client->getConnId();
     if (radio != nullptr) {
         radio->setPedalShare(true);
-        radio->setAdvertiseAllowed(false);
-        radio->stopNow();
+    }
+    if (policy != nullptr) {
+        policy->outgoingChanged();
     }
     uint16_t itvl = 0;
     ble_gap_conn_desc desc = {};

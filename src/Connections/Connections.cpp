@@ -284,7 +284,10 @@ void Connections::applyAdvertisingPolicy() {
     // Stop once a host is up and the window is closed — the extra GAP
     // duty cycle is what used to stall mixer↔base.
     bool want = pairingWindowOpen() || !radio->hasIncoming();
-    if (gIso == 10 || gIso == 12) {
+    // iso 10/12 used to force ads off even during an acceptNewHosts window.
+    // L2 fresh-pair then saw advertising=false with AIRSTEP up, and BlueZ
+    // reported AuthenticationCanceled / "ads never came up".
+    if ((gIso == 10 || gIso == 12) && !pairingWindowOpen()) {
         want = false;
     } else if (gIso == 11 || gIso == 13) {
         want = true;
@@ -504,15 +507,25 @@ void Connections::tick() {
             lastHostRememberMs = millis();
             for (int i = 0; i < incomingCount; i++) {
                 if (incomingIgnored(incoming[i])) {
-                    // Leftover tablet bonds reconnect when the pairing window
-                    // opens for the laptop. Skipping remember is not enough:
-                    // they still occupy the only host ACL slot.
-                    if (radio != nullptr) {
-                        radio->disconnectIncoming(incoming[i].address);
+                    // Forget ignores leftover bonds so they cannot steal the
+                    // host slot. Fresh-pair forgets then SMP-pairs unbonded:
+                    // kicking that link left BlueZ "Paired: yes" and JSON
+                    // host=None. Remember the unbonded link even if the 90s
+                    // window already closed (HTTP could not refresh ads).
+                    if (incoming[i].bondedAtConnect) {
+                        if (radio != nullptr) {
+                            radio->disconnectIncoming(incoming[i].address);
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 if (!pairingWindowOpen() && !incomingSaved(incoming[i]) && !incoming[i].bonded) {
+                    // Still waiting on GAP 2A00. Kicking here is L3 fresh-pair
+                    // host=None after the 90s window closes.
+                    if (incoming[i].name[0] == '\0') {
+                        rememberIncomingHost(incoming[i]);
+                        continue;
+                    }
                     bool ready = (int32_t)(millis() - incoming[i].sinceMs) >= 4000;
                     if (ready && radio != nullptr) {
                         radio->disconnectIncoming(incoming[i].address);
@@ -649,6 +662,10 @@ bool Connections::yieldOutgoing() {
 
 void Connections::note(const char* text) {
     noteLog(text);
+}
+
+void Connections::outgoingChanged() {
+    pendingRadioPolicy = true;
 }
 
 void Connections::incomingTrampoline(void* ctx, const char* address, uint16_t connId, bool connected) {
@@ -1014,6 +1031,9 @@ void Connections::rememberIncomingHost(const BleRadio::Incoming& incoming) {
     if (key == nullptr || key[0] == '\0') {
         return;
     }
+    clearIgnore(incoming.address);
+    clearIgnore(incoming.otaAddress);
+    clearIgnore(incoming.idAddress);
     BlePeers::Peer existing;
     bool known = peers.findMatch(key, ota, &existing);
     if (!known && id != nullptr) {
@@ -1349,7 +1369,7 @@ void Connections::writeStatusJson(char* buf, size_t cap, size_t* outLen) {
     json.add(",\"pairingMs\":");
     json.addU(pairingMsLeft());
     json.add(",\"advertising\":");
-    json.add(jsonBool(radio != nullptr && radio->advertiseAllowed()));
+    json.add(jsonBool(radio != nullptr && radio->advertising()));
     json.add(",\"usbJtag\":");
     json.add(jsonBool(!usbDeviceEnabled && !usbHostEnabled && !usbHidEnabled));
     json.add(",\"bluetoothRadio\":");
@@ -1371,6 +1391,10 @@ void Connections::writeStatusJson(char* buf, size_t cap, size_t* outLen) {
     json.add(jsonBool(lanWsLive()));
     json.add(",\"holdMidi\":");
     json.add(jsonBool(lanHoldMidi()));
+    json.add(",\"bleMidiRx\":");
+    json.addU(bleMidiIncomingCount());
+    json.add(",\"bleHostWrites\":");
+    json.addU(bleMidiHostWriteCount());
     json.add(",\"hidReady\":");
     json.add(jsonBool(hid != nullptr && hid->ready()));
     json.add(",\"ip\":\"");
@@ -1666,7 +1690,7 @@ void Connections::writeStatusJson(char* buf, size_t cap, size_t* outLen) {
             incomingMatch(saved[i].address), false, false, false, 0, -1, saved[i].pinned);
     }
     for (int i = 0; i < incomingCount; i++) {
-        if (incomingIgnored(incoming[i]) || !pairingWindowOpen() || knownAddress(incoming[i].address) || knownAddress(incoming[i].otaAddress)
+        if (incomingIgnored(incoming[i]) || knownAddress(incoming[i].address) || knownAddress(incoming[i].otaAddress)
             || (incoming[i].idAddress[0] != '\0' && knownAddress(incoming[i].idAddress))) {
             continue;
         }
@@ -2026,11 +2050,9 @@ void Connections::applyForget(const char* address) {
     if (peers.findMatch(address, nullptr, &peer)) {
         wasHost = wasHost || peer.host;
         peers.forget(peer.address);
-        unpairAddress(peer.address);
     } else {
         peers.forget(address);
     }
-    unpairAddress(address);
     if (radio != nullptr) {
         BleRadio::Incoming live[BleRadio::kMaxIncoming];
         int liveCount = radio->copyIncoming(live, BleRadio::kMaxIncoming);
@@ -2039,13 +2061,15 @@ void Connections::applyForget(const char* address) {
                 peers.forget(live[i].address);
                 peers.forget(live[i].otaAddress);
                 peers.forget(live[i].idAddress);
-                unpairAddress(live[i].address);
-                unpairAddress(live[i].otaAddress);
-                unpairAddress(live[i].idAddress);
             }
         }
     }
+    // Do not ble_gap_unpair() from this task. NimBLE's host task waits on
+    // the Arduino loop, so unpair here froze acceptNewHosts and console reboot.
     applyPairingMixIfIdle();
+    applyAdvertisingPolicy();
+    statusForce = true;
+    refreshStatusCache();
 }
 
 bool Connections::forget(const String& address, String& error) {

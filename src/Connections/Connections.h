@@ -29,6 +29,7 @@ public:
     bool nextAutoOutgoing(char* address, size_t addressSize, char* name, size_t nameSize) override;
     bool yieldOutgoing() override;
     void note(const char* text) override;
+    void outgoingChanged() override;
 
     String statusJson();
     void refreshStatusCache();

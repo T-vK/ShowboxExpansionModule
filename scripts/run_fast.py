@@ -1,67 +1,30 @@
 #!/usr/bin/env python3
-"""Run the fast regression suite. Stops on the first failure.
+"""Compatibility wrapper. The suite lives in run.py now.
 
-  python3 scripts/run_fast.py           # ~20s, the traps we kept hitting
-  python3 scripts/run_fast.py --e2e     # + looper/boost e2e (~2 min)
-  python3 scripts/run_fast.py --reboot  # + boost reboot undo (~1 min)
-
-Long soaks (check_live 30s, check_uart, check_features --pair) stay out
-of this runner on purpose.
+  python3 scripts/run.py            # level 1
+  python3 scripts/run.py --level 2
+  python3 scripts/run.py --level 3
 """
 
 from __future__ import annotations
 
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
-FAST = (
-    "test_link_fast.py",
-    "test_mdns_fast.py",
-    "test_wifi_status_fast.py",
-    "test_ble_status_fast.py",
-    "test_nvs_vars_fast.py",
-    "test_midi_inject_fast.py",
-    "test_gain_tracker_fast.py",
-    "test_boost_ratchet_fast.py",
-)
-
-E2E = ("test_looper_boost_e2e.py",)
-REBOOT = ("test_boost_reboot_e2e.py",)
-
-
-def run_one(name: str) -> int:
-    path = HERE / name
-    print()
-    print("=" * 60)
-    print(name)
-    print("=" * 60)
-    started = time.monotonic()
-    result = subprocess.run([sys.executable, str(path)], cwd=str(HERE))
-    elapsed = time.monotonic() - started
-    print(f"-- {name} exit {result.returncode} in {elapsed:.1f}s")
-    return result.returncode
+from run import main as run_main
 
 
 def main() -> int:
-    names = list(FAST)
-    if "--e2e" in sys.argv:
-        names.extend(E2E)
-    if "--reboot" in sys.argv:
-        names.extend(REBOOT)
-    started = time.monotonic()
-    for name in names:
-        code = run_one(name)
-        if code != 0:
-            print()
-            print(f"STOP: {name} failed after {time.monotonic() - started:.1f}s")
-            return code
-    print()
-    print(f"ALL FAST PASS in {time.monotonic() - started:.1f}s ({len(names)} scripts)")
-    return 0
+    extra = [a for a in sys.argv[1:] if a not in ("--e2e", "--reboot")]
+    level = 1
+    if "--reboot" in sys.argv or "--e2e" in sys.argv:
+        level = 2
+    print("run_fast.py is a wrapper; use python3 scripts/run.py [--level 1|2|3]")
+    return run_main(["--level", str(level), *extra])
 
 
 if __name__ == "__main__":

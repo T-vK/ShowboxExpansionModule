@@ -76,7 +76,21 @@ def main() -> int:
     parser.add_argument("--wait-live", type=float, default=45)
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument("--stale-ms", type=int, default=2000)
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="run this soak instead of scripts/run.py --case uart-soak",
+    )
     args = parser.parse_args()
+    if not args.legacy:
+        print("check_uart default path is scripts/run.py --case uart-soak (pass --legacy for this soak).")
+        from pathlib import Path
+        here = Path(__file__).resolve().parent
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
+        from run import main_cases
+
+        return main_cases("uart-soak", ip=args.ip)
 
     print_run_reminders()
     url = f"http://{args.ip}/api/v1/showbox/link"

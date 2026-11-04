@@ -14,27 +14,38 @@ IP = os.environ.get("SHOWBOX_IP", "192.168.3.55")
 HOST = os.environ.get("SHOWBOX_HOST", "showbox.local")
 
 
-def api(path: str, payload: Any = None, params: str = "", timeout: float = 8.0) -> Any:
+def api(path: str, payload: Any = None, params: str = "", timeout: float = 4.0) -> Any:
     url = f"http://{IP}{path}"
     if params:
         url += "?" + params
-    if payload is None:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return json.load(resp)
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-        if not raw:
-            return {}
+    attempts = 3 if payload is None else 1
+    last: Exception | None = None
+    for attempt in range(attempts):
         try:
-            return json.loads(raw.decode("utf-8", "replace"))
-        except json.JSONDecodeError:
-            return {"_raw": raw.decode("utf-8", "replace")}
+            if payload is None:
+                with urllib.request.urlopen(url, timeout=timeout) as resp:
+                    return json.load(resp)
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                if not raw:
+                    return {}
+                try:
+                    return json.loads(raw.decode("utf-8", "replace"))
+                except json.JSONDecodeError:
+                    return {"_raw": raw.decode("utf-8", "replace")}
+        except Exception as exc:
+            last = exc
+            if attempt + 1 < attempts:
+                continue
+    if last is not None:
+        raise last
+    return {}
 
 
 def http_status(path: str, payload: Any = None, timeout: float = 8.0) -> tuple[int, Any]:
@@ -67,7 +78,7 @@ def http_status(path: str, payload: Any = None, timeout: float = 8.0) -> tuple[i
 
 def entity(name: str) -> Optional[float]:
     try:
-        with urllib.request.urlopen(f"http://{IP}/api/v1/showbox/entities/{name}", timeout=8) as resp:
+        with urllib.request.urlopen(f"http://{IP}/api/v1/showbox/entities/{name}", timeout=2) as resp:
             return float(resp.read().decode("utf-8", "replace").strip())
     except Exception:
         return None
@@ -85,10 +96,27 @@ def var(name: str, fallback: Any = None) -> Any:
 
 
 def set_var(name: str, value: float) -> Any:
-    return api("/api/v1/actions/vars", {"name": name, "value": value})
+    last: Exception | None = None
+    for attempt in range(8):
+        try:
+            return api("/api/v1/actions/vars", {"name": name, "value": value})
+        except urllib.error.HTTPError as exc:
+            last = exc
+            if exc.code not in (400, 503) or attempt == 7:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+        except Exception as exc:
+            last = exc
+            if attempt == 7:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+    if last is not None:
+        raise last
+    return {}
 
 
 def cc(number: int, value: int = 127, channel: int = 1) -> Any:
+    """HTTP inject hook. Not a radio test — the live suite must not call this."""
     return api("/api/v1/midi/inject", {"status": 0xB0 | (channel - 1), "d1": number, "d2": value})
 
 
@@ -99,7 +127,10 @@ def wait_gain(want: float, timeout: float = 6.0) -> Optional[float]:
         last = entity("INPUT2_GAIN")
         if last is not None and abs(last - want) < 0.05:
             return last
-        time.sleep(0.4)
+        remaining = end - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
     return last
 
 
@@ -110,7 +141,10 @@ def wait_var(name: str, want: float, timeout: float = 6.0) -> Any:
         last = var(name)
         if last is not None and abs(float(last) - want) < 0.05:
             return last
-        time.sleep(0.3)
+        remaining = end - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
     return last
 
 

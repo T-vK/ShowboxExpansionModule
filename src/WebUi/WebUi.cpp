@@ -28,6 +28,12 @@ static const char HEALTH_HTML[] = R"HTML(<!DOCTYPE html>
 </body></html>
 )HTML";
 
+static size_t spaChunkCap() {
+    // 1460 B while BLE is live still wedges :80 (SYN-ACK, no body) and
+    // can drop STA. 256 B ACKs next to AIRSTEP; the shell Range-resumes.
+    return lanBleLive() ? 256 : 1460;
+}
+
 static size_t fillFlash(const uint8_t* data, size_t len, uint8_t* buffer, size_t maxLen, size_t index) {
     if (data == nullptr || buffer == nullptr || index >= len || maxLen == 0) {
         return 0;
@@ -36,12 +42,7 @@ static size_t fillFlash(const uint8_t* data, size_t len, uint8_t* buffer, size_t
     if (n > maxLen) {
         n = maxLen;
     }
-    // JTAG-era note said 256 B still ACKs while BLE is live; that was the
-    // broken-coex era (reboot storms, 200 ms AIRSTEP). The resumable webui
-    // shell now recovers stalled transfers, so a full TCP segment per push
-    // is strictly better: 1460 B needs ~6x fewer event-loop round trips for
-    // the SPA bundle than 256 B.
-    const size_t cap = 1460;
+    const size_t cap = spaChunkCap();
     if (n > cap) {
         n = cap;
     }
@@ -58,12 +59,6 @@ static size_t tcpBodyChunk(size_t remain, size_t maxLen, size_t cap) {
         n = cap;
     }
     return n;
-}
-
-static size_t spaChunkCap() {
-    // Full TCP segment; see fillFlash. The resumable shell makes stalls
-    // recoverable, so big pushes no longer risk permanent mid-body death.
-    return 1460;
 }
 
 void sendJsonChunked(AsyncWebServerRequest* request, const char* json, size_t len) {
@@ -143,29 +138,16 @@ const uint8_t* webUiGzData() {
     return webUiBytes();
 }
 
+static void sendFlashRange(
+    AsyncWebServerRequest* request,
+    const char* type,
+    const uint8_t* data,
+    size_t len,
+    const char* cache
+);
+
 void sendWebUi(AsyncWebServerRequest* request) {
-    lanNoteHttp();
-    lanNoteBigHttp(true);
-    const uint8_t* src = webUiBytes();
-    const size_t cap = spaChunkCap();
-    AsyncWebServerResponse* response = request->beginResponse(
-        "text/html", WEBUI_INDEX_GZ_LEN,
-        [src, cap](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
-            if (index >= WEBUI_INDEX_GZ_LEN) {
-                lanNoteBigHttp(false);
-                return 0;
-            }
-            lanTouchBigHttp();
-            size_t n = tcpBodyChunk(WEBUI_INDEX_GZ_LEN - index, maxLen, cap);
-            memcpy(buffer, src + index, n);
-            return n;
-        });
-    response->addHeader("Content-Encoding", "gzip");
-    // no-cache, never max-age: a cached shell can reference asset hashes
-    // that no longer exist after an update — that deadlock kept browsers on
-    // 'Loading mixer…' forever. The shell is ~2 KB; always revalidate it.
-    response->addHeader("Cache-Control", "no-cache");
-    request->send(response);
+    sendFlashRange(request, "text/html", webUiBytes(), WEBUI_INDEX_GZ_LEN, "no-cache");
 }
 
 static void sendFlashBytes(
@@ -246,6 +228,9 @@ static void sendFlashRange(
                     lanNoteHttpBody(false);
                 }
                 return 0;
+            }
+            if (remain >= 4096) {
+                lanTouchBigHttp();
             }
             return fillFlash(data, len, buffer, maxLen > cap ? cap : maxLen, start + index);
         });

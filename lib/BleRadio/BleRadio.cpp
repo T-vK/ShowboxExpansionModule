@@ -374,7 +374,12 @@ void BleRadio::apply() {
     portENTER_CRITICAL(&mux);
     hosts = incomingCount;
     portEXIT_CRITICAL(&mux);
-    if (hosts > 0 && lastIncomingMs != 0 && (int32_t)(now - lastIncomingMs) < 800) {
+    // A leftover incoming ACL (laptop just dropped) used to refresh
+    // lastIncomingMs forever and skip start while adsAllowed was already
+    // true. JSON then claimed advertising=true; BlueZ never saw a packet
+    // and fresh-pair died with AuthenticationCanceled.
+    if (active && hosts > 0 && lastIncomingMs != 0
+        && (int32_t)(now - lastIncomingMs) < 800) {
         return;
     }
     if (!restartAdvertising && active && lastAdvStartMs != 0 && (int32_t)(now - lastAdvStartMs) < 5000) {
@@ -546,18 +551,18 @@ void BleRadio::queryIncomingNames() {
         // still discovering — bidirectional ATT on a fresh dual-role link
         // is what produced bluetoothd "Unlikely Error" on HID reads.
         // HOGP input nodes usually appear by ~5s; start name reads after that.
-        // Retry a few times: the first 2A00 read often lands before encryption.
-        if (incoming[i].nameTries >= 3) {
+        // The first 2A00 read often lands before encryption. Cap-at-3 used
+        // to give up forever; L2 then stored host=None after hid-smoke.
+        uint32_t minAge = incoming[i].bonded ? 6000 : 10000;
+        if ((int32_t)(now - incoming[i].sinceMs) < (int32_t)minAge) {
             continue;
         }
-        if ((int32_t)(now - incoming[i].sinceMs) < 6000 + (int32_t)incoming[i].nameTries * 3000) {
-            continue;
-        }
-        if (!incoming[i].bonded && (int32_t)(now - incoming[i].sinceMs) < 10000) {
+        if (incoming[i].nameLastMs != 0 && (int32_t)(now - incoming[i].nameLastMs) < 4000) {
             continue;
         }
         incoming[i].namePending = true;
         incoming[i].nameTries = incoming[i].nameTries + 1;
+        incoming[i].nameLastMs = now;
         addSkipLocked(nameSkip, nameSkipCount, incoming[i].address);
         addSkipLocked(nameSkip, nameSkipCount, incoming[i].otaAddress);
         addSkipLocked(nameSkip, nameSkipCount, incoming[i].idAddress);
@@ -567,7 +572,6 @@ void BleRadio::queryIncomingNames() {
     }
     portEXIT_CRITICAL(&mux);
     if (!found) {
-        Serial.printf("[blename] nothing to query (incoming=%d)\r\n", incomingCount);
         return;
     }
     struct ble_gap_conn_desc desc = {};
@@ -745,6 +749,8 @@ void BleRadio::onConnect(BLEServer* /*server*/, ble_gap_conn_desc* desc) {
     fillIncoming(slot, desc);
     slot.sinceMs = millis();
     slot.intervalPending = true;
+    slot.bonded = desc->sec_state.bonded;
+    slot.bondedAtConnect = desc->sec_state.bonded;
     portENTER_CRITICAL(&mux);
     if (skipHas(nameSkip, nameSkipCount, slot)) {
         slot.nameTries = 1;
@@ -759,6 +765,7 @@ void BleRadio::onConnect(BLEServer* /*server*/, ble_gap_conn_desc* desc) {
                 incoming[i].sinceMs = keep.sinceMs;
                 incoming[i].intervalPending = keep.intervalPending;
                 incoming[i].bonded = keep.bonded;
+                incoming[i].bondedAtConnect = keep.bondedAtConnect;
                 if (keep.name[0] != '\0') {
                     strncpy(incoming[i].name, keep.name, sizeof(incoming[i].name) - 1);
                     incoming[i].namePending = keep.namePending;
@@ -815,6 +822,8 @@ void BleRadio::onBonded(ble_gap_conn_desc* desc) {
             incoming[i].sinceMs = keep.sinceMs != 0 ? keep.sinceMs : millis();
             incoming[i].intervalPending = keep.intervalPending;
             incoming[i].bonded = true;
+            incoming[i].bondedAtConnect = keep.bondedAtConnect;
+            incoming[i].nameLastMs = keep.nameLastMs;
             strncpy(incoming[i].name, keep.name, sizeof(incoming[i].name) - 1);
             incoming[i].name[sizeof(incoming[i].name) - 1] = '\0';
             incoming[i].namePending = keep.namePending;

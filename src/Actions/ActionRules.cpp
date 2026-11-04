@@ -452,7 +452,7 @@ const char* kBuiltinRules[] = {
     "{\"on\":true,\"name\":\"Stop\",\"group\":\"MIDI Looper\",\"builtin\":\"midiLooperStop\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"103\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"stop\"}]}",
     "{\"on\":true,\"name\":\"Clear\",\"group\":\"MIDI Looper\",\"builtin\":\"midiLooperDelete\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"104\"}],\"actions\":[{\"type\":\"looper\",\"button\":\"delete\"}]}",
     "{\"on\":true,\"name\":\"Booster Toggle\",\"group\":\"MIDI Booster\",\"builtin\":\"midiBoosterToggle\",\"triggers\":[{\"type\":\"midi\",\"message\":\"cc\",\"number\":\"105\"}],\"actions\":[{\"type\":\"gainBoost\",\"on\":\"toggle\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
-    "{\"on\":true,\"name\":\"Boost on play (auto)\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterAutoOn\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"type\":\"variable\",\"name\":\"AUTO_BOOST\",\"value\":\"1\"},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"on\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
+    "{\"on\":true,\"name\":\"Boost on play (auto)\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterAutoOn\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}],\"condition\":{\"op\":\"and\",\"items\":[{\"type\":\"variable\",\"name\":\"AUTO_BOOST\",\"value\":\"1\"},{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"value\":\"3\"}]},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"on\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Unboost on loop end (auto)\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterAutoOff\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\"}],\"condition\":{\"op\":\"and\",\"items\":[{\"type\":\"variable\",\"name\":\"AUTO_BOOST\",\"value\":\"1\"},{\"type\":\"showbox\",\"entity\":\"LOOPER_STATE\",\"op\":\"ne\",\"value\":\"3\"}]},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"off\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Track gain changes\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterGainTracker\",\"triggers\":[{\"type\":\"showbox\",\"entity\":\"INPUT2_GAIN\"}],\"actions\":[{\"type\":\"variable\",\"name\":\"REMEMBERED_GAIN\",\"op\":\"trackTrigger\",\"valueFromTrigger\":\"1\",\"clearVar\":\"BOOST_ENABLED\",\"persist\":true}]}",
     "{\"on\":true,\"name\":\"Undo boost on boot\",\"group\":\"MIDI Booster\",\"builtin\":\"boosterBootReset\",\"triggers\":[{\"type\":\"showboxReady\"}],\"condition\":{\"type\":\"variable\",\"name\":\"BOOST_ENABLED\",\"value\":\"1\"},\"actions\":[{\"type\":\"gainBoost\",\"on\":\"bootReset\",\"channelVar\":\"BOOST_CHANNEL\",\"stepsVar\":\"BOOST_AMOUNT\",\"var\":\"BOOST_ENABLED\",\"baseVar\":\"REMEMBERED_GAIN\",\"persist\":true}]}",
@@ -615,14 +615,19 @@ void ActionRules::tick() {
         if (dirty) {
             flush();
         }
-        if (varsDirty) {
-            saveVars();
-        }
+        // Persist on the gated path below. saveVars() here stalled waitAsk
+        // (NVS flash erase on the loop) and HTTP POST /vars returned 400.
         askDone = true;
     } else if (dirty) {
         flush();
     }
-    if (varsDirty) {
+    // NVS putBytes stalls the loop (flash erase). A save in the same window
+    // as a looper tap drops UART both ways, so the mixer never announces
+    // STOP→PLAY and the one firmware retry also misses.
+    if (varsDirty && (lastVarsSaveMs == 0 || (int32_t)(millis() - lastVarsSaveMs) >= 400)
+            && looperTapWatch == 0
+            && (looperChangedAtMs == 0 || (int32_t)(millis() - looperChangedAtMs) >= 400)
+            && !looperWireBusy()) {
         saveVars();
     }
     watchJacks();
@@ -680,41 +685,151 @@ void ActionRules::tick() {
     // recovery then drops every later looper announcement. The boost
     // rules follow that stale LOOPER_STATE and stay on.
     if (looperTapWatch != 0 && showbox != nullptr) {
+        if (looperTapPhase == 3) {
+            const bool gestureHold = (strcmp(looperTapOp, "delete") == 0
+                || strcmp(looperTapOp, "stop") == 0) && looperPressIgnore();
+            const bool busy = looperWireBusy() || gestureHold;
+            const int32_t held = (int32_t)(millis() - looperTapWatch);
+            if (!busy || held > 5000) {
+                looperTapPhase = 0;
+                dispatchLooper(String(looperTapOp), true);
+            }
+        } else {
         const uint8_t nowState = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
-        if (nowState != looperTapStateBefore) {
+        const bool wantStop = strcmp(looperTapOp, "stop") == 0;
+        const bool wantDelete = strcmp(looperTapOp, "delete") == 0;
+        const bool gesture = wantStop || wantDelete;
+        const bool landed = (wantStop && nowState == looper_state::STOP_PLAYING)
+            || (wantDelete && nowState == looper_state::DELETE);
+        const bool tapped = nowState == looper_state::PLAY
+            || nowState == looper_state::RECORD_OVERDUB;
+        const int32_t elapsed = (int32_t)(millis() - looperTapWatch);
+        auto clearWatch = [&]() {
             looperTapWatch = 0;
             looperTapPhase = 0;
-        } else if (looperTapPhase == 0 && (int32_t)(millis() - looperTapWatch) > 800) {
-            looperTapPhase = 1;
+            looperTapRetries = 0;
+        };
+        auto sendRetry = [&](bool bare) {
+            looperTapRetries++;
+            looperTapPhase = 0;
+            looperTapWatch = millis();
             if (debug != nullptr) {
-                debug->printf("[looper] no announcement, re-press %s (state %u)\n",
+                debug->printf("[looper] re-press %s (state %u retry %u%s)\n",
+                    looperTapOp, nowState, looperTapRetries, bare ? " bare" : "");
+            }
+            dispatchLooper(String(looperTapOp), true, bare);
+        };
+        if (gesture && landed) {
+            clearWatch();
+        } else if (wantDelete && nowState == looper_state::RECORD_INITIAL_LOOP
+                   && looperTapRetries > 0 && looperTapStateBefore == looper_state::DELETE) {
+            // A delete retry from empty starts recording. Stop.
+            clearWatch();
+        } else if (gesture && tapped && nowState != looperTapStateBefore && looperTapRetries < 5) {
+            // DOWN/UP toggling play↔overdub is not stop/clear. Wait out the
+            // mixer's press-ignore, then send DOUBLE/LONG without another tap.
+            looperTapPhase = 2;
+            looperTapWatch = millis();
+            looperTapStateBefore = nowState;
+            if (debug != nullptr) {
+                debug->printf("[looper] %s tapped to %u, retry after ignore\n",
                     looperTapOp, nowState);
             }
-            dispatchLooper(String(looperTapOp), true);
-        } else if (looperTapPhase != 0 && (int32_t)(millis() - looperTapWatch) > 2500) {
+        } else if (!gesture) {
+            const bool expected =
+                (looperTapStateBefore == looper_state::DELETE
+                    && nowState == looper_state::RECORD_INITIAL_LOOP)
+                || (looperTapStateBefore == looper_state::RECORD_INITIAL_LOOP
+                    && nowState == looper_state::PLAY)
+                || (looperTapStateBefore == looper_state::STOP_PLAYING
+                    && nowState == looper_state::PLAY)
+                || (looperTapStateBefore == looper_state::PLAY
+                    && nowState == looper_state::RECORD_OVERDUB)
+                || (looperTapStateBefore == looper_state::RECORD_OVERDUB
+                    && nowState == looper_state::PLAY);
+            if (expected) {
+                // A brief PLAY/OVERDUB announcement that bounces back used
+                // to clear the watch (any change = success). Boost-on-play
+                // then fired while the mixer was still in rec.
+                if (looperTapPhase != 4) {
+                    looperTapPhase = 4;
+                    looperTapWatch = millis();
+                } else if (elapsed > 400) {
+                    clearWatch();
+                }
+            } else if (looperTapPhase == 4) {
+                if (debug != nullptr) {
+                    debug->printf("[looper] cycle bounce %u -> %u\n",
+                        looperTapStateBefore, nowState);
+                }
+                looperTapPhase = 0;
+                looperTapWatch = millis();
+            } else if (elapsed > 20000
+                       || (looperTapRetries >= 5 && elapsed > 2500)) {
+                if (debug != nullptr) {
+                    debug->printf("[looper] re-press missed (state %u)\n", nowState);
+                }
+                clearWatch();
+            } else if (nowState == looperTapStateBefore
+                       && (nowState == looper_state::PLAY
+                           || nowState == looper_state::RECORD_OVERDUB)) {
+                // State unchanged: the tap was ignored. Retry after
+                // press-ignore. Do not retry sooner — a late OVERDUB
+                // announcement plus a second tap toggles back to PLAY.
+                if (looperTapRetries < 5 && elapsed > 2500) {
+                    sendRetry(false);
+                }
+            } else if (nowState == looperTapStateBefore && looperWireBusy()) {
+                // Wait for the gain/stop UART to drain.
+            } else if (nowState == looperTapStateBefore
+                       && looperTapRetries < 5 && elapsed > 800) {
+                sendRetry(false);
+            } else if (nowState != looperTapStateBefore
+                       && looperTapRetries < 5 && elapsed > 2500) {
+                sendRetry(false);
+            }
+        } else if (wantDelete && nowState == looper_state::STOP_PLAYING && !landed
+                   && looperTapRetries < 5 && elapsed > 4000) {
+            // Give the first wrap time to land. A second wrap at 1300 ms
+            // while the mixer is still ignoring re-arms ignore forever.
+            sendRetry(false);
+        } else if (looperTapPhase == 2 && elapsed > (wantDelete ? 2000 : 400)) {
+            sendRetry(wantStop);
+        } else if (looperTapPhase != 2 && gesture && !landed && looperTapRetries < 5
+                   && elapsed > (wantDelete ? 2000 : 400)
+                   && !(wantDelete && nowState == looper_state::STOP_PLAYING)) {
+            // Wrap from STOP is handled above at 4000 ms.
+            sendRetry(wantStop);
+        } else if (elapsed > 25000) {
             if (debug != nullptr) {
                 debug->printf("[looper] re-press missed (state %u)\n", nowState);
             }
-            looperTapWatch = 0;
-            looperTapPhase = 0;
+            clearWatch();
+        }
         }
     }
     pump();
 }
 
 bool ActionRules::waitAsk(Ask kind, String& error) {
-    portENTER_CRITICAL(&lock);
-    if (askBusy) {
-        portEXIT_CRITICAL(&lock);
-        error = "The module is busy with another reaction.";
-        return false;
-    }
-    askBusy = true;
-    askDone = false;
-    askOk = false;
-    portEXIT_CRITICAL(&lock);
-    ask = kind;
     uint32_t start = millis();
+    for (;;) {
+        portENTER_CRITICAL(&lock);
+        if (!askBusy) {
+            askBusy = true;
+            askDone = false;
+            askOk = false;
+            portEXIT_CRITICAL(&lock);
+            break;
+        }
+        portEXIT_CRITICAL(&lock);
+        if ((int32_t)(millis() - start) >= 3000) {
+            error = "The module is busy with another reaction.";
+            return false;
+        }
+        delay(1);
+    }
+    ask = kind;
     while (!askDone && (int32_t)(millis() - start) < 3000) {
         delay(1);
     }
@@ -783,9 +898,6 @@ bool ActionRules::applySetVar(const String& body, String& error) {
     String name = doc["name"].as<String>();
     float value = doc["value"] | 0.0f;
     setVar(nullptr, name, value, false, true);
-    if (varsDirty) {
-        saveVars();
-    }
     error = buildVarsJson();
     return true;
 }
@@ -1379,6 +1491,17 @@ void ActionRules::fire(const char* event, const char* p1, const char* p2, const 
         if (!matched) {
             continue;
         }
+        // Wrap-from-STOP taps PLAY so LONG can clear. That PLAY is not a
+        // user play: auto-boost UART + NVS persist drops the wrap LONG
+        // (L3 att2 autoboost clear stayed at STOP, extra CC104 landed PLAY).
+        if (jsonText(doc["builtin"]) == "boosterAutoOn"
+                && looperTapWatch != 0
+                && strcmp(looperTapOp, "delete") == 0) {
+            if (debug != nullptr) {
+                debug->println("[looper] skip auto-boost during wrap");
+            }
+            continue;
+        }
         JsonVariantConst condition = doc["condition"];
         if (condition.isNull()) {
             condition = doc["conditions"];
@@ -1457,8 +1580,19 @@ void ActionRules::pump() {
             continue;
         }
         JsonArrayConst actions = doc["actions"].as<JsonArrayConst>();
+        JsonVariantConst condition = doc["condition"];
+        if (condition.isNull()) {
+            condition = doc["conditions"];
+        }
         for (int burst = 0; burst < 64 && job.active; burst++) {
             if ((int32_t)(millis() - job.waitUntil) < 0) {
+                break;
+            }
+            // Sleep (and UART-stall retries) run long after fire(). A
+            // boosterAutoOn job queued while AUTO_BOOST=1 must not still
+            // write gain after the var was turned off.
+            if (!conditionPass(condition)) {
+                job.active = false;
                 break;
             }
             if (job.looperKind != 0) {
@@ -1783,12 +1917,13 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
                 if (debug != nullptr) debug->printf("[trk %lu] same %.1f\n", (unsigned long)millis(), (double)next);
                 return true;
             }
-            if (next == lastOwnGainWrite) {
+            if (fabsf(next - lastOwnGainWrite) < 0.4f) {
                 // Echo of our own gain write. No time window: the base's
                 // announcement can lag the write by seconds, and adopting it
-                // would ratchet REMEMBERED_GAIN upward forever. The marker
-                // clears on the next engine write, so a later genuine user
-                // change to a different value still lands.
+                // would ratchet REMEMBERED_GAIN upward forever. Exact ==
+                // missed 36.0 vs 36 (L3 manual-boost: tracker ate the boost
+                // as a user move 2.7s later). The marker clears on the next
+                // engine write, so a later genuine user change still lands.
                 return true;
             }
             if (debug != nullptr) debug->printf("[trk %lu] user change %.1f -> %.1f, clear %s\n",
@@ -2150,29 +2285,24 @@ void ActionRules::patchBuiltinMeta() {
                 doc["group"] = group;
                 changed = true;
             }
-            // The auto-boost rules need the 1.5 s settle delay before the
-            // gain write (the base misses presses during entity updates).
+            // Older firmware padded auto-boost with a 1.5 s sleep. That
+            // evaluated AUTO_BOOST at enqueue and applied the gain later,
+            // so turning AUTO_BOOST off still boosted. Keep the stored
+            // rule in lockstep with the seed (no sleep; re-check play).
             if (key == "boosterAutoOn" || key == "boosterAutoOff") {
-                const bool hasSleep = [ &doc ]() {
-                    for (JsonObjectConst action : doc["actions"].as<JsonArrayConst>()) {
-                        if (jsonText(action["type"]) == "sleep") {
-                            return true;
-                        }
+                String haveC, wantC, haveA, wantA;
+                serializeJson(doc["condition"], haveC);
+                serializeJson(seed["condition"], wantC);
+                serializeJson(doc["actions"], haveA);
+                serializeJson(seed["actions"], wantA);
+                if (haveC != wantC || haveA != wantA) {
+                    const int id = jsonInt(doc["id"], rule.id);
+                    const bool on = doc["on"].isNull() ? rule.on : doc["on"].as<bool>();
+                    if (!deserializeJson(doc, raw)) {
+                        doc["id"] = id;
+                        doc["on"] = on;
+                        changed = true;
                     }
-                    return false;
-                }();
-                if (!hasSleep) {
-                    JsonArray actions = doc["actions"].to<JsonArray>();
-                    JsonObject sleep = actions.add<JsonObject>();
-                    sleep["type"] = "sleep";
-                    sleep["ms"] = 1500;
-                    for (JsonObjectConst action : seed["actions"].as<JsonArrayConst>()) {
-                        JsonObject a = actions.add<JsonObject>();
-                        for (JsonPairConst kv : action) {
-                            a[kv.key()] = kv.value();
-                        }
-                    }
-                    changed = true;
                 }
             }
             // MIDI 105/106 already arrived from a controller. Echoing them back
@@ -2276,10 +2406,15 @@ void ActionRules::saveVars() {
     if (blob.length() > kBlobSize) {
         blob.remove(kBlobSize);
     }
+    if (haveLastVarsBlob && memcmp(lastVarsBlob, blob.c_str(), kBlobSize) == 0) {
+        varsDirty = false;
+        return;
+    }
     Preferences prefs;
     bool ok = false;
     if (prefs.begin("actvar", false)) {
-        ok = prefs.putString("blob", blob) != 0;
+        prefs.remove("blob");
+        ok = prefs.putBytes("blob", blob.c_str(), kBlobSize) == kBlobSize;
         prefs.end();
         if (!ok) {
             // The partition ran out of usable entries; wipe this namespace
@@ -2288,13 +2423,21 @@ void ActionRules::saveVars() {
             if (wipe.begin("actvar", false)) {
                 wipe.clear();
                 wipe.end();
-                debug->println("[vars] nvs full, actvar wiped and rewritten");
+                if (debug != nullptr) {
+                    debug->println("[vars] nvs full, actvar wiped and rewritten");
+                }
             }
             if (prefs.begin("actvar", false)) {
-                ok = prefs.putString("blob", blob) != 0;
+                ok = prefs.putBytes("blob", blob.c_str(), kBlobSize) == kBlobSize;
                 prefs.end();
             }
         }
+    }
+    if (ok) {
+        memcpy(lastVarsBlob, blob.c_str(), kBlobSize);
+        lastVarsBlob[kBlobSize] = '\0';
+        haveLastVarsBlob = true;
+        lastVarsSaveMs = millis();
     }
     if (debug != nullptr) {
         debug->printf("[vars] saved %u bytes ok=%d\n", (unsigned)blob.length(), ok ? 1 : 0);
@@ -2362,14 +2505,18 @@ void ActionRules::setVar(Job* job, const String& name, float value, bool local, 
     }
     globals[slot].value = value;
     if (persist) {
+        const bool already = globals[slot].persist;
+        const bool same = already && fabsf(previous - value) < 0.0001f;
         globals[slot].persist = true;
-        // Persist immediately: a boost flag that only lives in RAM dies with
-        // the reboot, and then the boot undo cannot know it should run.
-        varsDirty = true;
-        if (debug != nullptr) {
-            debug->printf("[var %lu] %s = %.6g (persist, save)\n", (unsigned long)millis(), key, (double)value);
+        // Unboost/track-gain fire persist on every looper step even when the
+        // value did not change. That rewrite fills NVS, wipes actvar, and
+        // stalls the loop so BLE MIDI writes never drain (rx stays 0).
+        if (!same) {
+            varsDirty = true;
+            if (debug != nullptr) {
+                debug->printf("[var %lu] %s = %.6g (persist, save)\n", (unsigned long)millis(), key, (double)value);
+            }
         }
-        saveVars();
     }
     if (fabsf(previous - value) >= 0.0001f) {
         char text[24];
@@ -2382,6 +2529,20 @@ void ActionRules::noteOwnGainWrite(int id, float value) {
     lastOwnGainEntity = id;
     lastOwnGainWrite = value;
     lastOwnGainWriteMs = millis();
+}
+
+bool ActionRules::looperWireBusy() const {
+    if (showbox == nullptr) {
+        return false;
+    }
+    if (showbox->pendingToMixer() > 0 || showbox->pendingToBase() > 0) {
+        return true;
+    }
+    return lastOwnGainWriteMs != 0 && (int32_t)(millis() - lastOwnGainWriteMs) < 400;
+}
+
+bool ActionRules::looperPressIgnore() const {
+    return lastLooperButtonMs != 0 && (int32_t)(millis() - lastLooperButtonMs) < 2000;
 }
 
 void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
@@ -2403,6 +2564,17 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         return;
     }
     entity_id id = found->second;
+    if (showbox->pendingToMixer() > 0 || showbox->pendingToBase() > 0) {
+        if (job.stallTries < 25) {
+            job.stallTries++;
+            if (job.step > 0) {
+                job.step--;
+            }
+            job.waitUntil = millis() + 16;
+            return;
+        }
+    }
+    job.stallTries = 0;
     float current = showbox->getFloatEntityValue(id);
     String mode = jsonText(step["on"]);
     if (mode.length() == 0) {
@@ -2568,18 +2740,41 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
     }
 }
 
-void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
+void ActionRules::dispatchLooper(const String& op, bool fromRetry, bool bare) {
     if (showbox == nullptr) {
+        return;
+    }
+    if (!fromRetry && looperWireBusy()) {
+        const char* name = "cycle";
+        if (op == "stop") {
+            name = "stop";
+        } else if (op == "delete") {
+            name = "delete";
+        } else if (op == "up") {
+            name = "up";
+        } else if (op == "double") {
+            name = "double";
+        } else if (op == "long") {
+            name = "long";
+        }
+        strncpy(looperTapOp, name, sizeof(looperTapOp) - 1);
+        looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+        looperTapWatch = millis();
+        looperTapPhase = 3;
+        looperTapRetries = 0;
+        looperTapStateBefore = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
         return;
     }
     if (!fromRetry) {
         looperTapPhase = 0;
+        looperTapRetries = 0;
     }
     const uint8_t state = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
     const bool alreadySent = showbox->takeLooperOutgoing();
     auto sendTap = [&](uint8_t times) {
         if (!alreadySent) {
             showbox->tapLooper(times);
+            lastLooperButtonMs = millis();
             looperTapWatch = millis();
             looperTapStateBefore = state;
             strncpy(looperTapOp, "cycle", sizeof(looperTapOp) - 1);
@@ -2588,7 +2783,8 @@ void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
     };
     auto sendAction = [&](looper_button_action action) {
         if (!alreadySent) {
-            showbox->sendLooperButtonAction(action);
+            showbox->sendLooperButtonAction(action, !bare);
+            lastLooperButtonMs = millis();
             looperTapWatch = millis();
             looperTapStateBefore = state;
             const char* name = action == looper_button_action::DOUBLE_PRESS ? "stop"
@@ -2602,6 +2798,34 @@ void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
     // Record/play/overdub must never be delayed - the packets go out
     // immediately, exactly like the physical button.
     if (op == "stop") {
+        if (!fromRetry) {
+            looperTapRetries = 0;
+        }
+        if (!fromRetry && looperPressIgnore()) {
+            strncpy(looperTapOp, "stop", sizeof(looperTapOp) - 1);
+            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+            looperTapWatch = millis();
+            looperTapPhase = 3;
+            looperTapRetries = 0;
+            looperTapStateBefore = state;
+            return;
+        }
+        // DOUBLE from OVERDUB is ignored the same way wrap-from-STOP is:
+        // the mixer still has the last tap armed. Tap to PLAY first, then
+        // DOUBLE after press-ignore. no-autoboost stops from PLAY and
+        // lands; autoboost stops from OVERDUB and does not.
+        if (state == looper_state::RECORD_OVERDUB) {
+            if (fromRetry) {
+                looperTapRetries++;
+            }
+            if (looperTapRetries < 5) {
+                sendTap(1);
+                strncpy(looperTapOp, "stop", sizeof(looperTapOp) - 1);
+                looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+                looperTapPhase = 3;
+                return;
+            }
+        }
         sendAction(looper_button_action::DOUBLE_PRESS);
         return;
     }
@@ -2609,9 +2833,51 @@ void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
         // LONG_PRESS from the empty state would start a recording on the
         // base (the base treats any press from empty as "record"). Skip.
         if (state == looper_state::DELETE) {
+            looperTapWatch = 0;
+            looperTapPhase = 0;
+            looperTapRetries = 0;
             return;
         }
-        sendAction(looper_button_action::LONG_PRESS);
+        // Captured UART: CC104 wraps PLAY/OVERDUB straight to idle. LONG
+        // from STOP is ignored. Tap STOP/REC to PLAY first, then wrap.
+        // Fresh PLAY right after rec→play sometimes ignores LONG; tap to
+        // overdub and wrap from 4, which the captures also show as 4→0.
+        if (state == looper_state::STOP_PLAYING
+            || state == looper_state::RECORD_INITIAL_LOOP
+            || (state == looper_state::PLAY && fromRetry && looperTapRetries >= 2)) {
+            if (fromRetry) {
+                looperTapRetries++;
+            }
+            if (looperTapRetries < 5) {
+                sendTap(1);
+                strncpy(looperTapOp, "delete", sizeof(looperTapOp) - 1);
+                looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+                looperTapPhase = 3;
+                return;
+            }
+        }
+        if (looperPressIgnore()) {
+            strncpy(looperTapOp, "delete", sizeof(looperTapOp) - 1);
+            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+            looperTapWatch = millis();
+            looperTapPhase = 3;
+            if (!fromRetry) {
+                looperTapRetries = 0;
+            }
+            looperTapStateBefore = state;
+            return;
+        }
+        if (!alreadySent) {
+            if (debug != nullptr) {
+                debug->printf("[looper] wrap from %u retry=%u\n", state, looperTapRetries);
+            }
+            showbox->sendLooperButtonAction(looper_button_action::LONG_PRESS, true);
+            lastLooperButtonMs = millis();
+            looperTapWatch = millis();
+            looperTapStateBefore = state;
+            strncpy(looperTapOp, "delete", sizeof(looperTapOp) - 1);
+            looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+        }
         return;
     }
     if (op == "up") {
@@ -2623,6 +2889,12 @@ void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
         return;
     }
     if (op == "long") {
+        if (state == looper_state::DELETE) {
+            looperTapWatch = 0;
+            looperTapPhase = 0;
+            looperTapRetries = 0;
+            return;
+        }
         sendAction(looper_button_action::LONG_PRESS);
         return;
     }
@@ -2631,6 +2903,21 @@ void ActionRules::dispatchLooper(const String& op, bool fromRetry) {
     // on, a second CC102 (from play) takes play -> overdub — the same as
     // pressing the physical button twice. No sequenced follow-up: the
     // base's press-ignore rate made it unreliable.
+    if (fromRetry && state == looper_state::DELETE && (op == "delete" || op == "long")) {
+        return;
+    }
+    if ((state == looper_state::PLAY || state == looper_state::RECORD_OVERDUB)
+        && looperPressIgnore()) {
+        strncpy(looperTapOp, "cycle", sizeof(looperTapOp) - 1);
+        looperTapOp[sizeof(looperTapOp) - 1] = '\0';
+        looperTapWatch = millis();
+        looperTapPhase = 3;
+        if (!fromRetry) {
+            looperTapRetries = 0;
+        }
+        looperTapStateBefore = state;
+        return;
+    }
     if (state == looper_state::RECORD_INITIAL_LOOP) {
         sendTap(1);
         return;

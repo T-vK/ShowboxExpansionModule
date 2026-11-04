@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Showbox Expansion Module — T-vK</title>
+  <meta name="description" content="A reverse-engineered expansion module for the Mackie Showbox: UART protocol, ESP32-S3 firmware, MIDI and Bluetooth, a device-hosted mixer UI, and the 3D-printed case.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,520;0,9..144,640;1,9..144,520&family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@380;460;560&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0c0d10;
+      --bg-raise: #14161c;
+      --ink: #ebe6dc;
+      --muted: #9c968b;
+      --faint: #6e6a62;
+      --line: rgba(235, 230, 220, 0.14);
+      --cyan: #9ae7ea;
+      --amber: #ff9a3c;
+      --green: #3ee07a;
+      --blue: #4aa3ff;
+      --serif: "Fraunces", "Iowan Old Style", Palatino, serif;
+      --sans: "Outfit", "Avenir Next", "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --pad: clamp(1.25rem, 4vw, 4.5rem);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(1200px 700px at 80% -10%, rgba(154, 231, 234, 0.06), transparent 55%),
+        var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-weight: 380;
+      font-size: 1.05rem;
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+    }
+    a { color: inherit; }
+    img { max-width: 100%; display: block; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.9rem var(--pad);
+      background: rgba(12, 13, 16, 0.78);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid transparent;
+    }
+    .nav-mark {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+    .nav-mark span { color: var(--cyan); }
+    .nav-links {
+      display: flex;
+      gap: 1.25rem;
+      font-size: 0.92rem;
+    }
+    .nav-links a { color: var(--muted); text-decoration: none; }
+    .nav-links a:hover { color: var(--ink); }
+    .nav-source {
+      border: 1px solid var(--line);
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      text-decoration: none;
+      color: var(--ink) !important;
+      font-size: 0.82rem;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.86fr) 1.25fr;
+      gap: clamp(1rem, 3vw, 3rem);
+      align-items: end;
+      min-height: calc(100vh - 58px);
+      padding: 1.5rem var(--pad) 2.5rem;
+    }
+    .kicker {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin: 0 0 1.1rem;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 520;
+      font-size: clamp(2.7rem, 4.6vw, 4.7rem);
+      line-height: 0.96;
+      letter-spacing: -0.03em;
+      margin: 0;
+    }
+    h1 em {
+      font-style: italic;
+      font-weight: 520;
+      color: #f3efe4;
+    }
+    .deck {
+      margin: 1.4rem 0 0;
+      max-width: 38rem;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      margin-top: 1.6rem;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      text-decoration: none;
+      border-radius: 999px;
+      padding: 0.62rem 1rem;
+      font-size: 0.92rem;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      background: transparent;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn.solid { background: var(--ink); color: #16140f; border-color: var(--ink); }
+    .btn:hover { border-color: rgba(235, 230, 220, 0.4); }
+    .btn.solid:hover { background: #fff; }
+    .btn[aria-pressed="true"] {
+      background: rgba(154, 231, 234, 0.14);
+      border-color: rgba(154, 231, 234, 0.55);
+      color: var(--cyan);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1rem;
+      margin: 2.4rem 0 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--line);
+    }
+    .stats li { padding-top: 0.9rem; }
+    .stats strong {
+      display: block;
+      font-family: var(--serif);
+      font-size: 1.7rem;
+      font-weight: 520;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+    .stats span {
+      display: block;
+      margin-top: 0.35rem;
+      color: var(--faint);
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+
+    .stage {
+      position: relative;
+      height: min(78vh, 820px);
+      min-height: 460px;
+      border-radius: 18px;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 62%, rgba(255, 236, 206, 0.09), transparent 68%),
+        radial-gradient(ellipse 45% 40% at 70% 38%, rgba(154, 231, 234, 0.07), transparent 70%),
+        linear-gradient(180deg, #12141a 0%, #0e0f13 100%);
+      box-shadow: inset 0 0 0 1px rgba(235, 230, 220, 0.08);
+    }
+    #view { width: 100%; height: 100%; display: block; touch-action: none; }
+    .stage-status {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+    .stage-ui {
+      position: absolute;
+      left: 0.8rem;
+      right: 0.8rem;
+      bottom: 0.8rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 0.8rem;
+      pointer-events: none;
+    }
+    .stage-ui .dock { pointer-events: auto; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .dock .btn {
+      background: rgba(12, 13, 16, 0.72);
+      backdrop-filter: blur(10px);
+      padding: 0.45rem 0.75rem;
+      font-size: 0.8rem;
+    }
+    .stage-caption {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      color: var(--faint);
+      text-align: right;
+      line-height: 1.45;
+    }
+    .stage-caption b { color: var(--muted); font-weight: 500; }
+
+    section { padding: 5.5rem var(--pad); }
+    .section-kicker {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--faint);
+      margin: 0 0 0.8rem;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-weight: 520;
+      font-size: clamp(2.1rem, 4vw, 3.4rem);
+      letter-spacing: -0.03em;
+      line-height: 1.02;
+      margin: 0 0 1rem;
+      max-width: 16ch;
+    }
+    .lead { max-width: 40rem; color: var(--muted); margin: 0; }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(1.5rem, 4vw, 4rem);
+      align-items: start;
+    }
+
+    .terminal {
+      background: #101218;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 320px;
+    }
+    .terminal header {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.7rem 0.9rem;
+      border-bottom: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .dots { display: flex; gap: 0.35rem; }
+    .dots i { width: 0.55rem; height: 0.55rem; border-radius: 50%; display: block; }
+    .dots i:nth-child(1) { background: #c4453c; }
+    .dots i:nth-child(2) { background: var(--amber); }
+    .dots i:nth-child(3) { background: var(--green); }
+    .log {
+      margin: 0;
+      padding: 0.9rem 1rem 1.1rem;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      line-height: 1.65;
+      color: #c8c2b6;
+    }
+    .log .dir { color: var(--cyan); }
+    .log .ent { color: #f3efe4; }
+    .log .val { color: var(--amber); }
+
+    .frame {
+      margin-top: 1.6rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+    }
+    .frame span {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.28rem 0.45rem;
+      color: var(--muted);
+    }
+    .frame span.mark { color: var(--cyan); border-color: rgba(154, 231, 234, 0.4); }
+    .frame span.body { color: var(--ink); }
+
+    .system { background: linear-gradient(180deg, transparent, rgba(255,255,255,0.015)); }
+    .flow {
+      margin-top: 2.2rem;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 0.7rem;
+      align-items: stretch;
+    }
+    .node {
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem 1.05rem 1.1rem;
+    }
+    .node h3 {
+      margin: 0 0 0.35rem;
+      font-size: 1rem;
+      font-weight: 560;
+      letter-spacing: -0.01em;
+    }
+    .node p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+    .node.core {
+      border-color: rgba(154, 231, 234, 0.45);
+      box-shadow: 0 0 0 1px rgba(154, 231, 234, 0.08), 0 20px 50px rgba(0,0,0,0.25);
+    }
+    .arrow {
+      align-self: center;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+    }
+    .edges {
+      margin-top: 0.8rem;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.7rem;
+    }
+    .edge {
+      padding: 0.85rem 0.9rem;
+      border-top: 1px solid var(--line);
+    }
+    .edge b { display: block; font-weight: 560; font-size: 0.92rem; margin-bottom: 0.2rem; }
+    .edge span { color: var(--muted); font-size: 0.86rem; }
+
+    .cards {
+      margin-top: 2.4rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.8rem 2rem;
+    }
+    .card {
+      padding: 1.1rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .card h3 {
+      margin: 0 0 0.35rem;
+      font-size: 1.05rem;
+      font-weight: 560;
+    }
+    .card p { margin: 0; color: var(--muted); }
+
+    .shots {
+      margin-top: 2rem;
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      grid-template-rows: auto auto;
+      gap: 0.7rem;
+    }
+    .shot {
+      margin: 0;
+      position: relative;
+      overflow: hidden;
+      border-radius: 14px;
+      background: #18160f;
+    }
+    .shot img { width: 100%; height: 100%; object-fit: cover; }
+    .shot.hero-shot { grid-row: span 2; min-height: 420px; }
+    .shot figcaption {
+      position: absolute;
+      left: 0.7rem;
+      bottom: 0.65rem;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #f6f1e6;
+      text-shadow: 0 1px 8px rgba(0,0,0,0.7);
+    }
+    .hw-note { max-width: 40rem; color: var(--muted); }
+
+    .essay {
+      display: grid;
+      grid-template-columns: 8rem 1fr;
+      gap: 1rem;
+      padding: 1.3rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .essay .n {
+      font-family: var(--mono);
+      color: var(--faint);
+      letter-spacing: 0.12em;
+    }
+    .essay h3 { margin: 0 0 0.35rem; font-size: 1.25rem; font-weight: 560; letter-spacing: -0.02em; }
+    .essay p { margin: 0; color: var(--muted); max-width: 42rem; }
+
+    footer {
+      padding: 2rem var(--pad) 3rem;
+      border-top: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      color: var(--faint);
+      font-size: 0.92rem;
+    }
+    footer a { color: var(--muted); }
+    .foot-links { display: flex; flex-wrap: wrap; gap: 0.9rem 1.2rem; }
+
+    @media (max-width: 980px) {
+      .hero, .split, .flow, .cards, .shots, .edges { grid-template-columns: 1fr; }
+      .hero { min-height: 0; align-items: stretch; }
+      .stage { order: -1; height: 68vh; min-height: 380px; }
+      .flow .arrow { transform: rotate(90deg); justify-self: center; }
+      .shot.hero-shot { grid-row: auto; min-height: 240px; }
+      .stats { grid-template-columns: 1fr 1fr; }
+      .nav-links a:not(.nav-source) { display: none; }
+      .essay { grid-template-columns: 1fr; gap: 0.3rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <a class="nav-mark" href="#top">Showbox <span>Expansion</span></a>
+    <nav class="nav-links" aria-label="Page">
+      <a href="#protocol">Protocol</a>
+      <a href="#system">System</a>
+      <a href="#hardware">Hardware</a>
+      <a href="#work">The work</a>
+      <a class="nav-source" href="https://github.com/T-vK/ShowboxExpansionModule">Source</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div>
+        <p class="kicker">Mackie Showbox · reverse engineering</p>
+        <h1>I put a computer <em>between</em> a speaker and its mixer.</h1>
+        <p class="deck">The Showbox and its Breakaway Mixer already had a private language on a UART. I decoded it, then built the box that speaks it: footswitches, MIDI, Bluetooth, Ethernet, and a mixer UI that lives on the chip.</p>
+        <div class="hero-actions">
+          <a class="btn solid" href="https://github.com/T-vK/ShowboxExpansionModule">Read the firmware</a>
+          <a class="btn" href="https://t-vk.github.io/ShowboxExpansionModule/">Web installer</a>
+          <a class="btn" href="#hardware">See the build</a>
+        </div>
+        <ul class="stats">
+          <li><strong>94</strong><span>entities on the wire</span></li>
+          <li><strong>5</strong><span>MIDI paths</span></li>
+          <li><strong>S3</strong><span>ESP32-S3</span></li>
+          <li><strong>209</strong><span>mm across the case</span></li>
+        </ul>
+      </div>
+
+      <div class="stage" id="stage">
+        <canvas id="view" aria-label="Interactive model of the 3D-printed expansion module. Drag to orbit, scroll to zoom."></canvas>
+        <div class="stage-status" id="stage-status">Loading the printed case</div>
+        <div class="stage-ui">
+          <div class="dock" role="toolbar" aria-label="Model controls">
+            <button class="btn" type="button" id="lid-btn" aria-pressed="false">Open lid</button>
+            <button class="btn" type="button" id="elec-btn" aria-pressed="false">Electronics</button>
+            <button class="btn" type="button" id="cut-btn" aria-pressed="false">Section</button>
+            <button class="btn" type="button" id="wire-btn" aria-pressed="false">Wire</button>
+            <button class="btn" type="button" id="spin-btn" aria-pressed="true">Auto-rotate</button>
+          </div>
+          <div class="stage-caption">
+            <b>Drag to orbit</b><br>
+            Printed case · 209 × 112 × 70 mm
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="protocol">
+      <div class="split">
+        <div>
+          <p class="section-kicker">01 — The link</p>
+          <h2>There was no spec. There was a wire.</h2>
+          <p class="lead">Every message is framed <span style="color:var(--cyan);font-family:var(--mono)">BE EF … EF BE</span>. Inside it, an entity: a bool, a byte, or a float. Gain, EQ, compressor, looper state, snapshots, the tuner, the battery. The firmware sits in the middle of the conversation. It can answer from a cache of what it has already heard, or inject a packet the other side will accept as its own.</p>
+          <div class="frame" aria-hidden="true">
+            <span class="mark">BE</span><span class="mark">EF</span>
+            <span>08</span><span class="body">03</span><span class="body">58</span>
+            <span>00</span><span>00</span><span>00</span><span>42</span>
+            <span class="mark">EF</span><span class="mark">BE</span>
+          </div>
+          <p class="lead" style="margin-top:1rem">That frame is a real shape from the link: entity write, float payload. The class that understands it is the product. Footswitches and MIDI controllers never talk to the Showbox directly. They talk to this.</p>
+        </div>
+        <div class="terminal" aria-live="polite">
+          <header>
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>uart · decoded</span>
+          </header>
+          <pre class="log" id="log"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="system" id="system">
+      <p class="section-kicker">02 — The system</p>
+      <h2>One microcontroller, a lot of edges.</h2>
+          <p class="lead">The expansion module is a man-in-the-middle with a product wrapped around it. Audio stays on Mackie’s path. Control goes through the module.</p>
+      <div class="flow">
+        <article class="node">
+          <h3>Showbox base</h3>
+          <p>The powered speaker. It owns the amp, the looper engine, and half of the undocumented UART.</p>
+        </article>
+        <div class="arrow" aria-hidden="true">UART</div>
+        <article class="node core">
+          <h3>Expansion module</h3>
+          <p>ESP32-S3. Reads, caches, and writes entities. Serves the UI. Speaks MIDI and HID on whatever port you plugged in.</p>
+        </article>
+        <div class="arrow" aria-hidden="true">UART</div>
+        <article class="node">
+          <h3>Breakaway Mixer</h3>
+          <p>The surface musicians actually touch. The module can impersonate it, follow it, or both.</p>
+        </article>
+      </div>
+      <div class="edges">
+        <div class="edge"><b>Feet</b><span>Four TRS jacks. Dual footswitches and expression pedals for looper, mute, boost, snapshots.</span></div>
+        <div class="edge"><b>MIDI</b><span>DIN, USB device, USB host, AppleMIDI on the W5500, and BLE central plus peripheral.</span></div>
+        <div class="edge"><b>HID</b><span>Keyboard, mouse, and a pointer map chosen so Linux and phones both bind the device.</span></div>
+        <div class="edge"><b>The phone</b><span>A PWA served by the chip. Captive portal, OTA, and a browser flasher for the firmware itself.</span></div>
+      </div>
+
+      <div class="cards">
+        <article class="card">
+          <h3>Looper, matched to the mixer</h3>
+          <p>Record, overdub, play, and undo are not a generic state machine. Press timing follows the gestures the mixer already uses, including a second tap when the first one was missed.</p>
+        </article>
+        <article class="card">
+          <h3>X-Touch Compact</h3>
+          <p>A Behringer control surface maps onto channel gain, EQ, mute, and the master. The same entity cache feeds the rings and the faders.</p>
+        </article>
+        <article class="card">
+          <h3>Radios that have to share a chip</h3>
+          <p>Wi-Fi, BLE MIDI, and BLE HID come up together. Bonds, the hostname <span style="font-family:var(--mono);color:var(--ink)">showbox.local</span>, and the HID report map stay stable across reboots.</p>
+        </article>
+        <article class="card">
+          <h3>A mixer UI on the chip</h3>
+          <p>Channels, EQ, compressor, effects, the looper, snapshots. The interface is a single-file PWA the device hosts, with a live socket back to the entity cache.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="hardware">
+      <p class="section-kicker">03 — The object</p>
+      <h2>A reference design you can actually build.</h2>
+      <p class="hw-note">An ESP32-S3 dev board, a W5500, a MIDI shield, buck modules, relays, TRS jacks, and a printed shell that slides into the back of the Showbox. The model above is that build. Electronics opens the lid and puts the boards, jacks, and modules in the case. The full CAD is on GrabCAD.</p>
+      <div class="shots">
+        <figure class="shot hero-shot">
+          <img src="../docs/expansion-module-slid-in.jpeg" alt="The expansion module installed in the back of a Mackie Showbox, four illuminated buttons on the lid and an Ethernet cable plugged into the mixer below.">
+          <figcaption>Installed</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="../docs/expansion-module-top-open.jpeg" alt="Top view of the open printed case: ESP32-S3 on a screw terminal shield, relays, buck converters, and four TRS jacks.">
+          <figcaption>Open, from above</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="../docs/expansion-module-front-open.jpeg" alt="Front panel of connectors beside the lid: MIDI DIN, Ethernet, TRS, USB-C, and a short antenna.">
+          <figcaption>Panel and lid</figcaption>
+        </figure>
+      </div>
+      <p class="hw-note" style="margin-top:1.2rem">
+        <a href="https://grabcad.com/library/showboxexpansionmodule-v1-1">Full CAD on GrabCAD</a>
+        · <a href="../docs/schematics.svg">Schematic</a>
+        · <a href="https://github.com/T-vK/ShowboxExpansionModule/blob/main/PartsList.md">Parts list</a>
+      </p>
+    </section>
+
+    <section id="work">
+      <p class="section-kicker">04 — What the work is</p>
+      <h2>A product, built from an undocumented wire.</h2>
+      <div class="essay">
+        <div class="n">01</div>
+        <div>
+          <h3>Protocol, until it has types</h3>
+          <p>A C++ model of the link: packet kinds, 94 named entities, and getters that return the bool, byte, or float the hardware last committed to. New features are writes against that model.</p>
+        </div>
+      </div>
+      <div class="essay">
+        <div class="n">02</div>
+        <div>
+          <h3>Firmware that is the product</h3>
+          <p>PlatformIO on an ESP32-S3. The control loop, the web server, USB mode switching, Ethernet, and two radios share one chip. When they fight — a BLE disconnect stalling the stack, a bond that forgets the HID map — the fix is in the same tree as the feature.</p>
+        </div>
+      </div>
+      <div class="essay">
+        <div class="n">03</div>
+        <div>
+          <h3>Mechanical design that closes</h3>
+          <p>The enclosure is dimensioned around parts you can buy, printed, and photographed in the speaker it was made for. The viewer on this page loads that mesh. Orbit it, open the lid, show the electronics, or cut a section through the wall.</p>
+        </div>
+      </div>
+      <div class="essay">
+        <div class="n">04</div>
+        <div>
+          <h3>Still on the bench</h3>
+          <p>A few fields on the wire are still unnamed, and the looper is tuned against the real mixer rather than a document that does not exist. That is the job: make it behave, then make it legible.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div>T-vK · Showbox Expansion Module</div>
+    <div class="foot-links">
+      <a href="https://github.com/T-vK/ShowboxExpansionModule">GitHub</a>
+      <a href="https://grabcad.com/library/showboxexpansionmodule-v1-1">GrabCAD</a>
+      <a href="https://t-vk.github.io/ShowboxExpansionModule/">Web installer</a>
+      <a href="../docs/schematics.svg">Schematic</a>
+    </div>
+  </footer>
+
+  <script src="model.js?v=4"></script>
+  <script>
+    setTimeout(() => {
+      const s = document.getElementById("stage-status");
+      if (s && s.style.display !== "none" && location.protocol === "file:") {
+        s.textContent = "Open this page from a local server so the 3D module can load";
+      }
+    }, 2500);
+  </script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+    const statusEl = document.getElementById("stage-status");
+    const canvas = document.getElementById("view");
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const LINES = [
+      ['MIXER→BASE', 'LOOPER_LEVEL', '9.615'],
+      ['MIXER→BASE', 'MAIN_MUTE', 'false'],
+      ['MIXER→BASE', 'STEREO_INPUT1_EQ_HIGH_GAIN', '−12.86'],
+      ['MIXER→BASE', 'INPUT1_GAIN', '36.0'],
+      ['MIXER→BASE', 'INPUT1_EQ_ENABLE', 'false'],
+      ['BASE→MIXER', 'INPUT1_EQ_ENABLE', 'true'],
+      ['BASE→MIXER', 'LOOPER_STATE', 'RECORD'],
+      ['BASE→MIXER', 'LOOPER_STATE', 'PLAY'],
+      ['MIXER→BASE', 'INPUT1_COMPRESSOR_AMOUNT', '0.60'],
+      ['BASE→MIXER', 'MAIN_MUTE', 'true'],
+    ];
+    const logEl = document.getElementById("log");
+    let logi = 0;
+    function pushLog() {
+      const [dir, ent, val] = LINES[logi % LINES.length];
+      logi++;
+      const row = document.createElement("div");
+      row.innerHTML = `<span class="dir">${dir}</span>  <span class="ent">${ent}</span>  <span class="val">${val}</span>`;
+      logEl.appendChild(row);
+      while (logEl.childElementCount > 8) logEl.removeChild(logEl.firstChild);
+    }
+    for (let i = 0; i < 6; i++) pushLog();
+    if (!reduced) setInterval(pushLog, 1400);
+
+    function fail(msg) {
+      statusEl.style.display = "grid";
+      statusEl.textContent = msg;
+      statusEl.style.pointerEvents = "auto";
+    }
+
+    if (!window.SXM_MODEL) {
+      fail("Model failed to load");
+    } else {
+      boot();
+    }
+
+    function decodeParts(b64) {
+      const raw = atob(b64);
+      const buf = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+      const view = new DataView(buf.buffer);
+      let o = 4;
+      const nparts = view.getUint32(o, true); o += 4;
+      const parts = [];
+      const dec = new TextDecoder();
+      for (let p = 0; p < nparts; p++) {
+        const nlen = view.getUint8(o); o += 1;
+        const name = dec.decode(buf.subarray(o, o + nlen)); o += nlen;
+        o = (o + 3) & ~3;
+        const bmin = [0, 1, 2].map((i) => view.getFloat32(o + i * 4, true)); o += 12;
+        const span = [0, 1, 2].map((i) => view.getFloat32(o + i * 4, true)); o += 12;
+        const nv = view.getUint32(o, true); o += 4;
+        const ni = view.getUint32(o, true); o += 4;
+        const q = new Uint16Array(buf.buffer.slice(o, o + nv * 6)); o += nv * 6;
+        const nrm = new Float32Array(nv * 3);
+        for (let i = 0; i < nv * 3; i++) nrm[i] = buf[o + i] > 127 ? (buf[o + i] - 256) / 127 : buf[o + i] / 127;
+        o += nv * 3;
+        o = (o + 3) & ~3;
+        const idx = new Uint32Array(buf.buffer.slice(o, o + ni * 4)); o += ni * 4;
+        const pos = new Float32Array(nv * 3);
+        for (let i = 0; i < nv; i++) {
+          pos[i * 3] = bmin[0] + (q[i * 3] / 65535) * span[0];
+          pos[i * 3 + 1] = bmin[1] + (q[i * 3 + 1] / 65535) * span[1];
+          pos[i * 3 + 2] = bmin[2] + (q[i * 3 + 2] / 65535) * span[2];
+        }
+        parts.push({ name, pos, nrm, idx });
+      }
+      return parts;
+    }
+
+    function meshFrom(part, material) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(part.pos, 3));
+      geo.setAttribute("normal", new THREE.BufferAttribute(part.nrm, 3));
+      geo.setIndex(new THREE.BufferAttribute(part.idx, 1));
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    }
+
+    function boot() {
+      let parts;
+      try {
+        parts = decodeParts(window.SXM_MODEL.b64);
+      } catch (err) {
+        fail("Could not read the case mesh");
+        console.error(err);
+        return;
+      }
+      statusEl.style.display = "none";
+      try {
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setClearColor(0x000000, 0);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
+      renderer.localClippingEnabled = true;
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(28, 1, 1, 2500);
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+      const clip = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 400);
+      const plastic = new THREE.MeshPhysicalMaterial({
+        color: 0x14161a,
+        roughness: 0.68,
+        metalness: 0.03,
+        clearcoat: 0.12,
+        clearcoatRoughness: 0.62,
+        envMapIntensity: 0.9,
+        clippingPlanes: [clip],
+        clipShadows: true,
+      });
+      const lidMat = plastic.clone();
+
+      const base = meshFrom(parts.find((p) => p.name === "base"), plastic);
+      const lid = meshFrom(parts.find((p) => p.name === "lid"), lidMat);
+      scene.add(base);
+
+      const elecLook = {
+        board: { color: 0x1b6b42, roughness: 0.52, metalness: 0.08 },
+        esp: { color: 0x1f6a40, roughness: 0.48, metalness: 0.18 },
+        metal: { color: 0xc8c2b6, roughness: 0.28, metalness: 0.86 },
+        relay: { color: 0x2c64d6, roughness: 0.38, metalness: 0.18 },
+        cap: { color: 0x1a4e9c, roughness: 0.34, metalness: 0.22 },
+        plastic: { color: 0x2a2d33, roughness: 0.62, metalness: 0.06 },
+        button: { color: 0xd0cac0, roughness: 0.34, metalness: 0.7 },
+        other: { color: 0x3c4048, roughness: 0.48, metalness: 0.28 },
+      };
+      const elecMats = [];
+      const boards = new THREE.Group();
+      const lidHardware = new THREE.Group();
+      boards.visible = false;
+      lidHardware.visible = false;
+      parts.forEach((part) => {
+        const look = elecLook[part.name];
+        if (!look) return;
+        const mat = new THREE.MeshStandardMaterial({
+          ...look,
+          clippingPlanes: [clip],
+        });
+        elecMats.push(mat);
+        const mesh = meshFrom(part, mat);
+        mesh.name = part.name;
+        (part.name === "button" ? lidHardware : boards).add(mesh);
+      });
+      scene.add(boards);
+
+      const baseBox = new THREE.Box3().setFromBufferAttribute(base.geometry.getAttribute("position"));
+      const lidBox = new THREE.Box3().setFromBufferAttribute(lid.geometry.getAttribute("position"));
+      const hinge = new THREE.Vector3(0, baseBox.max.y - 0.4, lidBox.min.z + 3);
+      const lidPivot = new THREE.Group();
+      lidPivot.position.copy(hinge);
+      lid.position.sub(hinge);
+      lidPivot.add(lid);
+
+      const buttons = new THREE.Group();
+      const metal = new THREE.MeshStandardMaterial({
+        color: 0xc4beb2,
+        roughness: 0.32,
+        metalness: 0.82,
+        clippingPlanes: [clip],
+      });
+      const capGeo = new THREE.CylinderGeometry(5.15, 5.15, 2.2, 40);
+      const ringGeo = new THREE.TorusGeometry(6.55, 0.72, 10, 36);
+      (window.SXM_MODEL.meta.buttons || []).forEach((b, i) => {
+        const color = new THREE.Color(b.color);
+        const capMat = new THREE.MeshStandardMaterial({
+          color,
+          emissive: color,
+          emissiveIntensity: 0.55,
+          roughness: 0.38,
+          metalness: 0.08,
+          clippingPlanes: [clip],
+        });
+        const cap = new THREE.Mesh(capGeo, capMat);
+        cap.position.set(b.position[0], b.position[1], b.position[2]);
+        cap.castShadow = true;
+        const ring = new THREE.Mesh(ringGeo, metal);
+        ring.position.copy(cap.position);
+        ring.position.y -= 0.2;
+        ring.rotation.x = Math.PI / 2;
+        const glow = new THREE.PointLight(color, 0.55, 48, 2);
+        glow.position.copy(cap.position);
+        glow.position.y += 6;
+        buttons.add(cap, ring, glow);
+        cap.userData.phase = i * 0.8;
+        cap.userData.base = 0.45;
+      });
+      buttons.position.sub(hinge);
+      lidPivot.add(buttons);
+      lidHardware.position.sub(hinge);
+      lidPivot.add(lidHardware);
+      scene.add(lidPivot);
+
+      const cavity = new THREE.PointLight(0xfff1dd, 0, 180, 1.6);
+      cavity.position.set(0, baseBox.max.y - 18, 0);
+      scene.add(cavity);
+
+      const ground = new THREE.Mesh(
+        new THREE.CircleGeometry(170, 72),
+        new THREE.ShadowMaterial({ opacity: 0.38 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = 0.05;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      scene.add(new THREE.HemisphereLight(0xd5e4ea, 0x2a2118, 0.55));
+      const key = new THREE.DirectionalLight(0xfff3e4, 2.6);
+      key.position.set(90, 180, 70);
+      key.castShadow = true;
+      key.shadow.mapSize.set(2048, 2048);
+      key.shadow.camera.near = 20;
+      key.shadow.camera.far = 500;
+      key.shadow.camera.left = -140;
+      key.shadow.camera.right = 140;
+      key.shadow.camera.top = 140;
+      key.shadow.camera.bottom = -140;
+      key.shadow.bias = -0.0004;
+      scene.add(key);
+      const rim = new THREE.DirectionalLight(0x9ee8ec, 1.35);
+      rim.position.set(-130, 70, -90);
+      scene.add(rim);
+      const fill = new THREE.DirectionalLight(0xffb27a, 0.45);
+      fill.position.set(-30, 40, 160);
+      scene.add(fill);
+
+      const controls = new OrbitControls(camera, canvas);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.target.set(0, 32, 0);
+      controls.minDistance = 280;
+      controls.maxDistance = 780;
+      controls.maxPolarAngle = Math.PI * 0.47;
+      controls.autoRotate = !reduced;
+      controls.autoRotateSpeed = 0.55;
+      controls.enabled = false;
+
+      const camA = new THREE.Vector3(80, 90, 520);
+      const camB = new THREE.Vector3(270, 195, 370);
+      const camElec = new THREE.Vector3(120, 280, 260);
+      camera.position.copy(reduced ? camB : camA);
+
+      const want = { lid: 0, cut: 0, wire: false, spin: !reduced, elec: false };
+      const anim = { lid: 0, cut: 400, intro: reduced ? 0 : 1 };
+      let userMoved = false;
+      let fly = null;
+      let resumeTimer = 0;
+
+      const lidBtn = document.getElementById("lid-btn");
+      const elecBtn = document.getElementById("elec-btn");
+      const cutBtn = document.getElementById("cut-btn");
+      const wireBtn = document.getElementById("wire-btn");
+      const spinBtn = document.getElementById("spin-btn");
+
+      function setPressed(btn, on) { btn.setAttribute("aria-pressed", on ? "true" : "false"); }
+      if (!parts.some((part) => elecLook[part.name])) elecBtn.hidden = true;
+      function openLid() {
+        want.lid = 1;
+        lidBtn.textContent = "Close lid";
+        setPressed(lidBtn, true);
+      }
+      elecBtn.addEventListener("click", () => {
+        want.elec = !want.elec;
+        boards.visible = want.elec;
+        lidHardware.visible = want.elec;
+        setPressed(elecBtn, want.elec);
+        if (want.elec) {
+          openLid();
+          controls.autoRotate = false;
+          if (!userMoved) {
+            anim.intro = 0;
+            controls.enabled = true;
+            fly = { from: camera.position.clone(), to: camElec.clone(), t: 0 };
+          }
+        } else if (want.spin && anim.intro <= 0 && !fly) {
+          controls.autoRotate = true;
+        }
+      });
+      lidBtn.addEventListener("click", () => {
+        want.lid = want.lid > 0.5 ? 0.16 : 1;
+        lidBtn.textContent = want.lid > 0.5 ? "Close lid" : "Open lid";
+        setPressed(lidBtn, want.lid > 0.5);
+      });
+      cutBtn.addEventListener("click", () => {
+        want.cut = want.cut > 0.5 ? 0 : 1;
+        setPressed(cutBtn, want.cut > 0.5);
+      });
+      wireBtn.addEventListener("click", () => {
+        want.wire = !want.wire;
+        plastic.wireframe = want.wire;
+        lidMat.wireframe = want.wire;
+        elecMats.forEach((mat) => { mat.wireframe = want.wire; });
+        setPressed(wireBtn, want.wire);
+      });
+      spinBtn.addEventListener("click", () => {
+        want.spin = !want.spin;
+        controls.autoRotate = want.spin && anim.intro <= 0;
+        setPressed(spinBtn, want.spin);
+      });
+      setPressed(spinBtn, want.spin);
+
+      controls.addEventListener("start", () => {
+        userMoved = true;
+        fly = null;
+        controls.autoRotate = false;
+        clearTimeout(resumeTimer);
+      });
+      controls.addEventListener("end", () => {
+        clearTimeout(resumeTimer);
+        resumeTimer = setTimeout(() => {
+          if (want.spin) controls.autoRotate = true;
+        }, 2200);
+      });
+
+      function resize() {
+        const w = canvas.clientWidth || 1;
+        const h = canvas.clientHeight || 1;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h, false);
+      }
+      const ro = new ResizeObserver(resize);
+      ro.observe(canvas.parentElement);
+      resize();
+
+      const clock = new THREE.Clock();
+      function frame() {
+        const dt = Math.min(clock.getDelta(), 0.05);
+        const t = clock.elapsedTime;
+        anim.lid += (want.lid - anim.lid) * (1 - Math.pow(0.001, dt));
+        const cutTarget = want.cut > 0.5 ? 18 : 400;
+        anim.cut += (cutTarget - anim.cut) * (1 - Math.pow(0.0015, dt));
+        clip.constant = anim.cut;
+        lidPivot.rotation.x = -anim.lid * 1.02;
+        lidPivot.position.y = hinge.y + anim.lid * 10;
+        cavity.intensity = anim.lid * 6.5;
+        buttons.children.forEach((obj) => {
+          if (obj.material && obj.material.emissiveIntensity !== undefined && obj.userData.phase !== undefined) {
+            const pulse = reduced ? 0 : Math.sin(t * 2.2 + obj.userData.phase) * 0.12;
+            obj.material.emissiveIntensity = obj.userData.base + pulse;
+          }
+        });
+        if (anim.intro > 0) {
+          anim.intro = Math.max(0, anim.intro - dt / 1.8);
+          const k = 1 - anim.intro * anim.intro;
+          camera.position.lerpVectors(camA, camB, k);
+          camera.lookAt(controls.target);
+          if (anim.intro === 0) {
+            controls.enabled = true;
+            controls.autoRotate = want.spin;
+          }
+        } else if (fly) {
+          fly.t = Math.min(1, fly.t + dt / 0.9);
+          const k = fly.t * fly.t * (3 - 2 * fly.t);
+          camera.position.lerpVectors(fly.from, fly.to, k);
+          camera.lookAt(controls.target);
+          if (fly.t === 1) {
+            fly = null;
+            controls.update();
+            controls.autoRotate = want.spin && !want.elec;
+          }
+        } else {
+          controls.update();
+        }
+        try {
+          renderer.render(scene, camera);
+        } catch (err) {
+          fail(err && err.message ? err.message : "render failed");
+          return;
+        }
+        schedule();
+      }
+      // Paint from a timer when the tab has paused requestAnimationFrame.
+      let frameGen = 0;
+      function schedule() {
+        const gen = ++frameGen;
+        requestAnimationFrame(() => {
+          if (gen !== frameGen) return;
+          frameGen++;
+          frame();
+        });
+        setTimeout(() => {
+          if (gen !== frameGen) return;
+          frameGen++;
+          frame();
+        }, 48);
+      }
+      frame();
+      } catch (err) {
+        console.error(err);
+        fail(err && err.message ? err.message : "3D view failed");
+      }
+    }
+  </script>
+</body>
+</html>

@@ -362,8 +362,12 @@ body:has(.mixer-shell), body:has(.page-shell) {
 }
 .esp-pip.on { color: var(--green); }
 .esp-pip svg { width: 100%; height: 100%; }
-.signal-icon { fill: none; stroke: none; }
-.signal-icon circle { fill: currentColor; }
+.signal-icon {
+  fill: none; stroke: currentColor; stroke-width: 1.85;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.signal-icon circle { fill: currentColor; stroke: none; }
+.signal-icon .tower { fill: none; stroke: currentColor; }
 .batt-meter {
   width: 2.55rem; height: 1.05rem; flex: none;
   color: #8b8f99;
@@ -407,10 +411,14 @@ body:has(.mixer-shell), body:has(.page-shell) {
 .bt-page-link:hover { text-decoration: underline; }
 .wifi-chip {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 1.6rem; height: 1.6rem; border-radius: 50%;
-  background: #20242c; border: 1px solid #0a0b0e; color: #8fd6e0;
+  appearance: none; background: transparent; border: 0; padding: 0;
+  width: 1.55rem; height: 1.28rem; border-radius: 0; color: #8fd6e0;
 }
-.wifi-chip svg { width: 15px; height: 15px; }
+.wifi-chip svg {
+  width: 1.15rem; height: 1.15rem; display: block;
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+}
+.wifi-chip circle { fill: currentColor; stroke: none; }
 .wifi-chip .dim { opacity: 0.35; }
 .hud-voice { display: flex; align-items: center; padding: 0 0.12rem; flex: none; }
 .rec-banner { background: #3a1414; color: #ff9a8c; }

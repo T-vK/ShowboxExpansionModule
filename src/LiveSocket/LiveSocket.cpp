@@ -99,6 +99,18 @@ void LiveSocket::begin(AsyncWebServer* server, MackieShowbox* showboxIn) {
             lanNoteWsRx();
             sendLink(client);
             sendNames(client);
+            // Connect used to send only link/names. After a 1005 the suite
+            // reconnects with a stale LOOPER_STATE cache and never hears the
+            // missed rec→play announcement (boost-on-play already fired).
+            if (showbox != nullptr && showbox->hasEntityValue(LOOPER_STATE)) {
+                char body[96];
+                int n = snprintf(body, sizeof(body),
+                    "{\"type\":\"entity\",\"id\":\"LOOPER_STATE\",\"value\":%u}",
+                    (unsigned)showbox->getUint8EntityValue(LOOPER_STATE));
+                if (n > 0) {
+                    sendIfReady(client, body, static_cast<size_t>(n));
+                }
+            }
             return;
         }
         if (type == WS_EVT_DISCONNECT) {
@@ -384,8 +396,54 @@ void LiveSocket::sendNames(AsyncWebSocketClient* client) {
     }
 }
 
+void LiveSocket::dropClients() {
+    AsyncClient* stale[8] {};
+    int nStale = 0;
+    for (AsyncWebSocketClient& client : socket.getClients()) {
+        if (client.client() != nullptr && nStale < 8) {
+            stale[nStale++] = client.client();
+        }
+    }
+    for (int i = 0; i < nStale; i++) {
+        stale[i]->abort();
+    }
+    for (int i = 0; i < 8; i++) {
+        socket.cleanupClients(8);
+    }
+    lanSetWsRemotes(nullptr, 0);
+    lanNoteWsClients(0);
+}
+
 void LiveSocket::tick() {
-    socket.cleanupClients();
+    // Close FIN is often lost next to BLE, so clients sit in
+    // WS_DISCONNECTING forever (count() ignores them, cleanupClients
+    // only erases shouldBeDeleted, which needs _client==nullptr). Each
+    // leaked client is ~3 KB internal. Abort the TCP so onDisconnect
+    // nulls _client and the next cleanup can erase it.
+    // cleanupClients(max) also closes the oldest CONNECTED client when
+    // count()>max — passing 1 was killing the live suite socket on every
+    // reconnect (clients 2↔3, 1005, ~3 KB/pass).
+    AsyncClient* stale[8] {};
+    int nStale = 0;
+    for (AsyncWebSocketClient& client : socket.getClients()) {
+        if (client.status() != WS_CONNECTED && client.client() != nullptr && nStale < 8) {
+            stale[nStale++] = client.client();
+        }
+    }
+    for (int i = 0; i < nStale; i++) {
+        stale[i]->abort();
+    }
+    // Suite WS + a browser tab. cleanupClients(1) 1005'd the suite
+    // socket whenever a second client existed, leaving LOOPER_STATE stale.
+    socket.cleanupClients(3);
+    uint16_t ports[8] {};
+    int n = 0;
+    for (AsyncWebSocketClient& client : socket.getClients()) {
+        if (client.status() == WS_CONNECTED && n < 8) {
+            ports[n++] = client.remotePort();
+        }
+    }
+    lanSetWsRemotes(ports, n);
     lanNoteWsClients(socket.count());
     if (retryN > 0 && socket.count() > 0) {
         flushRetries();

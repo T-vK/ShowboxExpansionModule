@@ -68,6 +68,7 @@ private:
         uint16_t lastAbsY = 0;
         uint8_t looperKind = 0;
         uint8_t looperStep = 0;
+        uint8_t stallTries = 0;
         char triggerValue[16] = {};
         LocalVar locals[8] = {};
         uint8_t localCount = 0;
@@ -89,7 +90,7 @@ private:
     float getVar(Job* job, const String& name) const;
     void setVar(Job* job, const String& name, float value, bool local, bool persist);
     void applyGainBoost(Job& job, JsonObjectConst step);
-    void dispatchLooper(const String& op, bool fromRetry = false);
+    void dispatchLooper(const String& op, bool fromRetry = false, bool bare = false);
     void startLooper(Job& job, const String& op);
     void runLooper(Job& job);
     void runSystem(const String& command);
@@ -129,6 +130,9 @@ private:
     StoredVar globals[24] = {};
     uint8_t globalCount = 0;
     bool varsDirty = false;
+    uint32_t lastVarsSaveMs = 0;
+    char lastVarsBlob[257] = {};
+    bool haveLastVarsBlob = false;
     std::vector<Rule> rules;
     std::vector<Job> jobs;
     std::vector<uint16_t> storedIds;
@@ -150,6 +154,7 @@ private:
     uint32_t looperTapWatch = 0;
     uint8_t looperTapStateBefore = 0xFF;
     uint8_t looperTapPhase = 0;
+    uint8_t looperTapRetries = 0;
     uint32_t looperTapDumpSeq = 0;
     char looperTapOp[8] = {};
     uint32_t ignoreShowboxUntil = 0;
@@ -157,7 +162,10 @@ private:
     float lastOwnGainWrite = -9999.0f;
     int lastOwnGainEntity = -1;
     uint32_t lastOwnGainWriteMs = 0;
+    uint32_t lastLooperButtonMs = 0;
     void noteOwnGainWrite(int id, float value);
+    bool looperWireBusy() const;
+    bool looperPressIgnore() const;
     void* jacks[8] = {};
     bool dirty = false;
     portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;

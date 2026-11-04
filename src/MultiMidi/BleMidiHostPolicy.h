@@ -26,4 +26,7 @@ public:
     virtual void note(const char* text) {
         (void)text;
     }
+    // Pedal GAP up/down. Re-apply host advertising from the Arduino loop
+    // (NimBLE must not start/stop ads on this task).
+    virtual void outgoingChanged() {}
 };

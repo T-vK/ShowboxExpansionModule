@@ -67,6 +67,9 @@ uint32_t lastArpMs = 0;
 volatile bool bleLive = false;
 volatile int wsClients = 0;
 volatile uint32_t lastWsRxMs = 0;
+constexpr int kWsRemoteMax = 8;
+uint16_t wsRemotePorts[kWsRemoteMax];
+int wsRemoteN = 0;
 uint32_t lastRejoinMs = 0;
 uint32_t lastStuckMs = 0;
 uint32_t lastGapMs = 0;
@@ -102,6 +105,18 @@ static bool lanPcbTxZombie(const struct tcp_pcb* pcb) {
     return pcb->state == ESTABLISHED && pcb->nrtx >= 4;
 }
 
+static bool lanPcbIsWsRemote(const struct tcp_pcb* pcb) {
+    if (pcb == nullptr) {
+        return false;
+    }
+    for (int i = 0; i < wsRemoteN; i++) {
+        if (wsRemotePorts[i] == pcb->remote_port) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool lanUnicastTxStuck() {
     int stuck = 0;
     LOCK_TCPIP_CORE();
@@ -120,11 +135,91 @@ static int lanAbortStuckPcbs() {
     struct tcp_pcb* pcb = tcp_active_pcbs;
     while (pcb != nullptr) {
         struct tcp_pcb* next = pcb->next;
-        if (lanPcbTxZombie(pcb)) {
+        if (lanPcbTxZombie(pcb) && !lanPcbIsWsRemote(pcb)) {
             tcp_abort(pcb);
             n++;
         }
         pcb = next;
+    }
+    UNLOCK_TCPIP_CORE();
+    return n;
+}
+
+// SYN-ACK then no body: lwIP accepted, AsyncTCP never attached (or the
+// client RSTs were lost next to BLE). Those PCBs sit ESTABLISHED with
+// refused_data. Idle ESTABLISHED with nothing in flight is also the live
+// websocket — aborting it leaks AsyncWebSocketClient (~3 KB internal
+// per suite pass) and then GATT/telnet die. Never touch WS remotes.
+static bool lanPcbHttpSilent(const struct tcp_pcb* pcb) {
+    if (pcb == nullptr || pcb->local_port != 80 || pcb->state != ESTABLISHED) {
+        return false;
+    }
+    if (lanPcbIsWsRemote(pcb) || ip_addr_isloopback(&pcb->remote_ip)) {
+        return false;
+    }
+    if (pcb->refused_data != nullptr) {
+        return true;
+    }
+    if (pcb->unsent != nullptr || pcb->unacked != nullptr) {
+        return false;
+    }
+    return (tcp_ticks - pcb->tmr) >= 20;  // 10s leftover HTTP, not WS
+}
+
+static int lanAbortSilentHttpPcbs() {
+    int n = 0;
+    LOCK_TCPIP_CORE();
+    struct tcp_pcb* pcb = tcp_active_pcbs;
+    while (pcb != nullptr) {
+        struct tcp_pcb* next = pcb->next;
+        // refused_data = SYN-ACK, AsyncTCP never attached. Always drop,
+        // even when the count equals the websocket — keep=ws+1 used to
+        // preserve one zombie HTTP (~3 KB window) per suite pass.
+        if (pcb->local_port == 80 && pcb->state == ESTABLISHED && !lanPcbIsWsRemote(pcb)
+            && pcb->refused_data != nullptr && !ip_addr_isloopback(&pcb->remote_ip)) {
+            tcp_abort(pcb);
+            n++;
+            pcb = next;
+            continue;
+        }
+        // Drop leftover telnet even when Debug is still flooding unacked
+        // bytes at a RST-lost peer. Waiting for idle left RemoteDebug
+        // holding the only slot, so the next suite pass got no banner.
+        if (pcb->local_port == 23 && pcb->state == ESTABLISHED
+            && (tcp_ticks - pcb->tmr) >= 8) {
+            tcp_abort(pcb);
+            n++;
+            pcb = next;
+            continue;
+        }
+        // Half-closed HTTP/telnet PCBs hold a full receive window
+        // (~3 KB internal) after RST/FIN is lost next to BLE.
+        if ((pcb->local_port == 80 || pcb->local_port == 23)
+            && pcb->state >= FIN_WAIT_1 && pcb->state <= LAST_ACK
+            && !lanPcbIsWsRemote(pcb)) {
+            tcp_abort(pcb);
+            n++;
+        }
+        pcb = next;
+    }
+    int httpEst = 0;
+    for (pcb = tcp_active_pcbs; pcb != nullptr; pcb = pcb->next) {
+        if (pcb->local_port == 80 && pcb->state == ESTABLISHED) {
+            httpEst++;
+        }
+    }
+    const int keep = lanWsClients();
+    if (httpEst > keep) {
+        pcb = tcp_active_pcbs;
+        while (pcb != nullptr) {
+            struct tcp_pcb* next = pcb->next;
+            if (httpEst > keep && lanPcbHttpSilent(pcb)) {
+                tcp_abort(pcb);
+                n++;
+                httpEst--;
+            }
+            pcb = next;
+        }
     }
     UNLOCK_TCPIP_CORE();
     return n;
@@ -310,7 +405,20 @@ void lanNoteWsClients(int n) {
     wsClients = n < 0 ? 0 : n;
     if (wsClients == 0) {
         lastWsRxMs = 0;
+        wsRemoteN = 0;
     }
+}
+
+void lanSetWsRemotes(const uint16_t* ports, int n) {
+    int out = 0;
+    if (ports != nullptr) {
+        for (int i = 0; i < n && out < kWsRemoteMax; i++) {
+            if (ports[i] != 0) {
+                wsRemotePorts[out++] = ports[i];
+            }
+        }
+    }
+    wsRemoteN = out;
 }
 
 void lanNoteWsRx() {
@@ -438,21 +546,53 @@ void lanRejoinSta() {
 }
 
 void lanTickUnicastHealth() {
-    if (!bleLive) {
-        lastStuckMs = 0;
-        abortTried = false;
-        return;
-    }
     uint32_t now = millis();
     if (lastStuckMs != 0 && (int32_t)(now - lastStuckMs) < 2000) {
         return;
     }
-    int aborted = lanAbortStuckPcbs();
+    int zombies = 0;
+    if (bleLive) {
+        zombies = lanAbortStuckPcbs();
+    } else {
+        abortTried = false;
+    }
+    int silent = lanAbortSilentHttpPcbs();
+    int aborted = zombies + silent;
     if (aborted <= 0) {
+        if (!bleLive) {
+            lastStuckMs = 0;
+        }
         return;
     }
     lastStuckMs = now;
-    debugLog("wifi abort zombie pcbs=%d", aborted);
+    debugLog("wifi abort zombie pcbs=%d silent=%d", zombies, silent);
+    // Rebind only when no websocket is live. webServer.end() would drop
+    // the suite/UI client; between passes (ws=0) it frees AsyncTCP slots
+    // left by SYN-ACK-no-body zombies.
+    if (silent > 0 && lanWsClients() == 0) {
+        lanRequestHttpRestart();
+    }
+}
+
+void lanTickHeapGuard() {
+    if (millis() < 20000) {
+        return;
+    }
+    // A leftover UI websocket that is not receiving still blocks ws==0.
+    // If it has gone quiet, reboot anyway so the next suite pass has heap.
+    if (lanWsLive()) {
+        return;
+    }
+    static uint32_t last = 0;
+    uint32_t now = millis();
+    if (last != 0 && (int32_t)(now - last) < 8000) {
+        return;
+    }
+    last = now;
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (largest < 6144) {
+        uartSafeRestart("internal heap largest < 6k");
+    }
 }
 
 void lanTickRejoin() {
@@ -1001,38 +1141,9 @@ void lanGwPingTick() {
     // ICMP pings contend for the same coex airtime as a large HTTP body;
     // pause the ping while one is in flight (zombie detection is
     // meaningless mid-transfer anyway) and resume 3 s after it ends.
-    // Webui-active BLE policy: one radio, and the webui is the priority
-    // while someone is actually using it (any HTTP request in the last 30 s,
-    // or an open page that just loaded). While active, the AIRSTEP BLE link
-    // yields; 30 s after the webui goes quiet it reconnects on its own.
-    static bool webuiYield = false;
-    static uint32_t webuiQuietSinceMs = 0;
-    const uint32_t webuiHttpQuiet = lanHttpQuietMs();
-    if (webuiHttpQuiet < 30000) {
-        webuiQuietSinceMs = 0;
-        if (!webuiYield) {
-            webuiYield = true;
-            if (sMultiMidi != nullptr && sMultiMidi->hostConnected()) {
-                sMultiMidi->dropHostLink();
-                sMultiMidi->allowOutgoing(false);
-                diagEventForce("wifi", "webui active: BLE host yielded");
-                debugLog("wifi webui active: BLE host yielded");
-            }
-        }
-    } else if (webuiYield) {
-        if (webuiQuietSinceMs == 0) {
-            webuiQuietSinceMs = millis();
-        }
-        if ((int32_t)(millis() - webuiQuietSinceMs) > 30000) {
-            webuiYield = false;
-            webuiQuietSinceMs = 0;
-            if (sMultiMidi != nullptr) {
-                sMultiMidi->allowOutgoing(true);
-            }
-            diagEventForce("wifi", "webui quiet 30 s: BLE host released");
-            debugLog("wifi webui quiet: BLE host released, pedal reconnecting");
-        }
-    }
+    // Do not drop AIRSTEP for SPA. The pedal sleeps after GAP-down and
+    // will not advertise, so the next suite pass cannot scan-wake it.
+    // 256 B chunks + Range resume keep :80 alive beside a live CCC.
     static bool pingPaused = false;
     const bool httpBusy = lanBigHttpBusy();
     if (httpBusy != pingPaused && sGwPing != nullptr) {
@@ -1122,6 +1233,19 @@ static uint32_t sHttpProbeMs = 0;
 static int sHttpProbeFails = 0;
 static bool sHttpRebound = false;
 
+static bool lanHttpListenPresent() {
+    bool found = false;
+    LOCK_TCPIP_CORE();
+    for (struct tcp_pcb* pcb = tcp_listen_pcbs.pcbs; pcb != nullptr; pcb = pcb->next) {
+        if (pcb->local_port == 80) {
+            found = true;
+            break;
+        }
+    }
+    UNLOCK_TCPIP_CORE();
+    return found;
+}
+
 static bool httpListenProbe() {
     WiFiClient probe;
     if (!probe.connect(IPAddress(127, 0, 0, 1), 80, 2000)) {
@@ -1149,6 +1273,21 @@ void lanTickHttpHealth() {
         sHttpRebound = false;
         return;
     }
+    // Connection refused means the listen pcb is gone. The loopback GET
+    // used to skip rebind while the suite /ws was still counted live, so
+    // :80 stayed dead until a telnet reset. Drop+rebind is already
+    // WS-safe (liveSocket.dropClients then webServer.end/begin).
+    if (!lanHttpListenPresent()) {
+        static uint32_t lastGoneMs = 0;
+        uint32_t now = millis();
+        if (lastGoneMs == 0 || (int32_t)(now - lastGoneMs) >= 1500) {
+            lastGoneMs = now;
+            diagEventForce("http", "listen pcb gone, rebind");
+            debugLog("http listen pcb gone, rebind");
+            lanRequestHttpRestart();
+        }
+        return;
+    }
     if (sHttpProbeMs != 0 && (int32_t)(millis() - sHttpProbeMs) < 10000) {
         return;
     }
@@ -1162,6 +1301,11 @@ void lanTickHttpHealth() {
         return;
     }
     sHttpProbeFails++;
+    if (lanWsClients() > 0) {
+        // Loopback GET can miss under BLE coex while /ws is still live.
+        // webServer.end() would leak that client (~3 KB internal).
+        return;
+    }
     if (sHttpProbeFails >= 2 && !sHttpRebound) {
         sHttpRebound = true;
         diagEventForce("http", "listener wedged after %d fails, rebinding", sHttpProbeFails);

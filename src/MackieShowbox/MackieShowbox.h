@@ -24,7 +24,7 @@ public:
     uint8_t getUint8EntityValue(entity_id entityId);
     float getFloatEntityValue(entity_id entityId);
 
-    void sendLooperButtonAction(looper_button_action action);
+    void sendLooperButtonAction(looper_button_action action, bool withContext = true);
     void tapLooper(uint8_t times = 1);
     void noteLooperOutgoing();
     bool takeLooperOutgoing();

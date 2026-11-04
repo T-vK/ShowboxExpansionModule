@@ -1,13 +1,10 @@
-"""E2E: looper state machine + boost behaviour via MIDI CC injection.
+"""Standalone inject-based looper e2e. Not part of the live suite.
 
-The base occasionally ignores a looper press (same as the physical
-button) — the transitions retry once, which is the realistic recovery.
-The boost flag/gain reconciliation prevents the +2 ratchet.
+Use the leveled runner instead (real BLE / AppleMIDI, not inject):
 
-Two phases:
-  1. Looper transitions only (auto-boost disarmed) — the full state machine
-  2. Boost behaviour (auto-boost armed) — on/off around transitions
-  3. Manual boost (CC105 toggle) + gain tracker
+  python3 scripts/run.py --case looper-no-autoboost
+  python3 scripts/run.py --case looper-autoboost
+  python3 scripts/run.py --level 2   # includes overdub-pref, ratchet, reboot
 """
 import json
 import sys

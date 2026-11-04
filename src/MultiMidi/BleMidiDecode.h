@@ -7,6 +7,13 @@
 #include <cstddef>
 #include <cstdint>
 
+// Queue a BLE MIDI packet from the NimBLE GATT thread (laptop host writes)
+// or from a notify callback (AIRSTEP). Drained on BleMidi::tick().
+void bleMidiEnqueueIncoming(const uint8_t* data, size_t length);
+void bleMidiNoteHostWrite();
+uint32_t bleMidiIncomingCount();
+uint32_t bleMidiHostWriteCount();
+
 // BLE MIDI running-status packets omit the status byte. The stock parser
 // treats the timestamp (0x80) as Note Off, so a second CC 102=127 is dropped.
 class BleMidiDecode : public BLECharacteristicCallbacks {
@@ -88,12 +95,22 @@ public:
     }
 
     void onWrite(BLECharacteristic* characteristic) override {
+        bleMidiNoteHostWrite();
         if (characteristic == nullptr) {
             return;
         }
-        feed(reinterpret_cast<const uint8_t*>(characteristic->getValue().c_str()),
-            characteristic->getValue().length());
+        // NimBLE runs this on the host task. Do not log or block; copy
+        // the value and let BleMidi::tick() decode on the Arduino loop.
+        uint8_t* data = characteristic->getData();
+        size_t len = characteristic->getLength();
+        bleMidiEnqueueIncoming(data, len);
     }
+
+#if defined(CONFIG_NIMBLE_ENABLED)
+    void onWrite(BLECharacteristic* characteristic, ble_gap_conn_desc* /*desc*/) override {
+        onWrite(characteristic);
+    }
+#endif
 
 private:
     midi::MidiAction* action = nullptr;

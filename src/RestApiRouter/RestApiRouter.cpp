@@ -372,8 +372,8 @@ static void runConsoleCmd(const char* raw, MackieShowbox* showbox) {
         return;
     }
     if (strcasecmp(cmd, "reboot") == 0) {
-        out->println("rebooting");
         gConsoleReboot = true;
+        out->println("rebooting");
         return;
     }
     if (strncasecmp(cmd, "iso", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) {
@@ -864,8 +864,8 @@ void RestApiRouter::setup() {
         if (ms < 500) {
             ms = 500;
         }
-        if (ms > 8000) {
-            ms = 8000;
+        if (ms > 20000) {
+            ms = 20000;
         }
         _showbox->wireUnplug(ms);
         request->send(200, "application/json", "{\"ok\":true,\"ms\":" + String((unsigned)ms) + "}");
@@ -879,8 +879,8 @@ void RestApiRouter::setup() {
         if (ms < 500) {
             ms = 500;
         }
-        if (ms > 8000) {
-            ms = 8000;
+        if (ms > 20000) {
+            ms = 20000;
         }
         _showbox->wireUnplug(ms);
         request->send(200, "application/json", "{\"ok\":true,\"ms\":" + String((unsigned)ms) + "}");
@@ -1296,6 +1296,7 @@ void RestApiRouter::setup() {
 
     _server->on("/api/v1/debug", HTTP_GET, [](AsyncWebServerRequest* request) {
         lanNoteHttp();
+        lanNoteHttpBody(true);
         static char tmp[6144];
         debugLogCopy(tmp, sizeof(tmp));
         size_t n = strlen(tmp);
@@ -1307,8 +1308,26 @@ void RestApiRouter::setup() {
                 n += static_cast<size_t>(extra);
             }
         }
-        AsyncWebServerResponse* response = request->beginResponse(200, "text/plain",
-            reinterpret_cast<uint8_t*>(tmp), n);
+        // One-shot 6 KB beginResponse wedges :80 next to AIRSTEP (JTAG:
+        // SYN-ACK, no body) after the SPA. 256 B callbacks match /services.
+        const size_t len = n;
+        AsyncWebServerResponse* response = request->beginResponse(
+            "text/plain", len,
+            [len](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+                if (index >= len) {
+                    lanNoteHttpBody(false);
+                    return 0;
+                }
+                size_t chunk = len - index;
+                if (chunk > maxLen) {
+                    chunk = maxLen;
+                }
+                if (chunk > 256) {
+                    chunk = 256;
+                }
+                memcpy(buffer, tmp + index, chunk);
+                return chunk;
+            });
         response->addHeader("Cache-Control", "no-store");
         request->send(response);
     });
@@ -2127,6 +2146,10 @@ void RestApiRouter::tick() {
     }
     if (gConsoleReboot) {
         gConsoleReboot = false;
+        if (_showbox != nullptr && _showbox->uartHot()) {
+            _showbox->waitQuiet(40);
+        }
+        delay(50);
         ESP.restart();
     }
 }

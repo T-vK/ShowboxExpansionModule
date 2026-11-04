@@ -282,6 +282,7 @@ void MackieShowbox::setEntityValue(entity_id entityId, bool value, bool emit) {
     entityValues[entityId].boolValue = value;
     entityValues[entityId].heard = true;
     if (emit) {
+        mixerTouched[entityId] = true;
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
         queueEmit(entityId, packet, sizeof(packet));
     }
@@ -290,6 +291,7 @@ void MackieShowbox::setEntityValue(entity_id entityId, uint8_t value, bool emit)
     entityValues[entityId].uint8Value = value;
     entityValues[entityId].heard = true;
     if (emit) {
+        mixerTouched[entityId] = true;
         uint8_t packet[12] = { 0xBE, 0xEF, 0x05, 0x03, 0x00, entityId, 0x00, 0x00, 0x00, value, 0xEF, 0xBE };
         queueEmit(entityId, packet, sizeof(packet));
     }
@@ -299,8 +301,11 @@ void MackieShowbox::setEntityValue(entity_id entityId, float value, bool emit) {
     entityValues[entityId].floatValue = value;
     entityValues[entityId].heard = true;
     if (emit) {
+        // ALL_ENTITIES from the mixer still holds the pre-write value until
+        // the emit flushes. Without mixerTouched, that dump clobbers the
+        // local cache (L3: boost-on-play logged on=1 at 28, HTTP stayed 28).
+        mixerTouched[entityId] = true;
         if (entityId == MAIN_HEADPHONE_GAIN || entityId == LOOPER_LEVEL) {
-            mixerTouched[entityId] = true;
             AnalogRest& rest = entityId == MAIN_HEADPHONE_GAIN ? phonesRest : loopRest;
             rest.have = false;
             rest.dir = 0;
@@ -376,22 +381,16 @@ void MackieShowbox::forceEntityResync() {
     dumpLinkLost = true;
 }
 
-void MackieShowbox::sendLooperButtonAction(looper_button_action action) {
-    // The mixer's own gestures (from the diag capture):
-    //   stop  = DOWN, UP, DOUBLE_PRESS (a full press, then the action 24 ms later)
-    //   clear = DOWN, LONG_PRESS, UP   (press context for the long press)
-    // A bare action packet without press context is intermittently ignored
-    // by the base's looper handler.
+void MackieShowbox::sendLooperButtonAction(looper_button_action action, bool withContext) {
+    // Cycle is DOWN/UP (tapLooper). Stop is DOUBLE_PRESS alone — wrapping it
+    // with DOWN/UP first cycles play↔overdub, then the mixer ignores the
+    // double. Clear from PLAY/OVERDUB is DOWN+LONG+UP in one burst.
     uint8_t buf[32];
     size_t n = 0;
     const uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
     const uint8_t up[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::UP), 0xEF, 0xBE };
     const uint8_t act[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(action), 0xEF, 0xBE };
-    if (action == looper_button_action::DOUBLE_PRESS) {
-        memcpy(buf + n, down, 8); n += 8;
-        memcpy(buf + n, up, 8); n += 8;
-        memcpy(buf + n, act, 8); n += 8;
-    } else if (action == looper_button_action::LONG_PRESS) {
+    if (action == looper_button_action::LONG_PRESS && withContext) {
         memcpy(buf + n, down, 8); n += 8;
         memcpy(buf + n, act, 8); n += 8;
         memcpy(buf + n, up, 8); n += 8;
@@ -1459,23 +1458,15 @@ void MackieShowbox::tick() {
                 && baseAgeMs() > 4000
                 && (int32_t)(now - wedgeLastAtMs) > 20000) {
                 if (wedgeUnplugs >= 3) {
-                    // The wire unplug cannot clear this wedge, but the user's
-                    // physical replug provably does: it power-cycles the
-                    // module, and a fresh boot re-handshakes the UART. Do the
-                    // same thing safely (drain first), at most once per 5 min
-                    // so a physical problem can't become a reboot loop.
-                    if (lastUartRebootMs == 0 || (int32_t)(now - lastUartRebootMs) > 300000) {
-                        lastUartRebootMs = now;
-                        diagEventForce("uart", "wire unplug failed %u times: uart-safe restart", (unsigned)wedgeUnplugs);
-                        debugLog("CRITICAL uart wedge: safe restart after %u failed unplug rounds", (unsigned)wedgeUnplugs);
-                        waitQuiet(40);
-                        delay(50);
-                        ESP.restart();
-                    } else {
-                        diagEvent("uart", "wire unplug failed %u times, restart backoff active", (unsigned)wedgeUnplugs);
-                        wedgeStage = 0;
-                        wedgeUnplugs = 4;
-                    }
+                    // ESP.restart() does not unwedge the Showbox base — it
+                    // only reboots this module. millis() also resets, so the
+                    // 5 min backoff never stuck and HTTP/listen died in a
+                    // loop. Sit idle with the UART attached; a stable idle
+                    // line is what eventually lets the base parser resync.
+                    diagEvent("uart", "wire unplug failed %u times, holding idle", (unsigned)wedgeUnplugs);
+                    debugLog("uart wedge: idle hold after %u unplug rounds (no module restart)", (unsigned)wedgeUnplugs);
+                    wedgeStage = 0;
+                    wedgeUnplugs = 4;
                 } else {
                     // Unplug done and base still silent: re-arm the ladder.
                     wedgeStage = 1;
