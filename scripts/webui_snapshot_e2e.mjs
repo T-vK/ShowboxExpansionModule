@@ -137,7 +137,16 @@ async function snapshot(action, slot) {
   throw new Error(`no WS snapshot ${action} slot ${slot} (had ${snapEvents.length} events)`);
 }
 
-let g0 = await apiGain();
+// Cold-load SPA can leave :80 wedged for a beat (BLE coex). Retry the
+// entity GET before declaring the mixer dump dead.
+let g0 = NaN;
+for (let i = 0; i < 8; i++) {
+  g0 = await apiGain();
+  if (Number.isFinite(g0)) {
+    break;
+  }
+  await sleep(250);
+}
 if (!Number.isFinite(g0)) {
   console.log("FAIL: INPUT1_GAIN unreadable");
   process.exit(1);
