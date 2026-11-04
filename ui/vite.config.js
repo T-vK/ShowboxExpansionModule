@@ -176,6 +176,25 @@ function mockShowbox() {
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify(midi));
       });
+      const builtinActions = [
+        { id: 1, on: true, name: "Looper Rec / Play / Overdub", group: "TRS Looper", builtin: "looperTrsCycle", triggers: [{ type: "trs", jack: "1t", gesture: "shortRelease" }], actions: [{ type: "looper", button: "cycle" }] },
+        { id: 2, on: true, name: "Looper Stop", group: "TRS Looper", builtin: "looperTrsStop", triggers: [{ type: "trs", jack: "1r", gesture: "shortRelease" }], actions: [{ type: "looper", button: "stop" }] },
+        { id: 3, on: true, name: "Looper Delete", group: "TRS Looper", builtin: "looperTrsDelete", triggers: [{ type: "trs", jack: "1r", gesture: "long" }], actions: [{ type: "looper", button: "delete" }] },
+        { id: 4, on: true, name: "Rec / Play / Overdub", group: "MIDI Looper", builtin: "midiLooperCycle", triggers: [{ type: "midi", message: "cc", number: "102" }], actions: [{ type: "looper", button: "cycle" }] },
+        { id: 5, on: true, name: "Stop", group: "MIDI Looper", builtin: "midiLooperStop", triggers: [{ type: "midi", message: "cc", number: "103" }], actions: [{ type: "looper", button: "stop" }] },
+        { id: 6, on: true, name: "Clear", group: "MIDI Looper", builtin: "midiLooperDelete", triggers: [{ type: "midi", message: "cc", number: "104" }], actions: [{ type: "looper", button: "delete" }] },
+        { id: 7, on: true, name: "Booster Toggle", group: "MIDI Booster", builtin: "midiBoosterToggle", triggers: [{ type: "midi", message: "cc", number: "105" }], actions: [{ type: "gainBoost", on: "toggle", channelVar: "BOOST_CHANNEL", stepsVar: "BOOST_AMOUNT", var: "BOOST_ENABLED", baseVar: "REMEMBERED_GAIN", persist: true }] },
+        { id: 8, on: true, name: "Boost on play (auto)", group: "MIDI Booster", builtin: "boosterAutoOn", triggers: [{ type: "showbox", entity: "LOOPER_STATE", value: "3" }], condition: { op: "and", items: [{ type: "variable", name: "AUTO_BOOST", value: "1" }, { type: "showbox", entity: "LOOPER_STATE", value: "3" }] }, actions: [{ type: "gainBoost", on: "on", channelVar: "BOOST_CHANNEL", stepsVar: "BOOST_AMOUNT", var: "BOOST_ENABLED", baseVar: "REMEMBERED_GAIN", persist: true }] },
+        { id: 9, on: true, name: "Unboost on loop end (auto)", group: "MIDI Booster", builtin: "boosterAutoOff", triggers: [{ type: "showbox", entity: "LOOPER_STATE" }], condition: { op: "and", items: [{ type: "variable", name: "AUTO_BOOST", value: "1" }, { type: "showbox", entity: "LOOPER_STATE", op: "ne", value: "3" }] }, actions: [{ type: "gainBoost", on: "off", channelVar: "BOOST_CHANNEL", stepsVar: "BOOST_AMOUNT", var: "BOOST_ENABLED", baseVar: "REMEMBERED_GAIN", persist: true }] },
+        { id: 10, on: true, name: "Booster Pedal", group: "Booster Pedal", builtin: "pedalBoost", triggers: [{ type: "trs", jack: "2t", gesture: "shortRelease" }], actions: [{ type: "gainBoost", entity: "INPUT4_GAIN", on: "toggle", low: 32, high: 52, var: "pedalBoost", persist: true }] },
+        { id: 11, on: true, name: "Bluetooth Pairing (blue press)", group: "Front Panel", builtin: "panelBluePress", triggers: [{ type: "panel", button: "blue", gesture: "press" }], actions: [{ type: "system", command: "pairing" }] },
+        { id: 12, on: true, name: "Wifi Toggle Button (green)", group: "Front Panel", builtin: "panelGreenPress", triggers: [{ type: "panel", button: "green", gesture: "press" }], actions: [{ type: "system", command: "wifiToggle" }] },
+        { id: 13, on: true, name: "USB Mode Button (red)", group: "Front Panel", builtin: "panelRedPress", triggers: [{ type: "panel", button: "red", gesture: "press" }], actions: [{ type: "system", command: "usbCycle" }] }
+      ];
+      server.middlewares.use("/api/v1/actions", (req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ automations: builtinActions }));
+      });
       server.middlewares.use("/api/v1/wifi", (req, res) => {
         const path = req.url || "";
         if (path.startsWith("/scan")) {

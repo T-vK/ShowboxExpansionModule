@@ -1,173 +1,82 @@
 ## Showbox Expansion Module
-Gain more control over your Mackie Showbox. This project allows for controlling your Showbox and Breakaway Mixer using an ESP32-S3 and ESP32 (in the future also ESP8266 and Arduino).  
-Change presets, volume, eq, effects or control the looper using any footswitch, expression pedal, MIDI device etc. Support for MIDI over Bluetooth, Wifi and Ethernet are planned as well.
+
+Gain more control over your Mackie Showbox. An ESP32-S3 sits between the Showbox base unit and the Breakaway Mixer, so you can drive presets, volume, EQ, effects, the looper, and more from footswitches, expression pedals, MIDI controllers, HID devices, or a browser on your phone or laptop.
+
+### Features
+
+- **Full mixer control** — read and change essentially everything the Breakaway Mixer exposes (gains, faders, mute, EQ, compressors, FX sends/types, looper, snapshots, tuner, SD record, and more)
+- **Web UI (PWA)** — live mixer board, snapshots, tuner, looper, actions editor, and connection settings over Wi‑Fi or Ethernet at `http://showbox.local`
+- **Actions engine** — map any trigger to any reaction in the browser (no firmware rebuild). Built-ins cover TRS/MIDI looper control, gain booster, and the front-panel buttons
+- **Footswitches & expression pedals** — up to 4 dual TRS jacks (tip + ring per jack)
+- **MIDI everywhere** — 5‑pin DIN, Bluetooth LE (host + peripheral), USB device + host, AppleMIDI / RTP‑MIDI over Wi‑Fi, and Ethernet MIDI (W5500)
+- **Bluetooth & USB HID** — keyboard, mouse, absolute pointer, and touch for page-turning and similar uses
+- **Behringer X‑Touch Compact** — MIDI surface mirroring for hands-on Showbox control
+- **Radios & networking** — Wi‑Fi station/AP, captive portal setup, mDNS, optional Ethernet
+- **Front panel** — RGB status rings plus blue / green / red buttons for Bluetooth, Wi‑Fi, and USB mode
+- **Updates** — browser [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/), OTA over the network
+
+### Web interface
+
+Open the module on your LAN (typically `http://showbox.local`) for a live mixer, snapshots, tuner, looper, and system pages.
+
+![Web UI mixer](./docs/webui-mixer.png)
+
+The **Actions** page is where you wire footswitches, MIDI, panel buttons, and Showbox state changes to whatever should happen next:
+
+![Web UI actions](./docs/webui-actions.png)
+
+### Actions
+
+Actions are *when → (optional if) → then* rules stored on the module and edited in the web UI.
+
+**Triggers** can be:
+
+- TRS footswitch gestures (press, long press, short/long release, double)
+- Front-panel buttons
+- MIDI (notes, CC, PC, and friends on any enabled port)
+- Showbox entity / packet changes (e.g. looper state)
+- Connection up/down events
+- Variable changes
+
+**Then** steps can:
+
+- Change Showbox controls, run the looper, recall snapshots, toggle SD record, or open the tuner
+- Apply a **gain boost** (manual or auto-with-looper)
+- Send MIDI out any port
+- Emit HID (keys, media keys, mouse, touch)
+- Flip module radios / USB mode
+- Set variables used by other rules
+
+Groups of rules can be enabled or disabled together. Built-in groups ship ready for a TRS or MIDI looper pedal, a MIDI/TRS booster, and the front-panel buttons — edit or replace them as you like.
 
 ### Getting started
-You can either create a custom build with just the parts you need or build the complete reference design:
-- [Parts List](./PartsList.md) 
+
+Build a minimal ESP32 + two RJ45 breakouts, or the full reference design:
+
+- [Parts List](./PartsList.md)
 - [Schematics](https://raw.githubusercontent.com/T-vK/ShowboxExpansionModule/refs/heads/main/docs/schematics.svg)
 - [Pin Mappings](#pin-mappings-for-esp32-s3)
 - [3D Model](https://grabcad.com/library/showboxexpansionmodule-v1-1)
 - [Firmware Web Installer](https://t-vk.github.io/ShowboxExpansionModule/)
 
-### Disclaimer
-This is still a work in progress. I have reverse-engineered most of the protocol, but a few bits here and there are still missing and stability isn't perfect yet.
+Firmware can also be built and flashed with PlatformIO.
 
 ### Hardware
-This project is entirely based on widespread off-the-shelf hardware that can be found on aliexpress, ebay etc. 
-I am providing a reference design that includes all the supported features, a 3D-printable case and a ready-to-go firmware that can be flashed through your browser. But all you really need is an ESP32/ESP32-S3 and two RJ45 breakout boards and maybe a TRS-jack to solder to the ESP to connect a footswitch or expression pedal.
 
-### TODO (Software)
-- [x] Class to programmatically do anything the Breakaway Mixer can do.
-- [x] Example on how to add footswitches to control anything you want
-- [ ] Add more examples
-- [ ] GitHub Actions for PlatformIO publishing
-- [x] GitHub Actions to provide binary builds
-- [x] Add web interface to allow controlling the Showbox from the browser (over WiFi and Ethernet)
-- [x] ESP Web Tools - Web flasher to allow flashing the micro controller from the browser
-- [x] ImprovWifi - Configure Wifi settings from the browser
-- [x] Add support for up to 4 dual foot switches (TRS jack)
-- [x] Add support for up to 4 expression pedals (TRS jack)
-- [x] Add support for OTA updates
-- [ ] Add support for MIDI
-- [ ] Add support for MIDI over Bluetooth
-- [ ] Add support for MIDI over WiFi
-- [ ] Add support for MIDI over USB
-- [ ] Add support for MIDI over Ethernet
-- [ ] Add support for Mackie Control Protocol (which is technically just specific MIDI commands)
-- [ ] Add support for using the breakaway mixer as a DAW controller (Would anyone even want this??)
-- [ ] Add support for Bluetooth HID (to allow using it as a Bluetooth page turner as well)
-- [ ] Add support for USB HID (to allow using it as a USB page turner as well)
-
-#### Firmware
-The firmware can be installed using the [Web Installer](https://t-vk.github.io/ShowboxExpansionModule/) or manually by setting up PlatformIO.
+Everything is off-the-shelf (AliExpress, eBay, etc.): ESP32-S3, RJ45 breakouts, optional MIDI DIN, W5500 Ethernet, TRS jacks, and a 3D-printable case. The reference design wires all supported features; a minimal build only needs the ESP and the two Showbox links.
 
 #### Schematics
+
 [![Interceptor Schematics](./docs/schematics.svg)](https://raw.githubusercontent.com/T-vK/ShowboxExpansionModule/refs/heads/main/docs/schematics.svg)
 
-#### Photos of the Reference Design
+#### Photos of the reference design
+
 [<img src="./docs/expansion-module-slid-in.jpeg" alt="Expansion Module Slid In" width="200"/>](./docs/expansion-module-slid-in.jpeg) [<img src="./docs/expansion-module-top-open.jpeg" alt="Expansion Module Top Open" width="200"/>](./docs/expansion-module-top-open.jpeg)  
 [<img src="./docs/expansion-module-front-open.jpeg" alt="Expansion Module Front Open" width="200"/>](./docs/expansion-module-front-open.jpeg) [<img src="./docs/expansion-module-open-wired.jpeg" alt="Expansion Module Open Wired" width="200"/>](./docs/expansion-module-open-wired.jpeg)
 
-## Creating your own firmware with custom functionality
-
-In order to do that, I recommend using PlatformIO. You can also do it with the Arduino IDE, but I haven't tested that yet and thus can't provide any instructions for it.
-
-### Example code usage
-This basic example shows how you could implement your own mute toggle button:
-
-``` C++
-#include <Arduino.h>
-#include <OneButton.h>
-#include "MackieShowbox/MackieShowbox.h"
-
-MackieShowbox showbox(9, 10, 17, 18); // Base RX, Base TX, Mixer RX, Mixer TX
-
-OneButton muteButton(48, true); // Mute button pin, internal pull-up
-
-void handleMuteButton() {
-    bool mute = showbox.getBoolEntityValue(entity_id::MAIN_MUTE);
-    showbox.setEntityValue(entity_id::MAIN_MUTE, !mute);
-}
-
-void setup() {
-    muteButton.attachClick(handleMuteButton);
-    showbox.begin();
-}
-
-void loop() {
-    showbox.loop();
-    muteButton.tick();
-}
-```
-
-### Reading
-You can easily read and log what the two devices are talking about. Here is a short example:
-
-```
-MIXER->BASE [Decoded] Type: ENTITY | Entity: LOOPER_LEVEL | { Set LOOPER_LEVEL to 9.615385 }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: MAIN_MUTE | { Set MAIN_MUTE to false }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: STEREO_INPUT1_EQ_HIGH_GAIN | { Set STEREO_INPUT1_EQ_HIGH_GAIN to -12.857142 }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: SELECTED_CHAN | { Set SELECTED_CHAN to 0 }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: INPUT1_COMPRESSOR_AMOUNT | { Set INPUT1_COMPRESSOR_AMOUNT to 0.600000 }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: INPUT1_GAIN | { Set INPUT1_GAIN to 36.000000 }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: INPUT1_EQ_ENABLE | { Set INPUT1_EQ_ENABLE to false }
-BASE->MIXER [Decoded] Type: ENTITY | Entity: INPUT1_EQ_ENABLE | { Set INPUT1_EQ_ENABLE to true }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: INPUT1_EFFECT_2_AMOUNT | { Set INPUT1_EFFECT_2_AMOUNT to 0.400000 }
-MIXER->BASE [Decoded] Type: ENTITY | Entity: INPUT1_EXT_FX_SENDS | { Set INPUT1_EXT_FX_SENDS to 0.066667 }
-```
-
-Since the MackieControl Class is intercepting the entire communication, you can always ask it for information it has already intercepted. E.g.:
-
-``` C++
-bool mute = showbox.getBoolEntityValue(entity_id::MAIN_MUTE);
-if (mute) {
-    Serial.println("Showbox is currently muted")
-}
-```
-
-### Injecting
-You can easily inject packets into the communication of the devices which may look like this:
-
-```
-BASE->MIXER Acknowoleged LOOPER_BUTTON command
-BASE->MIXER [Decoded] Type: ENTITY | Entity: LOOPER_STATE | { Set LOOPER_STATE to RECORD_INITIAL_LOOP }
-BASE->MIXER Acknowoleged LOOPER_BUTTON command
-BASE->MIXER Acknowoleged LOOPER_BUTTON command
-BASE->MIXER [Decoded] Type: ENTITY | Entity: LOOPER_STATE | { Set LOOPER_STATE to PLAY }
-BASE->MIXER Acknowoleged LOOPER_BUTTON command
-BASE->MIXER [Decoded] Type: ENTITY | Entity: LOOPER_STATE | { Set LOOPER_STATE to DELETE }
-```
-
-In order to inject a packet, all you have to do is call a method on the MackieShowbox Class.
-
-For example to mute the Mackie Showbox, you would simply do:
-
-``` C++
-showbox.setEntityValue(entity_id::MAIN_MUTE, true);
-```
-
-### Manipulating
-It is technically possible to manipulate packets on the fly. This functionality is just not exposed to the outside of the class for now because I haven't found a good use-case for it yet.
-
-### Dropping
-It is technically possible to drop packets entirely, preventing them from arriving at their destination. This functionality is just not exposed to the outside of the class for now because I haven't found a good use-case for it yet.
-
-
-### Documentation
-Unfortunately I haven't found the time to document everything properly, but I created a lot of constants that act as a reference for possible values to be passed the available functions: [src/constants.h](src/constants.h)   
-Other than that, all I can give you for now, is a list of the available public methods:
-
-``` C++
-class MackieShowbox {
-public:
-    MackieShowbox(uint8_t baseRx, uint8_t baseTx, uint8_t mixerRx, uint8_t mixerTx);
-    
-    void setEntityValue(entity_id entityId, bool value, bool emit = true);
-    void setEntityValue(entity_id entityId, uint8_t value, bool emit = true);
-    void setEntityValue(entity_id entityId, float value, bool emit = true);
-
-    bool getBoolEntityValue(entity_id entityId);
-    uint8_t getUint8EntityValue(entity_id entityId);
-    float getFloatEntityValue(entity_id entityId);
-
-    void sendLooperButtonAction(looper_button_action action);
-    void toggleSdCardRecord();
-    void snapshotAction(snapshot_action action, snapshot_slot slot);
-    void tunerAction(tuner_action action, tuner_chan chan);
-    float getBatteryLevel();
-    sd_card_state getSdCardState();
-
-    void tick();
-    void begin();
-}
-```
-
-(might be out of date by the time you read this, so check against: [src/MackieShowbox/MackieShowbox.h](src/MackieShowbox/MackieShowbox.h) )
-
 ## Pin Mappings for ESP32-S3
 
-Note: If you are using an ESP32 insteae of an ESP32-S3, you will have to adjust the pin mappings accordingly.
+Note: If you are using an ESP32 instead of an ESP32-S3, adjust the pin mappings accordingly.
 
 ### SPI Ethernet Module (Mini W5500)
 
@@ -197,7 +106,7 @@ Note: If you are using an ESP32 insteae of an ESP32-S3, you will have to adjust 
  5     | TRS 4 Ring
 ```
 
-### MIDI UART Module (Arduinio MIDI Shield)
+### MIDI UART Module (Arduino MIDI Shield)
 
 ```
 µC Pin | Module Pin
