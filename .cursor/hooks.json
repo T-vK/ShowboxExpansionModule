@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/hooks/strip-coauthored-by.sh",
+        "matcher": "git\\s+commit|git\\s+-c\\s+.*commit",
+        "failClosed": false
+      }
+    ]
+  }
+}

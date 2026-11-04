@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Reject commits that still carry co-author / Cursor attribution trailers.
+MSG_FILE=$1
+[ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] || exit 0
+
+if grep -Ei '^[[:space:]]*Co-authored-by:[[:space:]]*' "$MSG_FILE" >/dev/null; then
+  echo "commit-msg: Co-authored-by trailers are not allowed in this repository." >&2
+  echo "Remove every Co-authored-by line from the commit message and try again." >&2
+  exit 1
+fi
+
+if grep -Ei '^[[:space:]]*Signed-off-by:[[:space:]].*(cursoragent|@cursor\.com)' "$MSG_FILE" >/dev/null; then
+  echo "commit-msg: Cursor/cursoragent Signed-off-by trailers are not allowed." >&2
+  exit 1
+fi
+
+if grep -Ei 'cursoragent@cursor\.com' "$MSG_FILE" >/dev/null; then
+  echo "commit-msg: cursoragent@cursor.com must not appear in the commit message." >&2
+  exit 1
+fi
+
+exit 0
