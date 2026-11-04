@@ -8,7 +8,8 @@ class Connections;
 class Hid;
 class UltimateBaseFirmware;
 
-// RGB-ring buttons: blue = Bluetooth, red = USB port, green = Wi-Fi radio.
+// Front LED buttons: blue = Bluetooth, red = USB port, green = Wi-Fi radio
+// (each button has its own on/off LED — not per-button RGB).
 class FrontPanel {
 public:
     void attach(Connections* connections, Hid* hid, UltimateBaseFirmware* firmware);
