@@ -124,23 +124,20 @@ Note: If you are using an ESP32 instead of an ESP32-S3, adjust the pin mappings 
 10     | RX
 ```
 
-### RGB LED Controller (P9813)
+### Front-panel LED buttons
+
+White is a latching power button on the reference design (not an ESP GPIO).
+Red / green / blue are momentary buttons; their LEDs are simple on/off indicators
+(one P9813 drives the three channels — not per-button RGB rings).
 
 ```
 µC Pin | Module Pin
 -------------------
-42     | Data In
-41     | Clock In
-```
-
-### Buttons
-
-```
-µC Pin | Module Pin
--------------------
-40     | Green Button
-39     | Red Button
-38     | Blue Button
+42     | P9813 Data In
+41     | P9813 Clock In
+40     | Green Button (Wi‑Fi)
+39     | Red Button (USB)
+38     | Blue Button (Bluetooth)
 ```
 
 ### Mackie Showbox Base-Unit
