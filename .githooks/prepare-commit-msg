@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Strip co-author trailers Cursor (or anything else) may inject into the message.
+MSG_FILE=$1
+[ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] || exit 0
+python3 - "$MSG_FILE" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8", errors="replace").read()
+lines = text.splitlines()
+kept = []
+for line in lines:
+    if re.match(r"(?i)^\s*Co-authored-by:\s*", line):
+        continue
+    if re.match(r"(?i)^\s*Signed-off-by:\s*.*(cursoragent|Cursor)\s*<", line):
+        continue
+    kept.append(line)
+while kept and kept[-1] == "":
+    kept.pop()
+open(path, "w", encoding="utf-8").write(("\n".join(kept) + "\n") if kept else "")
+PY
+exit 0
