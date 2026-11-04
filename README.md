@@ -19,7 +19,7 @@ Gain more control over your Mackie Showbox. An ESP32-S3 sits between the Showbox
 
 Open the module on your LAN (typically `http://showbox.local`) for a live mixer, snapshots, tuner, looper, and system pages.
 
-![Web UI mixer](./docs/webui-mixer.png)
+![Web UI mixer](./docs/webui-mixer.gif)
 
 The **Actions** page is where you wire footswitches, MIDI, panel buttons, and Showbox state changes to whatever should happen next:
 
