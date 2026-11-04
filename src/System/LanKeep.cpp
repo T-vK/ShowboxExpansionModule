@@ -570,10 +570,10 @@ void lanTickUnicastHealth() {
     }
     lastStuckMs = now;
     debugLog("wifi abort zombie pcbs=%d silent=%d", zombies, silent);
-    // Rebind even with a live /ws. liveSocket.dropClients() runs first;
-    // the suite and UI reconnect. Holding the listen forever for one WS
-    // left Chromium page.goto hung after cold-load (SYN-ACK, no body).
-    if (silent > 0) {
+    // Abort silent PCBs always (2s under BLE). Rebind only when no /ws —
+    // restarting while the suite held a client thrashed :80 (telnet up,
+    // HTTP refused). Suite Range-resumes SPA before Chromium snapshot.
+    if (silent > 0 && lanWsClients() == 0) {
         lanRequestHttpRestart();
     }
 }
