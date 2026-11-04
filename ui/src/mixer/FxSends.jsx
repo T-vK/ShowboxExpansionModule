@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Fader } from "./Controls.jsx";
 import { FX1, FX2, fx1Id, fx2Id, fxShort } from "./fx.js";
 import { CHANNELS, controlOn } from "./views.js";
@@ -6,8 +6,14 @@ import { CHANNELS, controlOn } from "./views.js";
 const NONE_KEY = "sxm-fx-show-none";
 
 function loadShowNone() {
-  try { return localStorage.getItem(NONE_KEY) === "1"; }
-  catch { return false; }
+  // Default on so the dedicated FX board is not empty when types are None.
+  try {
+    const raw = localStorage.getItem(NONE_KEY);
+    if (raw == null) return true;
+    return raw === "1";
+  } catch {
+    return true;
+  }
 }
 
 function saveShowNone(on) {
@@ -48,6 +54,12 @@ export function FxSendsBoard({ entities, names, view, write, onProc, onToggle })
   const showFx2 = controlOn(view, "fx2");
   const showExt = controlOn(view, "ext");
   const [showNone, setShowNone] = useState(() => loadShowNone());
+
+  // Ext FX is off by default on channel strips; turn it on for this board.
+  useEffect(() => {
+    if (!onToggle || !view || controlOn(view, "ext")) return;
+    onToggle("ext", true);
+  }, [view && view.id]);
 
   function toggleNone() {
     const next = !showNone;

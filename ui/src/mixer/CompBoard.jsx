@@ -1,4 +1,5 @@
 import { Fader, Pad } from "./Controls.jsx";
+import { CompGraph } from "./Graphs.jsx";
 import { CHANNELS } from "./views.js";
 
 function val(entities, id, fallback) {
@@ -20,16 +21,20 @@ export function CompBoard({ entities, names, write }) {
         const amountId = `INPUT${ch.n}_COMPRESSOR_AMOUNT`;
         const enableId = `INPUT${ch.n}_COMPRESSOR_ENABLE`;
         const on = truthy(val(entities, enableId, false));
+        const amount = val(entities, amountId, 0);
         return (
           <div key={ch.id} class="fx-send-col eq-col">
             <header>
               <strong class="chan-id">{title}</strong>
               <Pad label={on ? "On" : "Off"} on={on} onClick={() => write(enableId, !on)} />
             </header>
+            <div class={"eq-board-curve" + (on ? "" : " off")}>
+              <CompGraph amount={amount} on={on} />
+            </div>
             <div class={"eq-send-faders" + (on ? "" : " off")}>
               <div class="eq-send tone-comp">
                 <span>Comp</span>
-                <Fader entity={amountId} min={0} max={1} unit="%" value={val(entities, amountId, 0)} onChange={(v) => write(amountId, v)} />
+                <Fader entity={amountId} min={0} max={1} unit="%" value={amount} onChange={(v) => write(amountId, v)} />
               </div>
             </div>
           </div>
