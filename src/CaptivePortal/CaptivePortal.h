@@ -47,6 +47,7 @@ private:
     void loadPrefs();
     void rememberNet(const String& ssid, const String& password);
     String passwordFor(const String& ssid) const;
+    void runPendingStaJoin();
 
     DNSServer dns;
     UltimateBaseFirmware* firmware = nullptr;
@@ -59,10 +60,15 @@ private:
     bool apWantedDirty = false;
     bool scanAsked = false;
     bool scanReady = false;
+    bool pendingStaJoin = false;
     int scanCount = 0;
     uint32_t lastModeMs = 0;
     uint32_t lastApTryMs = 0;
+    uint32_t pendingStaJoinAtMs = 0;
+    uint32_t staJoinDeadlineMs = 0;
     static constexpr uint32_t kApRetryMs = 15000;
     NetCred remembered[8];
     uint8_t rememberedN = 0;
+    String pendingStaSsid;
+    String pendingStaPass;
 };

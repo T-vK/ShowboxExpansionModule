@@ -140,16 +140,25 @@ def http_get_retry(
     ua: str = "showbox-suite",
     attempts: int = 3,
     min_bytes: int = 1,
+    quiet: bool = False,
 ) -> tuple[int, bytes]:
-    """BLE-coex stalls large TCP bodies; ping still flows. Retry like the PWA shell."""
+    """BLE-coex stalls large TCP bodies; ping still flows. Retry like the PWA shell.
+
+    After a large SPA GET, pass quiet=True: wait_http's 250ms SYN poll re-wedges
+    the rebound listen PCB (L3 streak15 att2: /debug bytes=0 for 55s).
+    """
     last = (0, b"")
     ip = _url_ip(url)
     for i in range(max(1, attempts)):
         last = http_get(url, timeout=timeout, host=host, ua=ua)
         if last[0] == 200 and len(last[1]) >= min_bytes:
             return last
-        if last[0] == 0 and ip:
-            wait_http(ip, timeout=min(2.0, timeout))
+        if ip:
+            if quiet:
+                wait_http_quiet(ip, timeout=min(4.0, timeout))
+            else:
+                wait_http(ip, timeout=min(2.5, timeout))
+            time.sleep(0.35 * (i + 1))
     return last
 
 

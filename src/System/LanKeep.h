@@ -43,7 +43,13 @@ void lanTickSoak(MackieShowbox& showbox);
 uint32_t lanGwRttMs();
 int lanGwMisses();
 void lanTickHttpHealth();
+// Drop any lwIP PCB still holding TCP port 80 so AsyncServer::begin can bind
+// after a failed rebind (EADDRINUSE / -8 while the listen list looks empty).
+void lanReleaseHttpPort();
 void lanNoteApActive(bool on);
+// Quiet LanKeep's WiFi.reconnect() while WiFi.begin() is associating.
+void lanNoteStaJoin(uint32_t quietMs = 20000);
+bool lanStaJoinQuiet();
 
 extern volatile bool gMdnsUp;
 extern volatile bool gSetupDone;

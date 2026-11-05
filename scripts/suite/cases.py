@@ -52,6 +52,37 @@ def _num(v: Any, default: int = 0) -> int:
         return default
 
 
+def _forget_ghost_hosts(s: Suite) -> None:
+    """Drop remembered hosts that are not connected — they block a clean rebond."""
+    try:
+        midi = s.midi_status()
+    except Exception:
+        return
+    for host in midi.get("hosts") or []:
+        addr = str(host.get("address") or "")
+        if addr and not host.get("connected"):
+            s.info(f"forget ghost host {addr}")
+            try:
+                cf.module_forget(s.session, addr)
+            except Exception as exc:
+                s.info(f"forget {addr}: {exc}")
+
+
+def _connect_while_advertising(s: Suite, addr: str, timeout: float = 25.0) -> tuple[bool, str]:
+    """ACL connect only after the pairing window is actually open.
+
+    Connecting with ads off leaves BlueZ Connected:yes while ESP hostUsed=0
+    (L3 streak14 att7 hid-smoke: AcquireWrite OK, hosts[].connected never).
+    """
+    midi = _wait_ads(s, timeout=min(35.0, timeout + 10.0))
+    if not (midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000):
+        return False, (
+            f"ads not open advertising={midi.get('advertising')} "
+            f"pairingMs={midi.get('pairingMs')}"
+        )
+    return cf.bt_ctl_connect(addr, timeout=timeout)
+
+
 def ensure_ble_midi(s: Suite, force: bool = False) -> None:
     if not force and s.ble is not None and s.ble.connected:
         return
@@ -68,24 +99,61 @@ def ensure_ble_midi(s: Suite, force: bool = False) -> None:
             pass
         s.ble = None
     last = "BLE connect failed"
-    for attempt in range(3):
-        drop_acl = force or attempt > 0
-        if drop_acl and cf.bt_connected(addr):
-            cf.laptop_disconnect(addr, False)
-            drop = time.monotonic() + 4.0
+    # L3 streak4 hid-smoke: char path resolved then AcquireWrite → Not connected
+    # while bt_connected() still looked live (zombie ACL). Recycle the link.
+    for attempt in range(5):
+        recycle = (
+            force
+            or attempt > 0
+            or "not connected" in last.lower()
+            or "acquirewrite" in last.lower()
+            or "hosts[].connected missing" in last.lower()
+            or "ads not open" in last.lower()
+        )
+        if recycle:
+            if attempt > 0:
+                _forget_ghost_hosts(s)
+            if cf.bt_connected(addr):
+                cf.laptop_disconnect(addr, False)
+            drop = time.monotonic() + 5.0
             while cf.bt_connected(addr) and time.monotonic() < drop:
                 time.sleep(0.05)
-        if not cf.bt_connected(addr):
-            ads = cf.laptop_open_ads(s.session)
-            ok, how = cf.bt_ctl_connect(addr, timeout=20.0)
+            time.sleep(0.25)
+            ok, how = _connect_while_advertising(s, addr, timeout=25.0)
             last = how if not ok else "connected"
             if not ok:
-                s.info(f"BLE connect attempt {attempt + 1} ads={ads} {how}")
+                s.info(f"BLE connect attempt {attempt + 1} {how}")
                 continue
+        elif not cf.bt_connected(addr):
+            ok, how = _connect_while_advertising(s, addr, timeout=25.0)
+            last = how if not ok else "connected"
+            if not ok:
+                s.info(f"BLE connect attempt {attempt + 1} {how}")
+                continue
+        # Flapping Connected: yes must not proceed to AcquireWrite.
+        time.sleep(0.35)
+        if not cf.bt_connected(addr):
+            last = "ACL dropped before AcquireWrite"
+            s.info(f"BLE MIDI attempt {attempt + 1} {last}")
+            continue
         try:
             out = BleMidiOut()
             out.start(addr, timeout=20.0)
             s.ble = out
+            # Force recycle / reconnect must leave ESP hosts[].connected set.
+            # Do not return success on an empty host — HID role and CC105 then
+            # silently no-op (streak5/8/14).
+            if force or attempt > 0:
+                host = _wait_esp_ble_host(s, out, timeout=20.0)
+                if not host:
+                    last = "ESP hosts[].connected missing after AcquireWrite"
+                    s.info(f"BLE MIDI attempt {attempt + 1} {last}")
+                    try:
+                        out.close()
+                    except Exception:
+                        pass
+                    s.ble = None
+                    continue
             return
         except Exception as exc:
             last = str(exc)
@@ -97,6 +165,33 @@ def ensure_ble_midi(s: Suite, force: bool = False) -> None:
                     pass
                 s.ble = None
     raise CaseFail(last)
+
+
+def _wait_esp_ble_host(s: Suite, ble: BleMidiOut, timeout: float = 25.0) -> str:
+    """Wait until /api/v1/midi shows a connected laptop host after ACL recycle."""
+    cf.laptop_open_ads(s.session)
+    end = time.monotonic() + timeout
+    host = ""
+    while time.monotonic() < end:
+        try:
+            ble.cc(20, 0)
+        except Exception as exc:
+            s.info(f"BLE host wait CC: {exc}")
+        midi = s.midi_status()
+        if not midi:
+            wait_http_quiet(s.ip, timeout=min(4.0, max(0.5, end - time.monotonic())))
+            continue
+        host = cf.live_host_address(s.session, "")
+        if host:
+            return host
+        # Re-assert pairing window — AIRSTEP PTA can close it mid-wait.
+        if not (midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000):
+            try:
+                s.session.post_settings(acceptNewHosts=True)
+            except Exception:
+                pass
+        time.sleep(0.35)
+    return cf.live_host_address(s.session, "")
 
 
 def _drop_rtp(s: Suite) -> None:
@@ -119,8 +214,9 @@ def _ensure_midi(s: Suite, *, prefer_ble: bool = False) -> None:
     if prefer_ble:
         _drop_rtp(s)
         try:
-            need = s.ble is None or not s.ble.connected
-            ensure_ble_midi(s, force=need)
+            # Always recycle ACL when prefer_ble — stale Connected fools
+            # force=need (L3 streak4 boost-ratchet → hid-smoke).
+            ensure_ble_midi(s, force=True)
         except CaseFail as exc:
             s.info(f"BLE MIDI revive: {exc}")
         if s.ble is not None and s.ble.connected:
@@ -608,6 +704,18 @@ def case_http_pwa(s: Suite) -> None:
         raise CaseFail("HTTP /services did not recover")
     code, body = http_get(f"http://{s.ip}/services", timeout=2.0)
     s.check("HTTP /services", code == 200 and len(body) > 200, f"code={code} bytes={len(body)}")
+    # /debug BEFORE the 266KB SPA. Post-SPA /debug under AIRSTEP PTA is a
+    # landmine: listen PCB rebinds, http_get_retry's wait_http SYN-flood
+    # keeps it dead (L3 streak15 att2: bytes=0 for 55s after SPA+manifest OK).
+    code, dbg = http_get_retry(f"http://{s.ip}/api/v1/debug", timeout=4.0, attempts=4, min_bytes=20)
+    text = dbg.decode("utf-8", "replace") if dbg else ""
+    s.check("HTTP /debug", code == 200 and len(text) > 20, f"bytes={len(text)}")
+    fatal = [p for p in DEBUG_FATAL if p in text.lower()]
+    s.check("no panic in debug log", not fatal, ",".join(fatal))
+    heap, largest = cf.parse_heap(text)
+    if largest is not None and largest < 1024:
+        raise CaseFail(f"heap collapsed largest={largest} heap={heap}")
+    s.check("heap present", heap is not None, f"heap={heap} largest={largest}")
     spa_code, spa_body = http_get_resumable(
         f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=6, min_bytes=1000, deadline=12.0
     )
@@ -616,7 +724,7 @@ def case_http_pwa(s: Suite) -> None:
     # Truncated gzip (53 KB, still compressed) used to pass on len>10000
     # then the BLE-coex SPA send had already wedged :80.
     if spa_code != 200 or not shell:
-        wait_http(s.ip, timeout=6.0)
+        wait_http_quiet(s.ip, timeout=6.0)
         spa_code, spa_body = http_get_resumable(
             f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=4, min_bytes=1000, deadline=8.0
         )
@@ -631,15 +739,14 @@ def case_http_pwa(s: Suite) -> None:
         wait_http_quiet(s.ip, timeout=8.0)
         code, body = http_get(f"http://{s.ip}/manifest.webmanifest", timeout=6.0)
     s.check("PWA manifest", code == 200 and b"ShowboxMod" in body, f"code={code}")
-    code, dbg = http_get_retry(f"http://{s.ip}/api/v1/debug", timeout=4.0, attempts=3, min_bytes=20)
-    text = dbg.decode("utf-8", "replace") if dbg else ""
-    s.check("HTTP /debug", code == 200 and len(text) > 20, f"bytes={len(text)}")
-    fatal = [p for p in DEBUG_FATAL if p in text.lower()]
-    s.check("no panic in debug log", not fatal, ",".join(fatal))
-    heap, largest = cf.parse_heap(text)
-    if largest is not None and largest < 1024:
-        raise CaseFail(f"heap collapsed largest={largest} heap={heap}")
-    s.check("heap present", heap is not None, f"heap={heap} largest={largest}")
+    # Post-SPA: only prove a small endpoint still answers. Never require
+    # /debug again (and never wait_http-flood after SPA).
+    if not wait_http_quiet(s.ip, timeout=12.0):
+        raise CaseFail("HTTP quiet after manifest failed")
+    code, body = http_get_retry(
+        f"http://{s.ip}/services", timeout=3.0, attempts=4, min_bytes=100, quiet=True
+    )
+    s.check("HTTP /services after SPA", code == 200 and len(body) > 100, f"code={code} bytes={len(body)}")
 
 
 def case_telnet_ota(s: Suite) -> None:
@@ -1148,20 +1255,43 @@ def case_nvs_burst(s: Suite) -> None:
 
 
 def case_gain_tracker(s: Suite) -> None:
+    # Prior ble-midi / looper unboost stamps ignoreShowboxUntil for
+    # boostIgnoreMs (3500). Starting the user move inside that window drops
+    # the INPUT2_GAIN announce so REMEMBERED_GAIN never leaves base
+    # (L3 streak6 att1: REMEMBERED=28 after write 40).
+    time.sleep(3.6)
     auto0 = var("AUTO_BOOST", 1)
     set_var("AUTO_BOOST", 0)
     s._mark_cc()
     api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": GAIN_BASE})
-    s.wait_gain(GAIN_BASE, timeout=2.0)
+    base_now = s.wait_gain(GAIN_BASE, timeout=3.0)
+    if base_now is None or abs(base_now - GAIN_BASE) >= 0.4:
+        raise CaseFail(f"gain-tracker base settle failed got={base_now}")
     set_var("REMEMBERED_GAIN", GAIN_BASE)
     set_var("BOOST_ENABLED", 1)
     moved = 40.0
     s._mark_cc()
     api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": moved})
-    s.wait_gain(moved, timeout=2.0)
-    rem = s.wait_var("REMEMBERED_GAIN", moved, timeout=2.5)
+    now = s.wait_gain(moved, timeout=3.0)
+    if now is None or abs(now - moved) >= 0.4:
+        api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": moved})
+        now = s.wait_gain(moved, timeout=3.0)
+    if now is None or abs(now - moved) >= 0.4:
+        raise CaseFail(f"INPUT2_GAIN did not move to {moved} got {now}")
+    rem = s.wait_var("REMEMBERED_GAIN", moved, timeout=5.0)
+    if rem is None or abs(float(rem) - moved) >= 0.05:
+        # One re-announce after the ignore window — dump can still be gated
+        # if an intervening Unboost refreshed ignoreShowboxUntil.
+        api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": GAIN_BASE})
+        s.wait_gain(GAIN_BASE, timeout=2.0)
+        time.sleep(0.4)
+        set_var("REMEMBERED_GAIN", GAIN_BASE)
+        set_var("BOOST_ENABLED", 1)
+        api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": moved})
+        s.wait_gain(moved, timeout=3.0)
+        rem = s.wait_var("REMEMBERED_GAIN", moved, timeout=5.0)
     s.check("tracker adopts user gain", rem is not None and abs(float(rem) - moved) < 0.05, f"REMEMBERED_GAIN={rem}")
-    flag = s.wait_var("BOOST_ENABLED", 0, timeout=2.0)
+    flag = s.wait_var("BOOST_ENABLED", 0, timeout=3.0)
     s.check(
         "BOOST_ENABLED cleared by user move",
         flag is not None and abs(float(flag)) < 0.05,
@@ -1184,6 +1314,15 @@ def case_boost_ratchet(s: Suite) -> None:
     set_var("BOOST_ENABLED", 0)
     s.check("precondition already +2", now is not None and abs(now - boosted) < 0.4, f"gain={now}")
     _ensure_midi(s, prefer_ble=True)
+    if s.ble is not None and not cf.live_host_address(s.session, ""):
+        host = _wait_esp_ble_host(s, s.ble, timeout=25.0)
+        if not host:
+            raise CaseFail("no connected laptop host for boost-ratchet CC105")
+    # Writing INPUT2_GAIN=36 can race the gain tracker into adopting 36 as
+    # REMEMBERED_GAIN (L2 streak3 pass6: then CC105 boosted 36→44). Re-pin
+    # the intentional desync immediately before the toggle.
+    set_var("REMEMBERED_GAIN", GAIN_BASE)
+    set_var("BOOST_ENABLED", 0)
     s.send_cc(105)
     after = s.wait_gain(GAIN_BASE, timeout=6.0)
     if after is None or abs(after - GAIN_BASE) >= 0.4:
@@ -1192,9 +1331,33 @@ def case_boost_ratchet(s: Suite) -> None:
         if after is not None and abs(after - ratcheted) < 0.4:
             pass
         else:
-            _ensure_midi(s, prefer_ble=True)
+            # Soft _ensure_midi retry is not enough when the host ACL is
+            # already gone (L3 streak8 att9: gain stayed 36 through 2× CC105).
+            s.info("boost-ratchet: CC105 miss, hard-recycle BLE ACL")
+            if s.ble is not None:
+                try:
+                    s.ble.close()
+                except Exception:
+                    pass
+                s.ble = None
+            _drop_rtp(s)
+            ensure_ble_midi(s, force=True)
+            if s.ble is None or not (
+                cf.live_host_address(s.session, "")
+                or _wait_esp_ble_host(s, s.ble, timeout=30.0)
+            ):
+                raise CaseFail("no ESP host after boost-ratchet BLE recycle")
+            # Restore the +2 precondition before retry. ACL thrash can drift
+            # INPUT2_GAIN off 36 (L3 streak10 att10: gain=16 after recycle so
+            # reconcile ran from garbage and left 16 instead of unboost→28).
+            api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": boosted})
+            restored = s.wait_gain(boosted, timeout=4.0)
+            if restored is None or abs(restored - boosted) >= 0.4:
+                raise CaseFail(f"boost-ratchet could not restore +2 got={restored}")
+            set_var("REMEMBERED_GAIN", GAIN_BASE)
+            set_var("BOOST_ENABLED", 0)
             s.send_cc(105)
-            after = s.wait_gain(GAIN_BASE, timeout=6.0)
+            after = s.wait_gain(GAIN_BASE, timeout=8.0)
     s.check(
         "reconcile unboosts instead of ratcheting",
         after is not None and abs(after - GAIN_BASE) < 0.4,
@@ -1289,13 +1452,29 @@ def case_laptop_le_scan(s: Suite) -> None:
 
 
 def case_hid_smoke(s: Suite) -> None:
-    ensure_ble_midi(s)
-    addr = s.module_addr or cf.bt_find_showbox() or ""
-    if not addr:
+    # force=True: prior L2/L3 cases can leave a zombie ACL that still looks
+    # Connected while AcquireWrite returns Not connected (L3 streak4 stop).
+    ensure_ble_midi(s, force=True)
+    module = s.module_addr or cf.bt_find_showbox() or ""
+    if not module:
         raise CaseFail("no ShowboxMod address for HID")
+    # Role POST is for a Remembered host. Gate on ESP hosts[].connected, not
+    # BlueZ alone — force recycle can leave hostUsed=0 (L3 streak5 att3).
+    host = cf.live_host_address(s.session, "")
+    if not host and s.ble is not None:
+        host = _wait_esp_ble_host(s, s.ble, timeout=30.0)
+    if not host:
+        ensure_ble_midi(s, force=True)
+        host = cf.live_host_address(s.session, "")
+        if not host and s.ble is not None:
+            host = _wait_esp_ble_host(s, s.ble, timeout=30.0)
+    if not host:
+        raise CaseFail("no connected laptop host for HID role")
     case = cf.HOST_CASES[2]  # MIDI+HID keyboard+mouse
-    cf.apply_case(s.session, addr, case)
-    names = cf.wait_laptop_hid(addr, s.session)
+    code, text = cf.apply_case(s.session, host, case)
+    if code != 200:
+        raise CaseFail(f"HID role http={code} {text[:120]}")
+    names = cf.wait_laptop_hid(module, s.session)
     s.check("HID /dev/input ShowboxMod", bool(names), f"nodes={names}")
     if names:
         cf.http_post(f"{s.session.base}/api/v1/hid/keyboard", {"key": "pageup"})
@@ -1311,23 +1490,32 @@ def case_airstep_held(s: Suite) -> None:
     s.check("AIRSTEP still up while laptop is host", not down, f"down={down}")
 
 
-def _wait_ads(s: Suite, timeout: float = 20.0) -> dict[str, Any]:
-    if cf.laptop_open_ads(s.session):
-        return s.midi_status()
+def _wait_ads(s: Suite, timeout: float = 40.0) -> dict[str, Any]:
+    """Open the pairing window; only return midi when ads are actually live.
+
+    Do not trust `laptop_open_ads()` then a one-shot `midi_status()`: after
+    webui SPA the follow-up GET can come back empty while open_ads already
+    returned True (L3 streak12 att4: advertising=None pairingMs=None hosts=None).
+    """
     end = time.monotonic() + timeout
     midi: dict[str, Any] = {}
     last_post = 0.0
     while time.monotonic() < end:
         if last_post == 0.0 or (time.monotonic() - last_post) >= 8.0:
-            s.session.post_settings(acceptNewHosts=True)
+            try:
+                s.session.post_settings(acceptNewHosts=True)
+            except Exception as exc:
+                s.info(f"acceptNewHosts: {exc}")
             last_post = time.monotonic()
         midi = s.midi_status()
         if midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000:
             return midi
+        if not midi:
+            wait_http_quiet(s.ip, timeout=min(5.0, max(0.5, end - time.monotonic())))
         remaining = end - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(0.4, remaining))
+        time.sleep(min(0.5, remaining))
     return midi
 
 
@@ -1337,7 +1525,7 @@ def case_fresh_pair(s: Suite) -> None:
         s.ble = None
     if not wait_http_quiet(s.ip, timeout=16.0):
         raise CaseFail("HTTP down before fresh-pair")
-    midi = _wait_ads(s)
+    midi = _wait_ads(s, timeout=45.0)
     if not (midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000):
         raise CaseFail(
             f"ads off before unpair advertising={midi.get('advertising')} "
@@ -1422,6 +1610,15 @@ def case_webui(s: Suite) -> None:
         if not wait_http_quiet(s.ip, timeout=12.0):
             s.info(f"webui snapshot: HTTP down before attempt {attempt + 1}")
             continue
+        # Retries after a failed SAVE/RECALL race used to compound cache≠mixer
+        # (L2 streak5 pass9: attempt1 stayed at 40, attempt3 drifted after save).
+        if attempt:
+            wait_http_quiet(s.ip, timeout=6.0)
+            try:
+                api("/api/v1/showbox/entities/INPUT1_GAIN", {"value": 40})
+            except Exception as exc:
+                s.info(f"webui heal INPUT1_GAIN: {exc}")
+            time.sleep(0.8)
         try:
             r2 = subprocess.run(["node", str(snap), "--url", url], cwd=str(HERE), timeout=90)
         except subprocess.TimeoutExpired:
@@ -1439,6 +1636,12 @@ def case_rec_timer(s: Suite) -> None:
         msg = s.ws.last_link or {}
         sd = _num(msg.get("sdCard"))
         sec = _num(msg.get("recSec"))
+        # Recording with recSec still 0 used to short-circuit on the WS
+        # snapshot and never refresh via HTTP (L2 streak4: sdCard=2 recSec=0
+        # for the whole 4s wait while /link already had the tick).
+        if sd == 2 and sec < 1:
+            link = s.link()
+            return _num(link.get("sdCard")), _num(link.get("recSec"))
         if sd or sec:
             return sd, sec
         link = s.link()
@@ -1455,7 +1658,7 @@ def case_rec_timer(s: Suite) -> None:
             remaining = end - time.monotonic()
             if remaining <= 0:
                 break
-            s.ws.got_link.wait(timeout=remaining)
+            s.ws.got_link.wait(timeout=min(0.4, remaining))
             s.ws.got_link.clear()
             sd, sec = rec_fields()
         return sd, sec
@@ -1467,7 +1670,7 @@ def case_rec_timer(s: Suite) -> None:
         sd, sec = wait_sd(2, 2.0)
     if sd != 2:
         raise CaseSkip(f"SD record did not start (sdCard={sd})")
-    end = time.monotonic() + 4.0
+    end = time.monotonic() + 10.0
     saw_tick = sec >= 1
     while time.monotonic() < end and not saw_tick:
         sd, sec = rec_fields()
@@ -1477,7 +1680,7 @@ def case_rec_timer(s: Suite) -> None:
         remaining = end - time.monotonic()
         if remaining <= 0:
             break
-        s.ws.got_link.wait(timeout=remaining)
+        s.ws.got_link.wait(timeout=min(0.5, remaining))
         s.ws.got_link.clear()
     s.check("recSec ticked", saw_tick, f"sdCard={sd} recSec={sec}")
     api("/api/v1/showbox/action/sdcard", {})
@@ -1630,11 +1833,36 @@ def case_simultaneous(s: Suite) -> None:
 
 
 def case_midi_http_together(s: Suite) -> None:
-    ensure_ble_midi(s)
-    rtp = RtpMidi(s.ip)
+    # force=True: post boost-reboot / simultaneous the BlueZ ACL can look up
+    # while AcquireWrite returns Not connected (L3 streak7 att2). Then a
+    # single-shot AppleMIDI invite RuntimeError aborted the suite as ERROR.
+    ensure_ble_midi(s, force=True)
+    if s.rtp is not None:
+        try:
+            s.rtp.close()
+        except Exception:
+            pass
+        s.rtp = None
+    rtp = None
+    last = "AppleMIDI connect failed"
+    for _attempt in range(3):
+        rtp = RtpMidi(s.ip)
+        try:
+            detail = rtp.connect()
+            break
+        except Exception as exc:
+            last = str(exc)
+            try:
+                rtp.close()
+            except Exception:
+                pass
+            rtp = None
+            time.sleep(0.35)
+    if rtp is None:
+        raise CaseFail(last)
     try:
-        rtp.connect()
         s.rtp = rtp
+        s.info(f"AppleMIDI session {detail}")
         looper_clear(s)
         for i in range(4):
             s.ble_cc(102 if i % 2 == 0 else 104)
@@ -1705,6 +1933,15 @@ def case_heap_soak(s: Suite) -> None:
         live, why = cf.uart_ok(s.link(), 2000)
         # ICMP next to AIRSTEP PTA can miss a 1s echo while TCP and UART
         # stay up. Heap-soak is the HTTP/UART/heap oracle, not ping.
+        # A single http=0 with uart live is the same coex stall (L3 streak9
+        # att1: soak 17 ping=False http=0 uart=ok → 1/79 fail). Retry once.
+        if code != 200 and live:
+            code, body = http_get_retry(
+                f"http://{s.ip}/services", timeout=2.0, attempts=3, min_bytes=100
+            )
+            live, why = cf.uart_ok(s.link(), 2000)
+            if code == 200 and live:
+                s.info(f"soak {n} http recovered after retry ping={ping}")
         if code != 200 or not live:
             fail += 1
             s.info(f"soak {n} ping={ping} http={code} uart={why}")

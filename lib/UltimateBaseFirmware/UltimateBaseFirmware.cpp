@@ -362,22 +362,17 @@ void UltimateBaseFirmware::initializeWifi() {
         _wifiManager = new WiFiManager(Debug);  // Create a default WiFiManager instance if not set
     }
 
-    WiFi.mode(WIFI_AP_STA);
+    // CaptivePortal owns SoftAP + STA join. WiFiManager.autoConnect used to
+    // block boot ~60s, leave an ESP_XXXX beacon fighting ShowboxMod, and
+    // wedge STA in "connecting" so POST /api/v1/wifi could not set config.
+    WiFi.mode(WIFI_STA);
     WiFi.hostname(_hostName);
     _wifiManager->setHttpPort(8080);
     _wifiManager->setConfigPortalBlocking(false);
     _wifiManager->setConfigPortalTimeout(0);
     _wifiManager->setEnableConfigPortal(false);
-
-    if (_wifiManager->autoConnect("ShowboxExpansionModuleAP", "showbox")) {
-        Debug.println("Connected to WiFi!");
-        // Free the AP interface's buffers before BLE/HID init: the HID
-        // device creation needs several KB of internal RAM and the AP
-        // (provisioning only) eats ~10 KB. startSetupPortal re-enables it.
-        WiFi.mode(WIFI_STA);
-    } else {
-        Debug.println("Failed to connect to WiFi. Mixer hotspot will stay up.");
-    }
+    _wifiManager->setConnectTimeout(1);
+    Debug.println("[ INFO ] Wi-Fi deferred to CaptivePortal (no WiFiManager autoConnect).");
 }
 
 // Generate info string

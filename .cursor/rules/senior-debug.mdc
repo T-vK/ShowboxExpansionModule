@@ -1,0 +1,30 @@
+---
+description: Senior debug loop — minimal repro before fix; never use full L3 streaks as the debugger
+alwaysApply: true
+---
+
+# Senior debugging (mandatory)
+
+## Default loop (do not skip)
+
+1. **Classify** with evidence: firmware vs suite harness vs host fixture (BlueZ/HTTP/heap). Cite log lines / console.
+2. **Minimal repro** — smallest command or case sequence that fails reliably (ideally <1 min). Prefer e.g. `ble-midi → http-pwa` over full `--level 3`.
+3. **One fix** aimed at the shared primitive when the failure is cross-cutting (e.g. `ensure_ble_midi`), not a one-off in a single case unless the bug is truly local.
+4. **Verify the repro** N times (default **≥3**, prefer **5** for flakes) until green.
+5. **Only then** gated full streak / level run as confirmation — never as the first proof.
+
+## Forbidden (wastes hours)
+
+- Patch → “iso once” → start 10× L3 and hope
+- Stacking per-case retries without a shared root fix
+- Shotgun edits without a failing repro you can re-run
+- Declaring victory because a different, weaker path passed
+
+## Firmware vs suite
+
+- **Firmware** when console/rules/UART behavior is wrong under correct stimulus → change `src/`, flash, re-run the **same** minimal repro.
+- **Suite/fixture** when BlueZ ACL, ads window, HTTP after SPA, or harness timing is wrong → change `scripts/suite/` (or e2e), verify repro, **do not flash** unless firmware is implicated.
+
+## After a streak STOP
+
+Do **not** immediately start streak N+1. Extract the fail, build/tighten repro, fix, verify repro, **then** gate + one new streak.

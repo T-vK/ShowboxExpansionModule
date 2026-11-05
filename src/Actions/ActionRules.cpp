@@ -576,7 +576,9 @@ float ActionRules::getVariable(const char* name) const {
 void ActionRules::noteEntityWrite(const char* entityName, const char* value) {
     // Module-originated writes (webui/API) produce no wire echo, so rules
     // that track entity changes would never see them. Feed the write into
-    // the same event ring the hardware announcements use.
+    // the same path hardware announcements use — critical entities must use
+    // the latest-wins slot, not the ring (ring reordering after a boost
+    // write used to deliver a stale gain after the boosted echo).
     if (entityName == nullptr) {
         return;
     }
@@ -584,7 +586,7 @@ void ActionRules::noteEntityWrite(const char* entityName, const char* value) {
     if (found == string_to_entity_id.end()) {
         return;
     }
-    sEntityRing.push(static_cast<uint8_t>(found->second), value == nullptr ? "" : value);
+    entityHeard(found->second, value == nullptr ? "" : value);
 }
 
 void ActionRules::setDebugSerial(Print* serial) {
@@ -1414,8 +1416,15 @@ bool ActionRules::leafPass(JsonObjectConst leaf) const {
     if (type != "showbox") {
         return false;
     }
+    String entity = jsonText(leaf["entity"]);
     float actual = 0;
-    if (!showboxValue(showbox, jsonText(leaf["entity"]), actual)) {
+    // Prefer the firing event's value when the condition names that entity.
+    // Reading the live store races the UART/predict path and can still show
+    // the previous LOOPER_STATE while p2 is already "3".
+    if (condShowboxEntity != nullptr && condShowboxValue != nullptr
+            && entity == condShowboxEntity) {
+        actual = wantedNumber(String(condShowboxValue));
+    } else if (!showboxValue(showbox, entity, actual)) {
         return false;
     }
     String op = jsonText(leaf["op"]);
@@ -1473,6 +1482,11 @@ bool ActionRules::conditionPass(JsonVariantConst node) const {
 }
 
 void ActionRules::fire(const char* event, const char* p1, const char* p2, const char* p3, const char* p4, const char* p5) {
+    const bool showboxEvent = event != nullptr && strcmp(event, "showbox") == 0;
+    if (showboxEvent) {
+        condShowboxEntity = p1;
+        condShowboxValue = p2;
+    }
     for (const Rule& rule : rules) {
         if (!rule.on) {
             continue;
@@ -1491,14 +1505,17 @@ void ActionRules::fire(const char* event, const char* p1, const char* p2, const 
         if (!matched) {
             continue;
         }
-        // Wrap-from-STOP taps PLAY so LONG can clear. That PLAY is not a
-        // user play: auto-boost UART + NVS persist drops the wrap LONG
-        // (L3 att2 autoboost clear stayed at STOP, extra CC104 landed PLAY).
+        // Wrap-from-STOP taps PLAY so LONG can clear. Stop-from-OVERDUB also
+        // taps PLAY first. Neither is a user play: auto-boost UART + NVS
+        // persist drops the wrap LONG (L3 att2), and stop's synthetic PLAY
+        // can re-arm boost off a stale INPUT2 cache (L3 streak2 pass10:
+        // REMEMBERED_GAIN=4 → gain=12 while stopped).
         if (jsonText(doc["builtin"]) == "boosterAutoOn"
                 && looperTapWatch != 0
-                && strcmp(looperTapOp, "delete") == 0) {
+                && (strcmp(looperTapOp, "delete") == 0
+                    || strcmp(looperTapOp, "stop") == 0)) {
             if (debug != nullptr) {
-                debug->println("[looper] skip auto-boost during wrap");
+                debug->printf("[looper] skip auto-boost during %s\n", looperTapOp);
             }
             continue;
         }
@@ -1539,6 +1556,8 @@ void ActionRules::fire(const char* event, const char* p1, const char* p2, const 
             debug->printf("Reaction %u%s%s\n", rule.id, rule.name.length() ? " " : "", rule.name.c_str());
         }
     }
+    condShowboxEntity = nullptr;
+    condShowboxValue = nullptr;
 }
 
 bool ActionRules::enqueue(uint16_t id, const char* triggerValue) {
@@ -1913,6 +1932,7 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
             // carry the boosted value and would corrupt the remembered base
             // and ratchet the gain upwards forever.
             inAction = false;
+            String clearName = jsonText(step["clearVar"]);
             if (fabsf(current - next) < 0.05f) {
                 if (debug != nullptr) debug->printf("[trk %lu] same %.1f\n", (unsigned long)millis(), (double)next);
                 return true;
@@ -1922,14 +1942,75 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
                 // announcement can lag the write by seconds, and adopting it
                 // would ratchet REMEMBERED_GAIN upward forever. Exact ==
                 // missed 36.0 vs 36 (L3 manual-boost: tracker ate the boost
-                // as a user move 2.7s later). The marker clears on the next
-                // engine write, so a later genuine user change still lands.
+                // as a user move 2.7s later). The marker is overwritten on the
+                // next engine write, so a later genuine user change still lands.
                 return true;
             }
-            if (debug != nullptr) debug->printf("[trk %lu] user change %.1f -> %.1f, clear %s\n",
-                (unsigned long)millis(), (double)current, (double)next, jsonText(step["clearVar"]).c_str());
+            // The latest marker is not enough. Overdub can boost (write 36)
+            // and unboost (write 28) before the 36 echo arrives. Matching
+            // only the last write then stores 36 as the base. Keep the few
+            // writes before that for 15s, which covers the measured lag.
+            for (int i = 0; i < kOwnGainHist; i++) {
+                if (ownGainHistMs[i] == 0 || (int32_t)(millis() - ownGainHistMs[i]) > 15000) {
+                    continue;
+                }
+                if (fabsf(next - ownGainHist[i]) < 0.4f) {
+                    if (debug != nullptr) {
+                        debug->printf("[trk %lu] skip own echo %.1f age=%ld\n",
+                            (unsigned long)millis(), (double)next,
+                            (long)(millis() - ownGainHistMs[i]));
+                    }
+                    return true;
+                }
+            }
+            // Freeze REMEMBERED_GAIN during stop/delete transitions. A stale
+            // INPUT2 dump (POSITION_2=4) can land while unboost ignores rules;
+            // adopting it as base then letting AutoOn re-arm yields gain=12
+            // while stopped (L3 streak2 pass10).
+            if (looperTapWatch != 0
+                    && (strcmp(looperTapOp, "stop") == 0
+                        || strcmp(looperTapOp, "delete") == 0)) {
+                if (debug != nullptr) {
+                    debug->printf("[trk %lu] freeze during %s (%.1f)\n",
+                        (unsigned long)millis(), looperTapOp, (double)next);
+                }
+                return true;
+            }
+            // While the boost flag is set, REMEMBERED_GAIN holds the pre-boost
+            // base. A late wire echo of base+steps must not look like a user
+            // move (L1 streak: [trk] 28→36 cleared BOOST_ENABLED ~426ms after
+            // toggle even though the gain write was ours). Match by expected
+            // boosted step, not only lastOwnGainWrite — that marker can be
+            // displaced by an intervening own write (unboost/reconcile).
+            if (clearName.length() && getVar(&job, clearName) >= 0.5f) {
+                int steps = (int)getVar(&job, "BOOST_AMOUNT");
+                if (steps < 1) {
+                    steps = 2;
+                }
+                int baseStep = nearestGainStep(current);
+                int boostedStep = baseStep + steps;
+                if (boostedStep >= kGainStepCount) {
+                    boostedStep = kGainStepCount - 1;
+                }
+                if (fabsf(next - kGainSteps[boostedStep]) < 0.4f) {
+                    if (debug != nullptr) {
+                        debug->printf("[trk %lu] skip boost echo %.1f (base %.1f steps %d own=%.1f)\n",
+                            (unsigned long)millis(), (double)next, (double)current, steps,
+                            (double)lastOwnGainWrite);
+                    }
+                    // Refresh the marker so a later identical echo still matches.
+                    lastOwnGainWrite = next;
+                    lastOwnGainWriteMs = millis();
+                    return true;
+                }
+            }
+            if (debug != nullptr) {
+                debug->printf("[trk %lu] user change %.1f -> %.1f, clear %s (own=%.1f age=%ld)\n",
+                    (unsigned long)millis(), (double)current, (double)next, clearName.c_str(),
+                    (double)lastOwnGainWrite,
+                    lastOwnGainWriteMs == 0 ? -1L : (long)(millis() - lastOwnGainWriteMs));
+            }
             setVar(&job, name, next, local, persist);
-            String clearName = jsonText(step["clearVar"]);
             if (clearName.length()) {
                 setVar(&job, clearName, 0.0f, local, persist);
             }
@@ -2145,6 +2226,14 @@ void ActionRules::load() {
     }
 }
 
+static bool ruleIsBuiltin(const String& json) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) {
+        return false;
+    }
+    return jsonText(doc["builtin"]).length() > 0;
+}
+
 void ActionRules::flush() {
     if (!dirty) {
         return;
@@ -2153,35 +2242,80 @@ void ActionRules::flush() {
     if (!prefs.begin("actions", false)) {
         return;
     }
-    String ids;
-    std::vector<uint16_t> now;
-    for (size_t i = 0; i < rules.size(); i++) {
-        if (i > 0) {
-            ids += ',';
-        }
-        ids += String(rules[i].id);
-        now.push_back(rules[i].id);
-        String key = "a" + String(rules[i].id);
-        if (prefs.putString(key.c_str(), rules[i].json) == 0 && debug != nullptr) {
-            debug->println("Could not store a reaction.");
-        }
-    }
-    prefs.putString("ids", ids);
-    for (uint16_t old : storedIds) {
-        bool still = false;
-        for (uint16_t id : now) {
-            if (id == old) {
-                still = true;
-                break;
+    // Builtins are seeded from flash every boot. Persisting all of them into
+    // the 20K NVS (alongside Wi‑Fi / BLE / actvar) filled the partition until
+    // putString failed with NOT_ENOUGH_SPACE and flash retries wedged :80
+    // (L1 streak after 3 passes; boot log a23/a26/a27). Only user rules go
+    // to NVS; builtin on/off resets to the seed defaults on reboot.
+    auto writeAll = [&](bool reclaimPass) -> bool {
+        String ids;
+        std::vector<uint16_t> now;
+        bool ok = true;
+        bool first = true;
+        for (size_t i = 0; i < rules.size(); i++) {
+            if (ruleIsBuiltin(rules[i].json)) {
+                continue;
+            }
+            if (!first) {
+                ids += ',';
+            }
+            first = false;
+            ids += String(rules[i].id);
+            now.push_back(rules[i].id);
+            String key = "a" + String(rules[i].id);
+            if (prefs.putString(key.c_str(), rules[i].json) == 0) {
+                ok = false;
+                if (debug != nullptr) {
+                    debug->printf("Could not store reaction %u%s\n",
+                        rules[i].id, reclaimPass ? " after reclaim" : "");
+                }
             }
         }
-        if (!still) {
-            prefs.remove(("a" + String(old)).c_str());
+        // putString("") returns 0 even on success, which used to look like
+        // NOT_ENOUGH_SPACE when every rule was a flash-seeded builtin and
+        // ids was empty — false "nvs full" then flash-thrashed boot/:80.
+        if (ids.length() == 0) {
+            prefs.remove("ids");
+        } else if (prefs.putString("ids", ids) == 0) {
+            ok = false;
         }
+        if (!reclaimPass) {
+            for (uint16_t old : storedIds) {
+                bool still = false;
+                for (uint16_t id : now) {
+                    if (id == old) {
+                        still = true;
+                        break;
+                    }
+                }
+                if (!still) {
+                    prefs.remove(("a" + String(old)).c_str());
+                }
+            }
+            prefs.remove("rules");
+        }
+        // After prefs.clear(), the namespace is empty — do not probe a1..a128
+        // (each missing key was a flash op that stalled boot and wedged :80).
+        if (ok) {
+            storedIds = now;
+        }
+        return ok;
+    };
+    bool ok = writeAll(false);
+    if (!ok) {
+        prefs.clear();
+        if (debug != nullptr) {
+            debug->println("[actions] nvs full, actions wiped and rewritten");
+        }
+        ok = writeAll(true);
     }
-    prefs.remove("rules");
-    storedIds = now;
+    // Always clear dirty after a reclaim attempt. Retrying every tick while
+    // the 20K partition has no free pages spins flash erase on the loop and
+    // wedges :80 (boot log: 17x "actions wiped" then HTTP refused).
     dirty = false;
+    if (!ok && debug != nullptr) {
+        debug->println("[actions] persist skipped, NVS still full (user rules kept in RAM)");
+    }
     prefs.end();
 }
 
@@ -2223,6 +2357,21 @@ void ActionRules::seedBuiltins() {
         applySave(body, error);
     }
     patchBuiltinMeta();
+    // Drop previously persisted builtin copies from NVS (flash is source of
+    // truth). Keeping dirty so flush() rewrites ids and removes aN orphans.
+    for (uint16_t old : storedIds) {
+        bool user = false;
+        for (const Rule& rule : rules) {
+            if (rule.id == old && !ruleIsBuiltin(rule.json)) {
+                user = true;
+                break;
+            }
+        }
+        if (!user) {
+            dirty = true;
+            break;
+        }
+    }
 }
 
 // Builtin rules that older firmware seeded and that are now obsolete: the
@@ -2529,6 +2678,9 @@ void ActionRules::noteOwnGainWrite(int id, float value) {
     lastOwnGainEntity = id;
     lastOwnGainWrite = value;
     lastOwnGainWriteMs = millis();
+    ownGainHist[ownGainHistPos] = value;
+    ownGainHistMs[ownGainHistPos] = lastOwnGainWriteMs;
+    ownGainHistPos = static_cast<uint8_t>((ownGainHistPos + 1) % kOwnGainHist);
 }
 
 bool ActionRules::looperWireBusy() const {
@@ -2586,8 +2738,10 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         persist = step["persist"].as<bool>();
     }
     // The boost's own writes must not be mistaken for user gain moves by
-    // gain-tracking rules; the base echoes within a few ms, keep margin.
-    const uint32_t boostIgnoreMs = 200;
+    // gain-tracking rules. Wire echoes have been measured past 2s under load
+    // (L1 manual-boost after autoboost), so keep the gate open longer; the
+    // trackTrigger path also rejects expected boosted values while armed.
+    const uint32_t boostIgnoreMs = 3500;
     bool haveRange = !step["low"].isNull() || !step["high"].isNull();
     float low = step["low"].isNull() ? Showbox::InputGain::POSITION_9 : step["low"].as<float>();
     float high = step["high"].isNull() ? Showbox::InputGain::POSITION_14 : step["high"].as<float>();
@@ -2600,9 +2754,9 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         else on = !atHigh;
         float next = on ? high : low;
         if (fabsf(current - next) >= 0.05f) {
+            noteOwnGainWrite(id, next);
             ignoreShowboxUntil = millis() + boostIgnoreMs;
             showbox->setEntityValue(id, next);
-            noteOwnGainWrite(id, next);
             changed = true;
         }
         if (varName.length()) {
@@ -2653,22 +2807,20 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
                     (unsigned long)millis(), active ? 1 : 0, (double)current,
                     (double)getVar(&job, baseName), steps);
             }
-            // The module came back up with BOOST_ENABLED persisted. If the
-            // gain still shows exactly base + steps, the boost survived the
-            // reboot and is undone; anything else means the user (or the
-            // hardware) moved the gain meanwhile, so we stop claiming it.
+            // Soft reboot keeps BOOST_ENABLED + REMEMBERED_GAIN in RTC. The
+            // first entity dump can be stale (L2 pass3: cur=4.0 / POSITION_2
+            // while the channel was still at the boosted 36). Requiring
+            // current==base+steps then cleared the flag and left gain at 4.
+            // REMEMBERED_GAIN is authoritative after our own boost.
             if (!active) {
                 inAction = false;
                 return;
             }
             float base = getVar(&job, baseName);
-            int baseStep = nearestGainStep(base);
-            int boostedStep = baseStep + steps;
-            if (boostedStep >= kGainStepCount) boostedStep = kGainStepCount - 1;
-            if (nearestGainStep(current) == boostedStep && fabsf(current - kGainSteps[boostedStep]) < 0.05f) {
+            if (base > 1.0f && fabsf(current - base) >= 0.05f) {
+                noteOwnGainWrite(id, base);
                 ignoreShowboxUntil = millis() + boostIgnoreMs;
                 showbox->setEntityValue(id, base);
-                noteOwnGainWrite(id, base);
             }
             if (varName.length()) {
                 setVar(&job, varName, 0.0f, false, persist);
@@ -2686,13 +2838,36 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         if (on != active) {
             changed = true;
             if (on) {
+                // Refuse re-arm during stop/delete synthetic PLAY, and while
+                // a recent own unboost/boost write is still settling (gate
+                // edge ≈ boostIgnoreMs caused L3 pass10 REMEMBERED=4).
+                if (looperTapWatch != 0
+                        && (strcmp(looperTapOp, "stop") == 0
+                            || strcmp(looperTapOp, "delete") == 0)) {
+                    if (debug != nullptr) {
+                        debug->printf("[gb %lu] refuse boost during %s\n",
+                            (unsigned long)millis(), looperTapOp);
+                    }
+                    inAction = false;
+                    return;
+                }
+                if (lastOwnGainWriteMs != 0
+                        && (int32_t)(millis() - lastOwnGainWriteMs) < (int32_t)boostIgnoreMs) {
+                    if (debug != nullptr) {
+                        debug->printf("[gb %lu] refuse boost; own write settling age=%ld\n",
+                            (unsigned long)millis(),
+                            (long)(millis() - lastOwnGainWriteMs));
+                    }
+                    inAction = false;
+                    return;
+                }
                 int stepIndex = nearestGainStep(current) + steps;
                 if (stepIndex >= kGainStepCount) {
                     stepIndex = kGainStepCount - 1;
                 }
+                noteOwnGainWrite(id, kGainSteps[stepIndex]);
                 ignoreShowboxUntil = millis() + boostIgnoreMs;
                 showbox->setEntityValue(id, kGainSteps[stepIndex]);
-                noteOwnGainWrite(id, kGainSteps[stepIndex]);
                 setVar(&job, baseName, current, false, persist);
                 if (varName.length()) {
                     setVar(&job, varName, 1.0f, false, persist);
@@ -2708,9 +2883,17 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
                 // boosted. The old "boosted == expected" guard skipped the
                 // restore whenever the base drifted, which is exactly how a
                 // deleted loop used to leave the boost behind.
+                // Also stamp the abandoned boosted reading into ownGainHist:
+                // after BOOST_ENABLED clears, a late wire echo of 36 can age
+                // past the original boost hist entry (~15s) and latch as
+                // REMEMBERED_GAIN, so clear Unboost becomes cur=36 base=36
+                // (L3 streak3 pass7: boost off after clear gain=36).
+                if (base > 1.0f && fabsf(current - base) >= 0.4f) {
+                    noteOwnGainWrite(id, current);
+                }
+                noteOwnGainWrite(id, base);
                 ignoreShowboxUntil = millis() + boostIgnoreMs;
                 showbox->setEntityValue(id, base);
-                noteOwnGainWrite(id, base);
                 if (varName.length()) {
                     setVar(&job, varName, 0.0f, false, persist);
                 }

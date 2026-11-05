@@ -32,8 +32,17 @@ def _pw_destroy_node(address: str) -> None:
             continue
         if "midi-bridge" in name:
             continue
-        hit = compact.lower() in name or compact_l in name or (
-            "bluez_midi" in name and ("showbox" in name or compact_l[-5:] in name)
+        # bluez_midi.server has no Showbox/MAC in the name but still steals
+        # AcquireWrite the instant the LE link comes up (L3 streak4 gate:
+        # Write acquired after flash / adapter cycle until this node dies).
+        hit = (
+            compact.lower() in name
+            or compact_l in name
+            or "bluez_midi.server" in name
+            or (
+                "bluez_midi" in name
+                and ("showbox" in name or compact_l[-5:] in name)
+            )
         )
         if not hit:
             continue
@@ -79,9 +88,9 @@ class BleMidiOut:
             char.StartNotify()
         except dbus.exceptions.DBusException:
             pass
-        fd, unix_fd = _acquire_fd(char, address)
+        fd, unix_fd, last = _acquire_fd(char, address)
         if fd is None or fd <= 2:
-            raise RuntimeError(f"BLE MIDI AcquireWrite failed on {path}")
+            raise RuntimeError(f"BLE MIDI AcquireWrite failed on {path}: {last}")
         self._char = char
         self._fd = fd
         self._unix_fd = unix_fd
@@ -126,7 +135,7 @@ class BleMidiOut:
         if self._char is None:
             raise RuntimeError("BLE MIDI is not connected")
         self._drop_fd()
-        fd, unix_fd = _acquire_fd(self._char, self.address)
+        fd, unix_fd, _last = _acquire_fd(self._char, self.address)
         if fd is None or fd <= 2:
             raise RuntimeError("BLE MIDI AcquireWrite failed")
         self._fd = fd
@@ -168,11 +177,11 @@ def _acquire_fd(char, address: str):
         try:
             unix_fd, _mtu = char.AcquireWrite({})
             fd = int(unix_fd.take())
-            return fd, unix_fd
+            return fd, unix_fd, None
         except dbus.exceptions.DBusException as exc:
             last = exc
             time.sleep(0.08)
-    return None, None
+    return None, None, last
 
 
 def _wait_char_path(address: str, timeout: float) -> str:
@@ -192,7 +201,6 @@ def _wait_char_path(address: str, timeout: float) -> str:
                 last = f"{address} not connected"
                 time.sleep(0.05)
                 continue
-            resolved = bool(props.Get("org.bluez.Device1", "ServicesResolved"))
         except dbus.exceptions.DBusException as exc:
             last = str(exc)
             time.sleep(0.05)
@@ -204,10 +212,11 @@ def _wait_char_path(address: str, timeout: float) -> str:
             if char is None:
                 continue
             uuid = str(char.get("UUID") or "").lower()
+            # L1 22:49 CET: this object was on the bus for the whole 20s
+            # wait while ServicesResolved stayed false (HID discovery still
+            # walking under AIRSTEP). AcquireWrite only needs the char.
+            # Waiting out the flag made the next connect hit BlueZ InProgress.
             if MIDI_CHAR_UUID in uuid and str(path).startswith(dev_path):
-                if resolved:
-                    return str(path)
-                last = f"{address} MIDI char up, waiting ServicesResolved"
-                continue
+                return str(path)
         time.sleep(0.05)
     raise RuntimeError(last)

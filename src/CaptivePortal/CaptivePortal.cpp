@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_netif.h>
+#include <esp_coexist.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
@@ -52,6 +53,24 @@ void CaptivePortal::begin(AsyncWebServer* /*server*/, UltimateBaseFirmware* firm
     firmware = firmwareIn;
     loadPrefs();
     WiFi.setAutoReconnect(autoConnect);
+    // WiFiManager no longer autoConnects. Kick STA from remembered nets so
+    // reboot restores LAN without SoftAP thrash. Keep SoftAP off during the
+    // join — ensureAp() mid-handshake was aborting WiFi.begin().
+    debugLog("portal begin radio=%d auto=%d nets=%u apWanted=%d",
+        radioOn() ? 1 : 0, autoConnect ? 1 : 0, (unsigned)rememberedN, apWanted ? 1 : 0);
+    if (radioOn() && autoConnect && rememberedN > 0 && remembered[0].ssid.length() > 0) {
+        apWanted = false;
+        persistWanted();
+        pendingStaSsid = remembered[0].ssid;
+        pendingStaPass = remembered[0].pass;
+        pendingStaJoin = true;
+        pendingStaJoinAtMs = millis() + 800;
+        lanNoteStaJoin(90000);
+        staJoinDeadlineMs = millis() + 90000;
+        debugLog("sta boot join queued ssid=%s passLen=%u", pendingStaSsid.c_str(),
+            (unsigned)pendingStaPass.length());
+        return;
+    }
     ensureAp();
 }
 
@@ -117,7 +136,9 @@ void CaptivePortal::flushWanted() {
         packed += remembered[i].pass;
         packed += '\n';
     }
-    prefs.putString("nets", packed);
+    size_t wrote = prefs.putString("nets", packed);
+    debugLog("radio prefs flush ap=%d nets=%u packed=%u wrote=%u",
+        apWanted ? 1 : 0, (unsigned)rememberedN, (unsigned)packed.length(), (unsigned)wrote);
     prefs.end();
 }
 
@@ -131,7 +152,11 @@ void CaptivePortal::adoptFallbackAp() {
 }
 
 bool CaptivePortal::setWantedAp(bool on) {
-    if (!on && radioOn() && !staUp() && !apAlways) {
+    // Only force the hotspot to stay up when there is no remembered STA to
+    // join. After NVS wipe + POST /wifi, refusing ap=false while STA was
+    // still associating left AP+STA on a wedged join (reconnect thrash,
+    // status=6 forever).
+    if (!on && radioOn() && !staUp() && !apAlways && rememberedN == 0) {
         on = true;
     }
     apWanted = on;
@@ -254,8 +279,14 @@ void CaptivePortal::ensureAp() {
             return;
         }
         lastApTryMs = millis();
+        // Don't leave STA mid-handshake when bringing SoftAP up — that is
+        // what turned ShowboxMod into ESP_XXXX on the air.
+        WiFi.disconnect(false, false);
+        delay(30);
         apUp = WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
-        debugLog("ap begin=%d ip=%s ch=%u wanted=%d", apUp ? 1 : 0, WiFi.softAPIP().toString().c_str(), (unsigned)channel, apWanted ? 1 : 0);
+        debugLog("ap begin=%d ip=%s ch=%u wanted=%d ssid=%s", apUp ? 1 : 0,
+            WiFi.softAPIP().toString().c_str(), (unsigned)channel, apWanted ? 1 : 0,
+            WiFi.softAPSSID().c_str());
         if (!apUp) {
             return;
         }
@@ -306,15 +337,35 @@ void CaptivePortal::stopDns() {
 
 void CaptivePortal::tick() {
     flushWanted();
+    runPendingStaJoin();
     if ((int32_t)(millis() - lastModeMs) >= 1000) {
         lastModeMs = millis();
-        adoptFallbackAp();
-        if (apShouldRun()) {
-            ensureAp();
-        } else if (!portalOpen()) {
-            stopAp();
-        } else {
-            stopDns();
+        // Don't bring SoftAP back while a deferred STA join is queued —
+        // ensureAp() disconnects STA mid-handshake.
+        if (staUp()) {
+            staJoinDeadlineMs = 0;
+        }
+        const bool joinInFlight = pendingStaJoin ||
+            (staJoinDeadlineMs != 0 && (int32_t)(millis() - staJoinDeadlineMs) < 0) ||
+            lanStaJoinQuiet();
+        if (!joinInFlight && !staUp()) {
+            adoptFallbackAp();
+            // apAuto may be off from a prior provision POST; still raise the
+            // hotspot after a minute without LAN so PSK can be corrected.
+            if (!apWanted && !apAlways && millis() > 120000) {
+                apWanted = true;
+                persistWanted();
+                debugLog("ap recovery on, sta still down");
+            }
+        }
+        if (!joinInFlight) {
+            if (apShouldRun()) {
+                ensureAp();
+            } else if (!portalOpen()) {
+                stopAp();
+            } else {
+                stopDns();
+            }
         }
     }
     if (dnsUp) {
@@ -451,9 +502,47 @@ bool CaptivePortal::connectSta(const String& ssid, const String& password, Strin
     }
     rememberNet(ssid, pass);
     WiFi.setAutoReconnect(autoConnect);
-    WiFi.mode(apShouldRun() || apWanted || apAlways ? WIFI_AP_STA : WIFI_STA);
-    WiFi.setHostname("showbox");
-    WiFi.disconnect(false, false);
-    WiFi.begin(ssid.c_str(), pass.c_str());
+    // Defer the radio flip so SoftAP can finish the HTTP response that
+    // queued this join. Stopping AP here made curl see HTTP 000 and left
+    // STA wedged in "connecting" when LanKeep was already mid-handshake.
+    apWanted = false;
+    apAuto = false; // don't raise SoftAP mid-join via adoptFallbackAp()
+    // Only mark dirty here — Preferences/NVS must not run on the AsyncTCP
+    // callback (spi_flash cache assert). tick()/flushWanted() writes on loop.
+    persistWanted();
+    pendingStaSsid = ssid;
+    pendingStaPass = pass;
+    pendingStaJoin = true;
+    // Give loop() time to flush NVS before runPendingStaJoin.
+    pendingStaJoinAtMs = millis() + 800;
+    lanNoteStaJoin(30000);
     return true;
+}
+
+void CaptivePortal::runPendingStaJoin() {
+    if (!pendingStaJoin) {
+        return;
+    }
+    if ((int32_t)(millis() - pendingStaJoinAtMs) < 0) {
+        return;
+    }
+    pendingStaJoin = false;
+    const String ssid = pendingStaSsid;
+    const String pass = pendingStaPass;
+    pendingStaSsid = "";
+    pendingStaPass = "";
+    // STA-only join. AP+STA plus LanKeep WiFi.reconnect() while status was
+    // still WL_DISCONNECTED aborted the handshake after NVS erase.
+    stopAp();
+    WiFi.mode(WIFI_STA);
+    WiFi.setHostname("showbox");
+    // Do not call WiFi.disconnect() first. Arduino's timed disconnect
+    // returns immediately when already disconnected (it only waits while
+    // connected()), but esp_wifi_disconnect() still posts ASSOC_LEAVE
+    // (reason 8) which then arrives after WiFi.begin() and cancels it.
+    lanNoteStaJoin(90000);
+    staJoinDeadlineMs = millis() + 90000;
+    debugLog("sta join begin ssid=%s passLen=%u", ssid.c_str(), (unsigned)pass.length());
+    wl_status_t st = WiFi.begin(ssid.c_str(), pass.c_str());
+    debugLog("sta begin status=%d", (int)st);
 }
