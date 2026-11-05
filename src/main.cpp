@@ -338,6 +338,11 @@ void loop() {
         // Drop WS first: webServer.end() while a client is live leaks it.
         liveSocket.dropClients();
         webServer.end();
+        // end() can leave a bound or time-wait PCB. begin() then fails with
+        // EADDRINUSE while the listen list is empty, so the health check
+        // restarts forever and :80 stays refused.
+        lanReleaseHttpPort();
+        delay(50);
         webServer.begin();
         debugLog("http listen restart");
     }

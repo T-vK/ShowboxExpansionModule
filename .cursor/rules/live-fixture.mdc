@@ -1,0 +1,32 @@
+---
+description: Live ESP32-S3 / BLE / Wi-Fi fixture constraints for suite and flash work
+alwaysApply: true
+---
+
+# Live fixture constraints
+
+Target STA IP is typically `192.168.3.55` (pfSenseAP). SoftAP `ShowboxMod`.
+
+## Hard constraints
+
+- **No commit** unless the user asks. Author **T-vK** if committing; never `Co-authored-by`.
+- **Never hardcode Wi‑Fi PSK** — use nmcli active `pfSenseAP` profile secrets only.
+- **Never open `/dev/ttyACM0` with a serial monitor or ordinary pyserial** during tests (DTR/RTS resets ESP32-S3). Prefer HTTP/WS. `esptool` reset only when deliberately resetting.
+- **Never start a level streak without a green fixture gate** (services, AIRSTEP + laptop host, BlueZ Connected, MIDI `AcquireWrite`, heap `largest` thresholds).
+- Keep `bluetoothd --noplugin=midi`; destroy PipeWire `bluez_midi.server` if it steals the GATT char.
+
+## BLE MIDI
+
+- Treat **ESP `/api/v1/midi` `hosts[].connected`** as the host gate, not BlueZ `Connected` alone.
+- Connect **only while advertising / pairing window open** (`acceptNewHosts`); otherwise hostUsed stays 0 with ACL up.
+- Prefer fixing **`ensure_ble_midi` / shared helpers** over per-case ACL hacks.
+
+## HTTP after SPA
+
+- After a large SPA GET, use **`wait_http_quiet`** — do not SYN-flood with `wait_http`.
+- Prefer `/debug` (panic/heap) **before** the 266KB SPA; post-SPA prove a **small** endpoint.
+
+## Streaks
+
+- Gate → streak log under `/tmp/`. On STOP: repro → fix → verify → gate → **one** new streak.
+- Actively watch or hold the run; do not claim you are waiting while idle.

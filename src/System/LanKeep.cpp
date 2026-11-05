@@ -170,8 +170,16 @@ static bool lanPcbHttpSilent(const struct tcp_pcb* pcb) {
     return (tcp_ticks - pcb->tmr) >= (bleLive ? 4 : 20);
 }
 
-static int lanAbortSilentHttpPcbs() {
-    int n = 0;
+struct LanSilentAbort {
+    int refused;
+    int telnet;
+    int closing;
+    int idle;
+    int total() const { return refused + telnet + closing + idle; }
+};
+
+static LanSilentAbort lanAbortSilentHttpPcbs() {
+    LanSilentAbort n{};
     LOCK_TCPIP_CORE();
     struct tcp_pcb* pcb = tcp_active_pcbs;
     while (pcb != nullptr) {
@@ -182,7 +190,7 @@ static int lanAbortSilentHttpPcbs() {
         if (pcb->local_port == 80 && pcb->state == ESTABLISHED && !lanPcbIsWsRemote(pcb)
             && pcb->refused_data != nullptr && !ip_addr_isloopback(&pcb->remote_ip)) {
             tcp_abort(pcb);
-            n++;
+            n.refused++;
             pcb = next;
             continue;
         }
@@ -192,18 +200,17 @@ static int lanAbortSilentHttpPcbs() {
         if (pcb->local_port == 23 && pcb->state == ESTABLISHED
             && (tcp_ticks - pcb->tmr) >= 8) {
             tcp_abort(pcb);
-            n++;
+            n.telnet++;
             pcb = next;
             continue;
         }
-        // Half-closed HTTP/telnet PCBs hold a full receive window
-        // (~3 KB internal) after RST/FIN is lost next to BLE.
-        if ((pcb->local_port == 80 || pcb->local_port == 23)
-            && pcb->state >= FIN_WAIT_1 && pcb->state <= LAST_ACK
-            && !lanPcbIsWsRemote(pcb)) {
-            tcp_abort(pcb);
-            n++;
-        }
+        // Do not tcp_abort FIN_WAIT here. After five L1 passes, callback
+        // responses (/services, /midi) accepted the TCP connection and sent
+        // no bytes while a 400-byte String response still returned 200, and
+        // a UART-safe reboot made /services answer in 10 ms. Aborting the
+        // PCB out from under AsyncTCP skips its destructor, so the pbuf
+        // stays reserved. LiveSocket::tick aborts stale websocket clients
+        // through AsyncClient, which is the path that actually frees them.
         pcb = next;
     }
     int httpEst = 0;
@@ -219,7 +226,7 @@ static int lanAbortSilentHttpPcbs() {
             struct tcp_pcb* next = pcb->next;
             if (httpEst > keep && lanPcbHttpSilent(pcb)) {
                 tcp_abort(pcb);
-                n++;
+                n.idle++;
                 httpEst--;
             }
             pcb = next;
@@ -313,9 +320,19 @@ void lanInstallWifiEvents() {
         return;
     }
     wifiEventsOn = true;
-    WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t) {
-        if (event == ARDUINO_EVENT_WIFI_STA_START || event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+    WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+        if (event == ARDUINO_EVENT_WIFI_STA_START) {
+            // Do not change PS or protocol here. Those calls during START
+            // emit ASSOC_LEAVE (reason 8) after WiFi.begin() returns and
+            // cancel the association before AUTH.
+            staProto = 0;
+        } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
             lanPreferWifiAirtime();
+        } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+            uint8_t reason = info.wifi_sta_disconnected.reason;
+            debugLog("wifi sta disconnect reason=%u", (unsigned)reason);
+        } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+            debugLog("wifi got ip %s", WiFi.localIP().toString().c_str());
         }
     });
 }
@@ -560,8 +577,8 @@ void lanTickUnicastHealth() {
     } else {
         abortTried = false;
     }
-    int silent = lanAbortSilentHttpPcbs();
-    int aborted = zombies + silent;
+    LanSilentAbort silent = lanAbortSilentHttpPcbs();
+    int aborted = zombies + silent.total();
     if (aborted <= 0) {
         if (!bleLive) {
             lastStuckMs = 0;
@@ -569,13 +586,12 @@ void lanTickUnicastHealth() {
         return;
     }
     lastStuckMs = now;
-    debugLog("wifi abort zombie pcbs=%d silent=%d", zombies, silent);
-    // Abort silent PCBs always (2s under BLE). Rebind only when no /ws —
-    // restarting while the suite held a client thrashed :80 (telnet up,
-    // HTTP refused). Suite Range-resumes SPA before Chromium snapshot.
-    if (silent > 0 && lanWsClients() == 0) {
-        lanRequestHttpRestart();
-    }
+    debugLog("wifi abort zombie pcbs=%d refused=%d telnet=%d closing=%d idle=%d",
+        zombies, silent.refused, silent.telnet, silent.closing, silent.idle);
+    // Do not rebind :80 here. Serial (2026-11-04): this path fired every 2s
+    // with GET /api/v1/wifi still 200 in <100ms, and each rebind left the
+    // next FIN_WAIT/idle PCB so the listener never stayed up. A missing or
+    // wedged listener is lanTickHttpHealth's job. Aborting the PCB is enough.
 }
 
 void lanTickHeapGuard() {
@@ -1022,6 +1038,18 @@ static void lanBleYieldTick() {
 static bool apYieldForAp = false;
 static uint32_t apYieldSinceMs = 0;
 
+static uint32_t staJoinQuietUntilMs = 0;
+
+void lanNoteStaJoin(uint32_t quietMs) {
+    staJoinQuietUntilMs = millis() + (quietMs == 0 ? 20000 : quietMs);
+    assocFails = 0;
+    lastAssocTryMs = 0;
+}
+
+bool lanStaJoinQuiet() {
+    return staJoinQuietUntilMs != 0 && (int32_t)(millis() - staJoinQuietUntilMs) < 0;
+}
+
 void lanNoteApActive(bool on) {
     static bool last = false;
     if (on == last) {
@@ -1237,6 +1265,25 @@ static uint32_t sHttpProbeMs = 0;
 static int sHttpProbeFails = 0;
 static bool sHttpRebound = false;
 
+static void lanAbortPortList(struct tcp_pcb* pcb, uint16_t port) {
+    while (pcb != nullptr) {
+        struct tcp_pcb* next = pcb->next;
+        if (pcb->local_port == port) {
+            tcp_abort(pcb);
+        }
+        pcb = next;
+    }
+}
+
+void lanReleaseHttpPort() {
+    LOCK_TCPIP_CORE();
+    lanAbortPortList(tcp_bound_pcbs, 80);
+    lanAbortPortList(tcp_listen_pcbs.pcbs, 80);
+    lanAbortPortList(tcp_active_pcbs, 80);
+    lanAbortPortList(tcp_tw_pcbs, 80);
+    UNLOCK_TCPIP_CORE();
+}
+
 static bool lanHttpListenPresent() {
     bool found = false;
     LOCK_TCPIP_CORE();
@@ -1282,9 +1329,14 @@ void lanTickHttpHealth() {
     // :80 stayed dead until a telnet reset. Drop+rebind is already
     // WS-safe (liveSocket.dropClients then webServer.end/begin).
     if (!lanHttpListenPresent()) {
+        if (millis() < 15000) {
+            return;
+        }
         static uint32_t lastGoneMs = 0;
         uint32_t now = millis();
-        if (lastGoneMs == 0 || (int32_t)(now - lastGoneMs) >= 1500) {
+        // A failed begin() leaves the port taken (EADDRINUSE -8). Retrying
+        // every 1.5s never lets lwIP release it, so :80 stays refused.
+        if (lastGoneMs == 0 || (int32_t)(now - lastGoneMs) >= 8000) {
             lastGoneMs = now;
             diagEventForce("http", "listen pcb gone, rebind");
             debugLog("http listen pcb gone, rebind");
@@ -1402,6 +1454,16 @@ void lanKeepWifi(const FrontPanel& panel) {
     }
     wifiWasDown = true;
     staProto = 0;
+    if (staJoinQuietUntilMs != 0 && (int32_t)(millis() - staJoinQuietUntilMs) < 0) {
+        return;
+    }
+    // SoftAP is the provisioning path. STA reconnect while the hotspot is
+    // up wedges the driver ("sta is connecting"), drifts the beacon to
+    // ESP_XXXX, and makes ShowboxMod disappear from scans.
+    if (WiFi.softAPIP()[0] != 0) {
+        misses = 0;
+        return;
+    }
     if (++misses < 3) {
         debugLog("wifi down status=%d rssi=%d miss=%d", (int)st, WiFi.RSSI(), misses);
         return;
@@ -1429,6 +1491,9 @@ void lanKeepWifi(const FrontPanel& panel) {
     // (LoadProhibited, Core 0, backtrace via ppTask). The BLE yield above
     // is what actually frees airtime for the association handshake.
     bool ok = WiFi.reconnect();
+    // Quiet while associating. Do not disconnect on failure — that aborted
+    // an in-flight WiFi.begin() from CaptivePortal ("sta is connecting").
+    staJoinQuietUntilMs = millis() + 20000u;
     debugLog("wifi reconnect=%d fails=%d status=%d rssi=%d ip=%s",
         ok ? 1 : 0, assocFails, (int)WiFi.status(), WiFi.RSSI(), WiFi.localIP().toString().c_str());
 }

@@ -282,7 +282,8 @@ void BleMidi::scanLoop() {
         } else if (wifiDownSince == 0) {
             wifiDownSince = millis();
         }
-        bool holdForWifi = !wifiUp && (int32_t)(millis() - wifiDownSince) < 20000;
+        // Association to pfSense can take >20s under coex; keep BLE quiet.
+        bool holdForWifi = !wifiUp && (int32_t)(millis() - wifiDownSince) < 45000;
         bool holdForHttps = httpsHoldOutgoing();
         bool holdAdv = connectedCount() > 0 || (radio != nullptr && radio->hasIncoming());
         if (!wifiUp && !holdAdv) {

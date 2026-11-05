@@ -128,7 +128,7 @@ Note: If you are using an ESP32 instead of an ESP32-S3, adjust the pin mappings 
 
 White is a latching power button on the reference design (not an ESP GPIO).
 Red / green / blue are momentary buttons; their LEDs are simple on/off indicators
-(one P9813 drives the three channels — not per-button RGB rings).
+(one P9813 drives the three channels; not per-button RGB rings).
 
 ```
 µC Pin | Module Pin

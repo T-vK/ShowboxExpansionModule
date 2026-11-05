@@ -158,10 +158,24 @@ private:
     uint32_t looperTapDumpSeq = 0;
     char looperTapOp[8] = {};
     uint32_t ignoreShowboxUntil = 0;
+    // While fire("showbox", entity, value) evaluates conditions, showbox
+    // leaves for that same entity must use the event value — the live store
+    // can still hold the previous LOOPER_STATE for a beat (L3 streak13 att5:
+    // AutoOff ran on play, AutoOn condition failed, gain stuck at 28).
+    mutable const char* condShowboxEntity = nullptr;
+    mutable const char* condShowboxValue = nullptr;
     uint32_t readyDumpSeq = 0;
     float lastOwnGainWrite = -9999.0f;
     int lastOwnGainEntity = -1;
     uint32_t lastOwnGainWriteMs = 0;
+    // Recent engine writes. The tracker used to keep only the latest, so an
+    // unboost (28) displaced the boost (36) and the late echo of 36 was
+    // stored as REMEMBERED_GAIN. L1 pass 5: base became 36 and clear left
+    // the channel there.
+    static constexpr int kOwnGainHist = 4;
+    float ownGainHist[kOwnGainHist] = {-9999.0f, -9999.0f, -9999.0f, -9999.0f};
+    uint32_t ownGainHistMs[kOwnGainHist] = {};
+    uint8_t ownGainHistPos = 0;
     uint32_t lastLooperButtonMs = 0;
     void noteOwnGainWrite(int id, float value);
     bool looperWireBusy() const;

@@ -9,6 +9,7 @@
 #include "MultiMidi/UsbMidiHost.h"
 #include <BLEAddress.h>
 #include <BLEDevice.h>
+#include <BLEServer.h>
 #include <Preferences.h>
 #include <host/ble_gap.h>
 #include <host/ble_store.h>
@@ -359,10 +360,26 @@ void Connections::startAfterBle() {
     if (hid != nullptr) {
         hid->attachBle(server);
         hid->setBleMix(blePairMix);
-        hid->setBleEnabled(hidEnabled);
+        // Register HID (0x1812) before ble_gatts_start and before AIRSTEP.
+        // Late ble_gatts_add_svcs with a pedal up returns HCI timeout 15, and
+        // after m_gattsStarted a live ACL never gets resetGATT — BlueZ then
+        // sees MIDI only and hid-smoke gets /dev/input nodes=[]. Advertising
+        // still follows hidEnabled via applyHidAdvertising.
+        hid->setBleEnabled(true);
+        if (!hidEnabled) {
+            hid->setBleEnabled(false);
+        }
     }
     if (multiMidi != nullptr) {
         multiMidi->setMaxOutgoing(periSlots);
+    }
+    // Commit GATT while the controller is idle. The first advert used to
+    // call ble_gatts_start after AIRSTEP was already up; that returns HCI
+    // timeout 15, NimBLE leaves the database empty, and a laptop Read By
+    // Group Type gets Attribute Not Found.
+    if (server != nullptr && !server->isStarted()) {
+        server->start();
+        debugLog("gatt boot start=%d hid=%d", server->isStarted() ? 1 : 0, hidEnabled ? 1 : 0);
     }
     applyHidAdvertising();
     if (radio != nullptr) {
@@ -378,6 +395,19 @@ void Connections::tick() {
         pendingRadioPolicy = false;
         applyPairingMixIfIdle();
         applyAdvertisingPolicy();
+    }
+    if (multiMidi != nullptr) {
+        BLEServer* server = multiMidi->bleGattServer();
+        bool pedal = multiMidi->outgoingCount() > 0;
+        if (server != nullptr && !server->isStarted() && !pedal) {
+            static uint32_t lastGattStartMs = 0;
+            uint32_t nowMs = millis();
+            if (lastGattStartMs == 0 || (int32_t)(nowMs - lastGattStartMs) > 5000) {
+                lastGattStartMs = nowMs;
+                server->start();
+                debugLog("gatt retry start=%d", server->isStarted() ? 1 : 0);
+            }
+        }
     }
     if (hidEnabled && hid != nullptr && !hid->bleEnabled()) {
         bool pedal = multiMidi != nullptr && multiMidi->outgoingCount() > 0;
