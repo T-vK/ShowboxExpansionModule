@@ -189,11 +189,13 @@ bool CaptivePortal::setWantedAp(bool on) {
         apGaveUpThisSta = false;
         apFailStreak = 0;
         apForceTry = false;
-        // Back off SoftAP retries so STA HTTP can recover; tick will raise
-        // SoftAP again after kApRetryMs because apWanted stays true.
+        // Keep SoftAP quiet for minutes — a 15s backoff let SoftAP return
+        // mid-suite and wedge BLE AcquireWrite / STA HTTP again.
+        apYieldUntilMs = millis() + kApYieldQuietMs;
         lastApTryMs = millis();
         stopAp();
-        debugLog("ap: temporary SoftAP yield (apAlways) — prefs keep wanted");
+        debugLog("ap: temporary SoftAP yield (apAlways) quiet=%us",
+            (unsigned)(kApYieldQuietMs / 1000));
         return true;
     }
     apWanted = on;
@@ -202,6 +204,9 @@ bool CaptivePortal::setWantedAp(bool on) {
     // Explicit API/UI toggle must not sit behind boot settle / LanKeep backoff.
     lastApTryMs = 0;
     apForceTry = on;
+    if (on) {
+        apYieldUntilMs = 0;
+    }
     persistWanted();
     if (!on) {
         stopAp();
@@ -552,6 +557,8 @@ void CaptivePortal::tick() {
     // API set apForceTry — raise SoftAP from the main loop. Do not gate on
     // lanHttpBodyBusy(): L1's continuous /wifi poll keeps httpBodies>0 so
     // quietMs never hits 10s and SoftAP stayed dark for the whole 45s wait.
+    const bool apYieldQuiet = !apForceTry && apYieldUntilMs != 0
+        && (int32_t)(millis() - apYieldUntilMs) < 0;
     if (apForceTry && apShouldRun()) {
         ensureAp();
     }
@@ -607,7 +614,9 @@ void CaptivePortal::tick() {
             }
         }
         if (!joinInFlight) {
-            if (apShouldRun()) {
+            if (apYieldQuiet) {
+                // Explicit SoftAP yield quiet window (POST ap=false + apAlways).
+            } else if (apShouldRun()) {
                 ensureAp();
             } else if (!portalOpen()) {
                 stopAp();

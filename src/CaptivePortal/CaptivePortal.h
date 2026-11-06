@@ -78,10 +78,15 @@ private:
     bool apGaveUpThisSta = false;
     // setWantedAp/setAlwaysAp: skip the boot SoftAP settle window.
     bool apForceTry = false;
+    // Temporary SoftAP yield (ap=false while apAlways): suppress SoftAP until.
+    uint32_t apYieldUntilMs = 0;
     static constexpr uint32_t kApRetryMs = 15000;
     // Automatic SoftAP while STA is up waits this long after boot so L1
     // uart/mdns/telnet are not racing softAP() coex wedges.
     static constexpr uint32_t kApBootSettleMs = 90000;
+    // After an explicit SoftAP yield, keep SoftAP down this long unless
+    // apForceTry (POST ap=true) asks for it again.
+    static constexpr uint32_t kApYieldQuietMs = 180000;
     NetCred remembered[8];
     uint8_t rememberedN = 0;
     String pendingStaSsid;
