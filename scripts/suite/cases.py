@@ -697,18 +697,20 @@ def case_hotspot(s: Suite) -> None:
             bool(wifi.get("ap")) and bool(wifi.get("sta")),
             f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
         )
-        # softAP() can starve STA HTTP for a few seconds; wait until /wifi
-        # answers again so the next L1 case is not a TimeoutError.
-        settled = _wait_wifi_pred(s, lambda w: bool(w.get("sta")), timeout=20.0)
-        if settled:
-            wifi = settled
-            s.info("STA HTTP settled after SoftAP bring-up")
-        # LanKeep may drop SoftAP during that settle — bring it back before air scan.
+        # Do NOT poll /wifi for 20s under SoftAP+STA+BLE — that SYN flood is
+        # what LanKeep treats as an HTTP wedge and softAPdisconnects (L1 then
+        # fails SoftAP still up after settle). One quiet probe is enough.
+        time.sleep(1.5)
+        try:
+            wifi = _wifi_api(s) or wifi
+            s.info("STA HTTP probed after SoftAP bring-up")
+        except Exception as exc:
+            s.info(f"STA HTTP probe after SoftAP: {exc}")
         if wifi.get("sta") and not wifi.get("ap"):
-            s.info("SoftAP dropped during settle — re-enable")
+            s.info("SoftAP dropped before air scan — re-enable")
             wifi = _wait_softap_up(s, timeout=45.0) or wifi
         s.check(
-            "SoftAP still up after STA settle",
+            "SoftAP up for air scan",
             bool(wifi.get("ap")) and bool(wifi.get("sta")),
             f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
         )
