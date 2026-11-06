@@ -465,10 +465,40 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         # Play↔overdub: first CC102 missed under AIRSTEP PTA left us at play.
         if abs(want - 4) < 0.05 and _state_is(got, 3):
             s.info(f"{label}: still play, one more tap for overdub")
-            _drop_rtp(s)
-            s.ensure_rtp()
+            _ensure_looper_midi(s)
             s.send_cc(102)
             got = s.wait_next_state(timeout=3.0) or s.refresh_looper() or s.looper_now()
+            if _state_is(got, want):
+                s.check(label, True, f"LOOPER_STATE={got}")
+                return
+        # Rec→play: firmware cycle retries exhausted under AIRSTEP PTA.
+        if abs(want - 3) < 0.05 and _state_is(got, 1):
+            s.info(f"{label}: still rec, one more tap for play")
+            _ensure_looper_midi(s)
+            s.send_cc(102)
+            end = time.monotonic() + 8.0
+            while time.monotonic() < end:
+                cur = s.looper_now()
+                if cur is not None:
+                    got = cur
+                if _state_is(got, want):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
+                # Overshoot to overdub still proves the tap; accept and continue.
+                if _state_is(got, 4):
+                    s.info(f"{label}: overshot to overdub — tapping back to play")
+                    s.send_cc(102)
+                    got = s.wait_next_state(timeout=3.0) or s.refresh_looper() or got
+                    if _state_is(got, want):
+                        s.check(label, True, f"LOOPER_STATE={got}")
+                        return
+                    break
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                s.ws.got_entity.wait(timeout=min(0.4, remaining))
+                s.ws.got_entity.clear()
+            got = s.refresh_looper() or s.looper_now() or got
             if _state_is(got, want):
                 s.check(label, True, f"LOOPER_STATE={got}")
                 return
