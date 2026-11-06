@@ -1101,6 +1101,8 @@ def case_telnet_ota(s: Suite) -> None:
             s.info(f"telnet via eth {eth}")
     if not ok:
         # SoftAP/APSTA can leave RemoteDebug :23 refused while HTTP still lives.
+        # Leave SoftAP down — restoring it here re-wedged :23 (L2 connection
+        # reset) and hotspot's _wait_softap_up will raise SoftAP next.
         s.info("telnet refused — yield SoftAP briefly")
         try:
             _wifi_api(s, {"ap": False})
@@ -1108,21 +1110,8 @@ def case_telnet_ota(s: Suite) -> None:
             ok, detail = _try(s.ip, 6.0)
             if not ok:
                 ok, detail = _try(_eth_fallback_ip(s), 6.0)
-        finally:
-            try:
-                _wifi_api(s, {"ap": True, "apAlways": True})
-                # SoftAP reclaim after ap=false can take a few softAP ticks;
-                # hotspot runs next and only waits 35s — wait here so L1 does
-                # not race a deferred BLE-yield softAP.
-                restored = _wait_wifi_pred(
-                    s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=45.0
-                )
-                if restored:
-                    s.info("SoftAP restored after telnet yield")
-                else:
-                    s.info("SoftAP not back yet after telnet yield — hotspot will retry")
-            except Exception as exc:
-                s.info(f"SoftAP restore after telnet: {exc}")
+        except Exception as exc:
+            s.info(f"SoftAP yield for telnet: {exc}")
     s.check("telnet RemoteDebug", ok, detail)
     ota_ip = s.ip if cf.udp_open(s.ip, 3232) else _eth_fallback_ip(s)
     s.check("OTA UDP 3232", cf.udp_open(ota_ip, 3232), f"port 3232 ip={ota_ip}")
