@@ -741,12 +741,17 @@ def case_hotspot(s: Suite) -> None:
                 if healed
                 else "SoftAP lower: STA HTTP not settled yet"
             )
-            # SoftAP bring-up yields the BLE host; give the laptop ACL time to
-            # return before ble-pair / ble-midi (otherwise hostUsed stays 0).
-            try:
-                cf.laptop_open_ads(s.session)
-            except Exception:
-                pass
+            # SoftAP bring-up yields the BLE host and can leave advertising
+            # closed (ble-midi then fails "ads not open"). Re-open the pairing
+            # window and wait for a connected host before later BLE cases.
+            midi = _wait_ads(s, timeout=40.0)
+            if midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000:
+                s.info(f"ads open after SoftAP yield pairingMs={midi.get('pairingMs')}")
+            else:
+                s.info(
+                    f"ads not open after SoftAP yield "
+                    f"advertising={midi.get('advertising')} pairingMs={midi.get('pairingMs')}"
+                )
             host = ""
             end = time.monotonic() + 25.0
             while time.monotonic() < end:
