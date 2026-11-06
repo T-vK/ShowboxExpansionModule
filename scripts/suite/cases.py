@@ -781,7 +781,8 @@ def _eth_fallback_ip(s: Suite) -> str:
 def _wifi_api(s: Suite, payload: dict | None = None) -> dict:
     """GET/POST /api/v1/wifi via STA, falling back to eth on timeout."""
     try:
-        return api("/api/v1/wifi", payload)
+        # SoftAP enable can briefly stall STA HTTP; default api() 4s is too tight.
+        return api("/api/v1/wifi", payload, timeout=12.0)
     except Exception as exc:
         eth = _eth_fallback_ip(s)
         s.info(f"wifi api via {eth} after STA fail: {exc}")
@@ -797,7 +798,7 @@ def _wifi_api(s: Suite, payload: dict | None = None) -> dict:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
         return json.loads(raw.decode("utf-8", "replace")) if raw else {}
 
