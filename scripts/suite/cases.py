@@ -724,77 +724,77 @@ def case_hotspot(s: Suite) -> None:
             break
         time.sleep(1.5)
     s.check("air scan sees ShowboxMod", "ShowboxMod" in ssids, f"ssids={ssids[:8]}")
-    # SoftAP+STA coex still starves STA HTTP for later L1 cases. Drop the
-    # hotspot after the air scan; apAlways stays true so L2 coex can raise it.
-    if int(getattr(s.args, "level", 1) or 1) <= 1:
-        try:
-            # STA HTTP is often already mute under SoftAP — use eth fallback.
-            _wifi_api(s, {"ap": False})
-            healed = _wait_wifi_pred(
-                s, lambda w: bool(w.get("sta")) and not w.get("ap"), timeout=25.0
-            )
-            time.sleep(2.0)
-            healed = _wait_wifi_pred(s, lambda w: bool(w.get("sta")), timeout=20.0) or healed
+    # SoftAP+STA coex starves STA HTTP for later cases (L2 websocket timed out
+    # with SoftAP left up). Drop the hotspot after the air scan on every level;
+    # apAlways stays true so L2 hotspot-air / hotspot-sta-coex can raise it.
+    try:
+        # STA HTTP is often already mute under SoftAP — use eth fallback.
+        _wifi_api(s, {"ap": False})
+        healed = _wait_wifi_pred(
+            s, lambda w: bool(w.get("sta")) and not w.get("ap"), timeout=25.0
+        )
+        time.sleep(2.0)
+        healed = _wait_wifi_pred(s, lambda w: bool(w.get("sta")), timeout=20.0) or healed
+        s.info(
+            "SoftAP lowered after air scan"
+            if healed
+            else "SoftAP lower: STA HTTP not settled yet"
+        )
+        # SoftAP bring-up yields the BLE host and can leave advertising
+        # closed (ble-midi then fails "ads not open"). Re-open the pairing
+        # window and wait for a connected host before later BLE cases.
+        midi = _wait_ads(s, timeout=40.0)
+        if midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000:
+            s.info(f"ads open after SoftAP yield pairingMs={midi.get('pairingMs')}")
+        else:
             s.info(
-                "SoftAP lowered after L1 air scan"
-                if healed
-                else "SoftAP lower: STA HTTP not settled yet"
+                f"ads not open after SoftAP yield "
+                f"advertising={midi.get('advertising')} pairingMs={midi.get('pairingMs')}"
             )
-            # SoftAP bring-up yields the BLE host and can leave advertising
-            # closed (ble-midi then fails "ads not open"). Re-open the pairing
-            # window and wait for a connected host before later BLE cases.
-            midi = _wait_ads(s, timeout=40.0)
-            if midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000:
-                s.info(f"ads open after SoftAP yield pairingMs={midi.get('pairingMs')}")
-            else:
-                s.info(
-                    f"ads not open after SoftAP yield "
-                    f"advertising={midi.get('advertising')} pairingMs={midi.get('pairingMs')}"
-                )
-            host = ""
-            end = time.monotonic() + 25.0
-            while time.monotonic() < end:
-                host = cf.live_host_address(s.session, "")
-                if host:
+        host = ""
+        end = time.monotonic() + 25.0
+        while time.monotonic() < end:
+            host = cf.live_host_address(s.session, "")
+            if host:
+                break
+            time.sleep(0.5)
+        if host:
+            s.info(f"BLE host back after SoftAP yield: {host}")
+        else:
+            s.info("BLE host not back yet after SoftAP yield — ble-pair will reconnect")
+        # SoftAP coex can wipe the peripheral list (ble-status then fails
+        # AIRSTEP listed peer=None). Re-arm autoConnect + connect.
+        try:
+            cf.http_post(
+                f"{s.session.base}/api/v1/midi/ble/auto",
+                {"address": AIRSTEP, "enabled": "1"},
+                timeout=3.0,
+            )
+            cf.http_post(
+                f"{s.session.base}/api/v1/midi/ble/connect",
+                {"address": AIRSTEP, "name": "AIRSTEP", "midi": "1", "hid": "0"},
+                timeout=3.0,
+            )
+            air_deadline = time.monotonic() + 25.0
+            while time.monotonic() < air_deadline:
+                midi2 = s.midi_status()
+                peer = None
+                for p in midi2.get("peripherals") or []:
+                    if same_addr(str(p.get("address") or ""), AIRSTEP) or str(
+                        p.get("name") or ""
+                    ).upper() == "AIRSTEP":
+                        peer = p
+                        break
+                if peer and peer.get("connected"):
+                    s.info(f"AIRSTEP back after SoftAP yield: {peer.get('address')}")
                     break
                 time.sleep(0.5)
-            if host:
-                s.info(f"BLE host back after SoftAP yield: {host}")
             else:
-                s.info("BLE host not back yet after SoftAP yield — ble-pair will reconnect")
-            # SoftAP coex can wipe the peripheral list (ble-status then fails
-            # AIRSTEP listed peer=None). Re-arm autoConnect + connect.
-            try:
-                cf.http_post(
-                    f"{s.session.base}/api/v1/midi/ble/auto",
-                    {"address": AIRSTEP, "enabled": "1"},
-                    timeout=3.0,
-                )
-                cf.http_post(
-                    f"{s.session.base}/api/v1/midi/ble/connect",
-                    {"address": AIRSTEP, "name": "AIRSTEP", "midi": "1", "hid": "0"},
-                    timeout=3.0,
-                )
-                air_deadline = time.monotonic() + 25.0
-                while time.monotonic() < air_deadline:
-                    midi2 = s.midi_status()
-                    peer = None
-                    for p in midi2.get("peripherals") or []:
-                        if same_addr(str(p.get("address") or ""), AIRSTEP) or str(
-                            p.get("name") or ""
-                        ).upper() == "AIRSTEP":
-                            peer = p
-                            break
-                    if peer and peer.get("connected"):
-                        s.info(f"AIRSTEP back after SoftAP yield: {peer.get('address')}")
-                        break
-                    time.sleep(0.5)
-                else:
-                    s.info("AIRSTEP not back yet after SoftAP yield — ble-status will retry")
-            except Exception as exc:
-                s.info(f"AIRSTEP restore after SoftAP: {exc}")
+                s.info("AIRSTEP not back yet after SoftAP yield — ble-status will retry")
         except Exception as exc:
-            s.info(f"SoftAP lower after air scan: {exc}")
+            s.info(f"AIRSTEP restore after SoftAP: {exc}")
+    except Exception as exc:
+        s.info(f"SoftAP lower after air scan: {exc}")
 
 
 def _scan_ssids() -> list[str]:
