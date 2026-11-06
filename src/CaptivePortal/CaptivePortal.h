@@ -41,6 +41,8 @@ private:
     bool staUp() const;
     bool portalOpen() const;
     bool apShouldRun() const;
+    // SoftAP IP + AP/APSTA mode + ShowboxMod SSID (+ optional channel match).
+    bool apIfaceLive(uint8_t expectChannel) const;
     void persistWanted();
     void flushWanted();
     void adoptFallbackAp();
@@ -54,7 +56,8 @@ private:
     bool dnsUp = false;
     bool apUp = false;
     bool apWanted = true;
-    bool apAlways = false;
+    // Product default: SoftAP stays up while STA is joined (hotspot + home AP).
+    bool apAlways = true;
     bool apAuto = true;
     bool autoConnect = true;
     bool apWantedDirty = false;
@@ -66,6 +69,8 @@ private:
     uint32_t lastApTryMs = 0;
     uint32_t pendingStaJoinAtMs = 0;
     uint32_t staJoinDeadlineMs = 0;
+    uint8_t apFailStreak = 0;
+    bool apGaveUpThisSta = false;
     static constexpr uint32_t kApRetryMs = 15000;
     NetCred remembered[8];
     uint8_t rememberedN = 0;

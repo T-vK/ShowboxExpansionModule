@@ -1550,6 +1550,8 @@ void RestApiRouter::setup() {
                 continue;
             }
             any = true;
+            // Queue only — setOption/NVS/waitQuiet must run on loop task
+            // (AsyncTCP callbacks deadlock or time out on Preferences).
             _connections->queueOption(name, enabled);
         }
         if (!any) {

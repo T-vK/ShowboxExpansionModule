@@ -22,9 +22,12 @@ void CaptivePortal::loadPrefs() {
         return;
     }
     apWanted = prefs.getBool("hotspot", true);
-    apAlways = prefs.getBool("apalways", false);
+    // Default true: SoftAP + STA together. Older firmwares defaulted false and
+    // boot-join persisted apWanted=false, so migrate once to the product default.
+    apAlways = prefs.getBool("apalways", true);
     apAuto = prefs.getBool("apauto", true);
     autoConnect = prefs.getBool("stauto", true);
+    const bool coexMigrated = prefs.getBool("ap_coex1", false);
     String packed = prefs.getString("nets", "");
     prefs.end();
     rememberedN = 0;
@@ -47,20 +50,25 @@ void CaptivePortal::loadPrefs() {
         remembered[rememberedN].pass = pass;
         rememberedN++;
     }
+    // After nets are loaded — flushWanted must not rewrite an empty list.
+    if (!coexMigrated) {
+        apAlways = true;
+        apWanted = true;
+        persistWanted();
+    }
 }
 
 void CaptivePortal::begin(AsyncWebServer* /*server*/, UltimateBaseFirmware* firmwareIn) {
     firmware = firmwareIn;
     loadPrefs();
     WiFi.setAutoReconnect(autoConnect);
-    // WiFiManager no longer autoConnects. Kick STA from remembered nets so
-    // reboot restores LAN without SoftAP thrash. Keep SoftAP off during the
-    // join — ensureAp() mid-handshake was aborting WiFi.begin().
-    debugLog("portal begin radio=%d auto=%d nets=%u apWanted=%d",
-        radioOn() ? 1 : 0, autoConnect ? 1 : 0, (unsigned)rememberedN, apWanted ? 1 : 0);
+    // Kick STA from remembered nets so reboot restores LAN. SoftAP is held
+    // off only while joinInFlight (tick) — do not persist apWanted=false or
+    // Hotspot+STA never comes back after a successful boot join.
+    debugLog("portal begin radio=%d auto=%d nets=%u apWanted=%d apAlways=%d",
+        radioOn() ? 1 : 0, autoConnect ? 1 : 0, (unsigned)rememberedN,
+        apWanted ? 1 : 0, apAlways ? 1 : 0);
     if (radioOn() && autoConnect && rememberedN > 0 && remembered[0].ssid.length() > 0) {
-        apWanted = false;
-        persistWanted();
         pendingStaSsid = remembered[0].ssid;
         pendingStaPass = remembered[0].pass;
         pendingStaJoin = true;
@@ -95,15 +103,21 @@ bool CaptivePortal::apShouldRun() const {
     if (!radioOn() || portalOpen()) {
         return false;
     }
-    // AP+STA plus BLE makes showbox.local unusable on the LAN unless the
-    // user explicitly wants the hotspot always on.
+    // Hotspot+STA is the product default (apAlways). SoftAP+STA+BLE can
+    // starve STA HTTP if softAP fails into an empty APSTA — that is handled
+    // in ensureAp (revert + apGaveUpThisSta) and lanTickHttpHealth (drop
+    // SoftAP on probe fail). Do not blanket-ban SoftAP while BLE is live:
+    // L1 hotspot / L2 hotspot-sta-coex need all three up together.
     if (staUp() && !(apAlways && apWanted)) {
         return false;
     }
-    // JTAG: STA blip + default hotspot + AIRSTEP called softAP every 1s.
-    // begin() blocked loop() for 1000ms, returned 0, and WiFi.mode(AP)
-    // left status=254 / reconnect=0. Keep STA recovering while a pedal is up.
-    if (lanBleLive() && !apAlways) {
+    // JTAG-era: STA blip + SoftAP retry every 1s while a pedal was up left
+    // status=254. After a failed softAP this association, wait for STA drop
+    // or an explicit prefs change before trying again.
+    if (staUp() && apGaveUpThisSta) {
+        return false;
+    }
+    if (lanBleLive() && !apAlways && !apWanted) {
         return false;
     }
     if (apWanted) {
@@ -129,6 +143,7 @@ void CaptivePortal::flushWanted() {
     prefs.putBool("apalways", apAlways);
     prefs.putBool("apauto", apAuto);
     prefs.putBool("stauto", autoConnect);
+    prefs.putBool("ap_coex1", true);
     String packed;
     for (uint8_t i = 0; i < rememberedN; i++) {
         packed += remembered[i].ssid;
@@ -137,8 +152,9 @@ void CaptivePortal::flushWanted() {
         packed += '\n';
     }
     size_t wrote = prefs.putString("nets", packed);
-    debugLog("radio prefs flush ap=%d nets=%u packed=%u wrote=%u",
-        apWanted ? 1 : 0, (unsigned)rememberedN, (unsigned)packed.length(), (unsigned)wrote);
+    debugLog("radio prefs flush ap=%d always=%d nets=%u packed=%u wrote=%u",
+        apWanted ? 1 : 0, apAlways ? 1 : 0, (unsigned)rememberedN,
+        (unsigned)packed.length(), (unsigned)wrote);
     prefs.end();
 }
 
@@ -160,6 +176,10 @@ bool CaptivePortal::setWantedAp(bool on) {
         on = true;
     }
     apWanted = on;
+    apGaveUpThisSta = false;
+    apFailStreak = 0;
+    // Explicit API/UI toggle must not sit behind LanKeep yield/wedge backoff.
+    lastApTryMs = 0;
     persistWanted();
     if (on) {
         ensureAp();
@@ -171,6 +191,9 @@ bool CaptivePortal::setWantedAp(bool on) {
 
 bool CaptivePortal::setAlwaysAp(bool on) {
     apAlways = on;
+    apGaveUpThisSta = false;
+    apFailStreak = 0;
+    lastApTryMs = 0;
     persistWanted();
     if (on && apWanted) {
         ensureAp();
@@ -247,7 +270,33 @@ bool CaptivePortal::forgetSta(const String& ssid) {
     return true;
 }
 
+bool CaptivePortal::apIfaceLive(uint8_t expectChannel) const {
+    if (WiFi.softAPIP()[0] == 0) {
+        return false;
+    }
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&mode);
+    if (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) {
+        return false;
+    }
+    if (WiFi.softAPSSID() != kApSsid) {
+        return false;
+    }
+    if (expectChannel != 0) {
+        wifi_config_t cfg = {};
+        if (esp_wifi_get_config(WIFI_IF_AP, &cfg) == ESP_OK && cfg.ap.channel != 0
+            && cfg.ap.channel != expectChannel) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void CaptivePortal::ensureAp() {
+    if (!staUp()) {
+        apGaveUpThisSta = false;
+        apFailStreak = 0;
+    }
     if (!apShouldRun()) {
         if (!portalOpen()) {
             stopAp();
@@ -256,46 +305,86 @@ void CaptivePortal::ensureAp() {
         }
         return;
     }
-    wifi_mode_t mode = WIFI_MODE_NULL;
-    esp_wifi_get_mode(&mode);
     // Never drop to AP-only when STA credentials or auto-reconnect exist.
     // That is what froze status=254 after a BLE-era STA blip.
     const bool keepSta = autoConnect || rememberedN > 0 || WiFi.SSID().length() > 0 || staUp();
-    if (keepSta) {
-        if (mode != WIFI_MODE_APSTA) {
-            WiFi.mode(WIFI_AP_STA);
-        }
-    } else if (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) {
-        WiFi.mode(WIFI_AP);
-    }
     uint8_t channel = 1;
     wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
     esp_wifi_get_channel(&channel, &second);
     if (channel == 0) {
         channel = 1;
     }
+    // Ghost SoftAP: softAPIP set / apUp latched but mode is STA, SSID drifted,
+    // or SoftAP channel lagged a STA channel change — air scan finds nothing.
+    if (apUp && !apIfaceLive(channel)) {
+        debugLog("ap ghost (mode/ssid/ch) — clearing latch for softAP restart");
+        apUp = false;
+        stopDns();
+        lanNoteApActive(false);
+    }
     if (!apUp || WiFi.softAPIP()[0] == 0) {
-        if (lastApTryMs != 0 && (int32_t)(millis() - lastApTryMs) < (int32_t)kApRetryMs) {
+        // Let STA HTTP settle before the first SoftAP bring-up. softAP() while
+        // BLE+STA is associating is what wedges showbox.local after ~30s.
+        if (staUp() && millis() < 45000) {
+            return;
+        }
+        const uint32_t backoff = (staUp() && apFailStreak > 0)
+            ? (apFailStreak >= 2 ? 300000u : 120000u)
+            : kApRetryMs;
+        if (lastApTryMs != 0 && (int32_t)(millis() - lastApTryMs) < (int32_t)backoff) {
             return;
         }
         lastApTryMs = millis();
-        // Don't leave STA mid-handshake when bringing SoftAP up — that is
-        // what turned ShowboxMod into ESP_XXXX on the air.
-        WiFi.disconnect(false, false);
-        delay(30);
+        // Never WiFi.disconnect() while STA is up — that drops the home AP
+        // every time SoftAP starts (Hotspot+STA default). Only bounce the
+        // radio when there is no LAN association to protect.
+        if (!staUp()) {
+            WiFi.disconnect(false, false);
+            delay(30);
+        }
+        // Do NOT WiFi.mode(APSTA) before softAP succeeds. An empty AP
+        // interface on APSTA kills STA HTTP (SYN-ACK yes, bodies no).
+        // softAP() itself promotes STA→APSTA when association is live.
+        if (!keepSta) {
+            wifi_mode_t mode = WIFI_MODE_NULL;
+            esp_wifi_get_mode(&mode);
+            if (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) {
+                WiFi.mode(WIFI_AP);
+            }
+        }
         apUp = WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
-        debugLog("ap begin=%d ip=%s ch=%u wanted=%d ssid=%s", apUp ? 1 : 0,
+        debugLog("ap begin=%d ip=%s ch=%u wanted=%d always=%d fail=%u ssid=%s", apUp ? 1 : 0,
             WiFi.softAPIP().toString().c_str(), (unsigned)channel, apWanted ? 1 : 0,
-            WiFi.softAPSSID().c_str());
-        if (!apUp) {
+            apAlways ? 1 : 0, (unsigned)apFailStreak, WiFi.softAPSSID().c_str());
+        if (!apUp || WiFi.softAPIP()[0] == 0 || !apIfaceLive(channel)) {
+            apUp = false;
+            if (apFailStreak < 250) {
+                apFailStreak++;
+            }
+            if (staUp()) {
+                apGaveUpThisSta = true;
+                wifi_mode_t mode = WIFI_MODE_NULL;
+                esp_wifi_get_mode(&mode);
+                if (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP) {
+                    debugLog("ap begin failed — revert to STA, no more SoftAP this assoc");
+                    WiFi.mode(WIFI_STA);
+                }
+            }
+            lanNoteApActive(false);
+            stopDns();
             return;
         }
+        apFailStreak = 0;
+        apGaveUpThisSta = false;
     }
     // A bare mode switch can leave the default ESP_XXXX beacon up if softAP
     // lost its config; re-assert the hotspot identity.
     if (WiFi.softAPSSID() != kApSsid) {
         debugLog("ap ssid drift -> %s, reasserting", WiFi.softAPSSID().c_str());
-        WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
+        if (!WiFi.softAP(kApSsid, kApPass, channel, 0, 2) || WiFi.softAPIP()[0] == 0) {
+            apUp = false;
+            return;
+        }
     }
     lanNoteApActive(true);
     startDns();
@@ -338,6 +427,33 @@ void CaptivePortal::stopDns() {
 void CaptivePortal::tick() {
     flushWanted();
     runPendingStaJoin();
+    if (const uint8_t apDown = lanTakeApForcedDown()) {
+        // LanKeep softAPdisconnect + STA (HTTP wedge or SPA yield). Clear the
+        // latch so ensureAp calls softAP() again after backoff.
+        apUp = false;
+        stopDns();
+        if (apDown == 2) {
+            // SPA yield: SoftAP back in ~2.5s so hotspot-air stays usable.
+            lastApTryMs = millis() - kApRetryMs + 2500;
+            debugLog("ap: yielded for STA TX — SoftAP retry soon");
+        } else {
+            lastApTryMs = millis();
+            debugLog("ap: forced down by LanKeep — SoftAP retry after backoff");
+        }
+    }
+    // SoftAP was blocked while BLE was live; when the pedal drops, allow one
+    // more SoftAP attempt without requiring a STA reassociate.
+    {
+        static bool bleWasLive = false;
+        const bool ble = lanBleLive();
+        if (bleWasLive && !ble) {
+            apGaveUpThisSta = false;
+            apFailStreak = 0;
+            lastApTryMs = 0;
+            debugLog("ap: BLE idle — SoftAP may retry");
+        }
+        bleWasLive = ble;
+    }
     if ((int32_t)(millis() - lastModeMs) >= 1000) {
         lastModeMs = millis();
         // Don't bring SoftAP back while a deferred STA join is queued —
@@ -345,9 +461,13 @@ void CaptivePortal::tick() {
         if (staUp()) {
             staJoinDeadlineMs = 0;
         }
+        // Once STA is associated, SoftAP may start (Hotspot+STA). Join quiet /
+        // deadline only suppress SoftAP while the handshake is still open —
+        // otherwise apAlways sits true for ~90s with SoftAP never raised.
         const bool joinInFlight = pendingStaJoin ||
-            (staJoinDeadlineMs != 0 && (int32_t)(millis() - staJoinDeadlineMs) < 0) ||
-            lanStaJoinQuiet();
+            (!staUp() && (
+                (staJoinDeadlineMs != 0 && (int32_t)(millis() - staJoinDeadlineMs) < 0) ||
+                lanStaJoinQuiet()));
         if (!joinInFlight && !staUp()) {
             adoptFallbackAp();
             // apAuto may be off from a prior provision POST; still raise the
@@ -429,7 +549,8 @@ String CaptivePortal::statusJson() const {
     doc["ssid"] = WiFi.SSID();
     doc["ip"] = WiFi.localIP().toString();
     doc["rssi"] = WiFi.RSSI();
-    doc["ap"] = WiFi.softAPIP()[0] != 0;
+    // softAPIP alone lied during ghost SoftAP (IP set, mode STA / no beacons).
+    doc["ap"] = apIfaceLive(0);
     doc["apWanted"] = apWanted;
     doc["apAlways"] = apAlways;
     doc["apAuto"] = apAuto;
@@ -503,17 +624,12 @@ bool CaptivePortal::connectSta(const String& ssid, const String& password, Strin
     rememberNet(ssid, pass);
     WiFi.setAutoReconnect(autoConnect);
     // Defer the radio flip so SoftAP can finish the HTTP response that
-    // queued this join. Stopping AP here made curl see HTTP 000 and left
-    // STA wedged in "connecting" when LanKeep was already mid-handshake.
-    apWanted = false;
-    apAuto = false; // don't raise SoftAP mid-join via adoptFallbackAp()
-    // Only mark dirty here — Preferences/NVS must not run on the AsyncTCP
-    // callback (spi_flash cache assert). tick()/flushWanted() writes on loop.
-    persistWanted();
+    // queued this join. SoftAP stays suppressed via pendingStaJoin /
+    // lanNoteStaJoin (tick joinInFlight) — do not clear apWanted/apAuto or
+    // Hotspot+STA never returns after a successful join.
     pendingStaSsid = ssid;
     pendingStaPass = pass;
     pendingStaJoin = true;
-    // Give loop() time to flush NVS before runPendingStaJoin.
     pendingStaJoinAtMs = millis() + 800;
     lanNoteStaJoin(30000);
     return true;

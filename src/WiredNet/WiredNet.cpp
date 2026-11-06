@@ -79,11 +79,14 @@ bool lanHasIp() {
 }
 
 IPAddress lanIP() {
-    if (WiFi.localIP() != IPAddress()) {
-        return WiFi.localIP();
-    }
+    // Prefer ethernet when both are up. SoftAP/BLE/USB-host coex often leaves
+    // STA associated with a one-way dead TX while the W5500 still serves HTTP —
+    // advertising the STA IP made showbox.local look "down".
     if (ETH.hasIP() && ETH.localIP() != IPAddress()) {
         return ETH.localIP();
+    }
+    if (WiFi.localIP() != IPAddress()) {
+        return WiFi.localIP();
     }
     return IPAddress();
 }

@@ -13,10 +13,15 @@ bool interfaceOn = false;
 FullMidiParser parser;
 bool parserReady = false;
 
+// Allocate endpoints from TinyUSB's free pool. Hardcoding 0x01/0x81 collides
+// with USBHID (Linux: "duplicate endpoint" → can't set config #1, error -32),
+// so MIDI+HID composite never mounted.
 uint16_t loadMidiDescriptor(uint8_t* dst, uint8_t* itf) {
     uint8_t name = tinyusb_add_string_descriptor("ShowboxMod");
+    uint8_t epOut = tinyusb_get_free_out_endpoint();
+    uint8_t epIn = tinyusb_get_free_in_endpoint();
     uint8_t descriptor[TUD_MIDI_DESC_LEN] = {
-        TUD_MIDI_DESCRIPTOR(*itf, name, 0x01, 0x81, 64)
+        TUD_MIDI_DESCRIPTOR(*itf, name, epOut, (uint8_t)(0x80 | epIn), 64)
     };
     *itf += 2;
     memcpy(dst, descriptor, sizeof(descriptor));

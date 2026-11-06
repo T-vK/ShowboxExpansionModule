@@ -5,15 +5,19 @@ import { Switch } from "../ui/Widgets.jsx";
 
 export const usbReboot = {
   usbMidiPeripheral: [
-    "Requires reboot. Turns off USB serial/JTAG, USB MIDI Host, and USB HID Peripheral. OTA and the UART connector can still flash.",
+    "Requires reboot. Native USB serial/JTAG turns off. MIDI can share the port with HID. The UART USB-serial adapter can still flash.",
     "Requires reboot so USB serial/JTAG comes back."
   ],
   usbMidiHost: [
-    "Requires reboot. Turns off USB serial/JTAG, USB MIDI Peripheral, and USB HID Peripheral. Plug a MIDI device into the USB port. OTA and the UART connector can still flash.",
+    "Requires reboot. Turns off USB serial/JTAG and USB MIDI/HID peripheral. Plug a MIDI controller into this port. The UART USB-serial adapter can still flash.",
     "Requires reboot so USB serial/JTAG comes back."
   ],
   usbHid: [
-    "Requires reboot. Turns off USB serial/JTAG, USB MIDI Host, and USB MIDI Peripheral. OTA and the UART connector can still flash. If Timed USB test is on, serial/JTAG comes back after about 75 seconds.",
+    "Requires reboot. Native USB serial/JTAG turns off. HID can share the port with MIDI. If Timed USB test is on, serial/JTAG returns after ~75s. The UART USB-serial adapter can still flash.",
+    "Requires reboot so USB serial/JTAG comes back."
+  ],
+  usbMidiHid: [
+    "Requires reboot. Native USB becomes MIDI+HID (TinyUSB composite). Serial/JTAG on this port turns off — keep the UART USB-serial adapter for console/flash. MIDI+HID+native JTAG on one cable is not possible on ESP32-S3.",
     "Requires reboot so USB serial/JTAG comes back."
   ],
   usbJtag: [
@@ -224,8 +228,11 @@ export function useServices() {
 }
 
 export function usbModeOf(data, byId) {
-  if (byId.usbHid && byId.usbHid.enabled) return "hid";
+  const midi = !!(byId.usbMidiPeripheral && byId.usbMidiPeripheral.enabled);
+  const hid = !!(byId.usbHid && byId.usbHid.enabled);
+  if (midi && hid) return "midiHid";
+  if (hid) return "hid";
   if (byId.usbMidiHost && byId.usbMidiHost.enabled) return "midiHost";
-  if (byId.usbMidiPeripheral && byId.usbMidiPeripheral.enabled) return "midiPeri";
+  if (midi) return "midiPeri";
   return "jtag";
 }

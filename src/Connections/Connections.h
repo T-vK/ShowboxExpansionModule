@@ -80,6 +80,7 @@ public:
 private:
     void saveHid();
     void saveUsbMode(bool device, bool host, bool hid);
+    void flushUsbPrefsNow();
     void loadDebug();
     void applyDebug();
     void applyHidAdvertising();

@@ -1,0 +1,22 @@
+---
+description: Live Python suite conventions — cases, BLE MIDI, HTTP helpers, e2e scripts
+globs: scripts/suite/**/*.py,scripts/run.py,scripts/webui_*.mjs,scripts/check_features.py
+alwaysApply: false
+---
+
+# Live suite (`scripts/suite`)
+
+Canonical helpers: `scripts/suite/cases.py`, `context.py`, `ble_midi.py`, `check_features.py`.
+
+## Patterns
+
+- Prefer shared helpers (`ensure_ble_midi`, `_wait_ads`, `http_get_retry(..., quiet=True)`) over copying revive logic into one case.
+- `CaseFail` for expected failures; do not let bare `RuntimeError` abort the suite as ERROR when a retry loop exists elsewhere.
+- After SPA / large bodies: quiet backoff only.
+- Iso with `--keep-host` when BLE peers must survive across cases.
+
+## When changing suite behavior
+
+1. Write or tighten a **minimal** `--case` sequence that fails.
+2. Fix helper or case.
+3. Re-run that sequence ≥3× before any full `--level` streak.

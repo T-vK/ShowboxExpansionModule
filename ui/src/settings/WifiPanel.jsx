@@ -133,8 +133,8 @@ export function WifiPanel() {
         />
         <ServiceNode
           title="Always-on hotspot"
-          info="Keeps the mixer hotspot on even while joined to home Wi-Fi. Can make showbox.local unreliable on the LAN when Bluetooth is also up."
-          checked={!!status.apAlways}
+          info="Default on: keeps the mixer hotspot up while joined to home Wi‑Fi so phones can still reach the captive portal. Turn off if LAN mDNS or Bluetooth airtime is more important."
+          checked={status.apAlways !== false}
           onChange={(event) => {
             patch({ apAlways: event.target.checked }).catch(() => { event.target.checked = !event.target.checked; });
           }}
