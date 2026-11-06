@@ -316,3 +316,29 @@ export function IconBluetooth() {
     </svg>
   );
 }
+
+export function IconUsb({ live }) {
+  return (
+    <svg
+      class={live ? "usb-icon live" : "usb-icon"}
+      viewBox="0 0 24 24"
+      width="15"
+      height="15"
+      aria-hidden="true"
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 3v11" />
+      <circle cx="12" cy="17.2" r="2.2" fill="currentColor" stroke="none" />
+      <path d="M12 8.2h5.2a2 2 0 0 1 2 2V13" />
+      <path d="M12 10.5H6.8a2 2 0 0 0-2 2V15" />
+      <path d="M19.2 13v2.4M4.8 15v2.2" />
+      <circle cx="19.2" cy="16.6" r="1.15" fill="currentColor" stroke="none" />
+      <rect x="3.6" y="17" width="2.4" height="2.4" rx="0.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}

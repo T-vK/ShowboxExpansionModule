@@ -129,16 +129,35 @@ bool listenAppleMidi(uint16_t port, midi::MidiAction* midiAction) {
     appleQHead = 0;
     appleQTail = 0;
     appleParser.begin(midiAction, -1);
-    if (!appleControl.listen(port)) {
-        return false;
+    // Prefer STA bind when associated. INADDR_ANY + ethernet up left control
+    // invites to the STA IP unanswered (same dual-netif hole as mDNS :5353),
+    // while eth still answered — often with NO once peer slots leaked full.
+    IPAddress bindIp = WiFi.localIP();
+    if (bindIp[0] == 0 && ETH.hasIP()) {
+        bindIp = ETH.localIP();
     }
-    if (!appleData.listen(static_cast<uint16_t>(port + 1))) {
+    bool ok = false;
+    if (bindIp[0] != 0) {
+        ok = appleControl.listen(bindIp, port) && appleData.listen(bindIp, static_cast<uint16_t>(port + 1));
+    }
+    if (!ok) {
         appleControl.close();
+        appleData.close();
+        ok = appleControl.listen(port) && appleData.listen(static_cast<uint16_t>(port + 1));
+    }
+    if (!ok) {
+        appleControl.close();
+        appleData.close();
         return false;
     }
     appleControl.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 0); });
     appleData.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 1); });
     applemidi_init(reinterpret_cast<void*>(appleMidiReceived), reinterpret_cast<void*>(appleMidiSend));
+    // Drop leaked sessions from prior suite runs that never sent BYE.
+    for (uint8_t i = 1; i < APPLEMIDI_MAX_PEERS; i++) {
+        applemidi_terminate_session(i);
+    }
+    debugLog("applemidi listen ip=%s port=%u", bindIp.toString().c_str(), (unsigned)port);
     return true;
 }
 

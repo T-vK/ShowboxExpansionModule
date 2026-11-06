@@ -1,0 +1,38 @@
+---
+description: Fight context rot — main thread decides; subagents isolate noise and return compact verdicts
+alwaysApply: true
+---
+
+# Subagents and context rot
+
+Long chats fill with logs, tool dumps, and false trails (**context rot**). Subagents exist primarily for **context isolation**, not for looking busy.
+
+## Main agent keeps
+
+- User requirements, constraints, decisions
+- The current plan and acceptance criteria
+- Final code edits that need full project judgment
+- One-line status to the user
+
+## Delegate to a subagent when
+
+- Tailing / holding a long suite streak or gate revive (noisy, long-running)
+- Exploring unfamiliar code or grepping broadly (“return paths + 5-line summary”)
+- Running a tight iso loop that prints a lot (return PASS N/N + log path only)
+- Parallel **read-only** threads (two independent investigations)
+
+## Do not delegate when
+
+- A 30-second local command answers the question
+- Two agents would edit the **same files** in parallel (serialize writes)
+- The brief would be incomplete — cold subagents know only what you write
+
+## Brief quality (mandatory)
+
+Every subagent prompt must be **self-contained**: goal, constraints, paths, IP/MACs if fixture, done criteria, and **exact deliverable shape** (e.g. `SUCCESS 10/10 | STOP at N: case + error + ONE next fix`).
+
+## After a subagent returns
+
+- Trust the compact verdict; **do not** paste their transcript into the user chat
+- Take **one** next action (fix / gate / hold / ask user)
+- Link cloud subagents as `[Name](bc-id)` when mentioning them

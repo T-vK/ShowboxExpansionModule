@@ -22,7 +22,12 @@ def main() -> None:
             f"apSsid={wifi.get('apSsid')!r}")
     c.check("hotspot password present", bool(wifi.get("apPassword")),
             "set" if wifi.get("apPassword") else "missing")
+    c.check("always-on hotspot (Hotspot+STA default)", wifi.get("apAlways") is True,
+            f"apAlways={wifi.get('apAlways')!r}")
     ap_ip = str(wifi.get("apIp") or "")
+    if wifi.get("sta"):
+        c.check("SoftAP up while STA joined", bool(wifi.get("ap")),
+                f"ap={wifi.get('ap')} apIp={ap_ip}")
     if wifi.get("ap"):
         c.check("AP IP is 192.168.4.1", ap_ip == "192.168.4.1", f"apIp={ap_ip}")
         clients = wifi.get("apClients")

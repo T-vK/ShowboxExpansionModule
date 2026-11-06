@@ -1,30 +1,26 @@
 ---
-description: Senior debug loop — minimal repro before fix; never use full L3 streaks as the debugger
+description: Mandatory debug loop — classify, minimal repro, one fix, verify repro; streaks only confirm
 alwaysApply: true
 ---
 
-# Senior debugging (mandatory)
+# Senior debugging loop
 
-## Default loop (do not skip)
+## Order (do not skip)
 
-1. **Classify** with evidence: firmware vs suite harness vs host fixture (BlueZ/HTTP/heap). Cite log lines / console.
-2. **Minimal repro** — smallest command or case sequence that fails reliably (ideally <1 min). Prefer e.g. `ble-midi → http-pwa` over full `--level 3`.
-3. **One fix** aimed at the shared primitive when the failure is cross-cutting (e.g. `ensure_ble_midi`), not a one-off in a single case unless the bug is truly local.
-4. **Verify the repro** N times (default **≥3**, prefer **5** for flakes) until green.
-5. **Only then** gated full streak / level run as confirmation — never as the first proof.
+1. **Classify** with evidence: firmware vs suite harness vs host fixture (BlueZ / HTTP / heap). Cite log/console lines.
+2. **Minimal repro** — smallest command/case sequence that fails reliably (aim &lt;1–2 min). Example: `ble-midi → http-pwa`, not `--level 3`.
+3. **One fix** at the shared primitive when cross-cutting (`ensure_ble_midi`, `http_get_retry`, ActionRules leafPass). Case-local only if truly local.
+4. **Verify that repro** ≥3× (prefer **5×** for flakes) until green.
+5. **Only then** gate + full level streak as confirmation — never as first proof.
 
-## Forbidden (wastes hours)
+## Forbidden
 
-- Patch → “iso once” → start 10× L3 and hope
+- Patch → iso once → start 10× L3 and hope
 - Stacking per-case retries without a shared root fix
-- Shotgun edits without a failing repro you can re-run
-- Declaring victory because a different, weaker path passed
+- Declaring victory because a weaker path passed
+- Starting streak N+1 immediately after STOP
 
 ## Firmware vs suite
 
-- **Firmware** when console/rules/UART behavior is wrong under correct stimulus → change `src/`, flash, re-run the **same** minimal repro.
-- **Suite/fixture** when BlueZ ACL, ads window, HTTP after SPA, or harness timing is wrong → change `scripts/suite/` (or e2e), verify repro, **do not flash** unless firmware is implicated.
-
-## After a streak STOP
-
-Do **not** immediately start streak N+1. Extract the fail, build/tighten repro, fix, verify repro, **then** gate + one new streak.
+- **Firmware** if UART/rules/console wrong under correct stimulus → `src/`, flash, re-run **same** repro.
+- **Suite/fixture** if BlueZ ads/ACL, HTTP-after-SPA, harness timing → `scripts/suite/` (or e2e); **no flash** unless firmware implicated.

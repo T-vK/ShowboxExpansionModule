@@ -47,6 +47,11 @@ void lanTickHttpHealth();
 // after a failed rebind (EADDRINUSE / -8 while the listen list looks empty).
 void lanReleaseHttpPort();
 void lanNoteApActive(bool on);
+// SoftAP torn down outside CaptivePortal. Portal clears apUp and retries.
+// kind: 1 = HTTP wedge (long backoff), 2 = yield for STA SPA TX (short).
+void lanNoteApForcedDown();
+void lanNoteApYieldForStaTx();
+uint8_t lanTakeApForcedDown();
 // Quiet LanKeep's WiFi.reconnect() while WiFi.begin() is associating.
 void lanNoteStaJoin(uint32_t quietMs = 20000);
 bool lanStaJoinQuiet();

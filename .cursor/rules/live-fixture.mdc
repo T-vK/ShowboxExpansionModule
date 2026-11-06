@@ -1,32 +1,33 @@
 ---
-description: Live ESP32-S3 / BLE / Wi-Fi fixture constraints for suite and flash work
+description: Hardware fixture hard constraints — serial, Wi-Fi PSK, BLE host gate, streaks, flash
 alwaysApply: true
 ---
 
-# Live fixture constraints
+# Live fixture
 
-Target STA IP is typically `192.168.3.55` (pfSenseAP). SoftAP `ShowboxMod`.
+Typical STA: `192.168.3.55` on `pfSenseAP`. SoftAP: `ShowboxMod` (Hotspot+STA / `apAlways` is **on by default**).
+Ethernet (W5500) often `192.168.3.234` on the same LAN.
+
+USB: native USB-C is **one PHY** — Serial/JTAG (`303a:1001`) *or* TinyUSB MIDI+HID (`303a:0002`), not both.
+MIDI+HID composite is supported; keep the QinHeng UART adapter (`1a86:55d3`, often `/dev/ttyACM1`) for console/flash while gadget mode is on.
+Never change the **laptop** Wi‑Fi association during eth/wifi tests — only toggle the **module** radio/hotspot.
 
 ## Hard constraints
 
-- **No commit** unless the user asks. Author **T-vK** if committing; never `Co-authored-by`.
-- **Never hardcode Wi‑Fi PSK** — use nmcli active `pfSenseAP` profile secrets only.
-- **Never open `/dev/ttyACM0` with a serial monitor or ordinary pyserial** during tests (DTR/RTS resets ESP32-S3). Prefer HTTP/WS. `esptool` reset only when deliberately resetting.
-- **Never start a level streak without a green fixture gate** (services, AIRSTEP + laptop host, BlueZ Connected, MIDI `AcquireWrite`, heap `largest` thresholds).
-- Keep `bluetoothd --noplugin=midi`; destroy PipeWire `bluez_midi.server` if it steals the GATT char.
+- No commit unless asked. Author **T-vK**; never `Co-authored-by`.
+- Never hardcode Wi‑Fi PSK — nmcli active `pfSenseAP` secrets only.
+- Never open `/dev/ttyACM0` with serial monitor / ordinary pyserial during tests (DTR resets S3). Prefer HTTP/WS. `esptool` reset only when deliberate.
+- Never start a level streak without a **green fixture gate** (services, AIRSTEP + laptop host, BlueZ Connected, MIDI AcquireWrite, heap `largest` thresholds).
+- Keep `bluetoothd --noplugin=midi`; destroy PipeWire `bluez_midi.server` if it holds the char.
 
-## BLE MIDI
+## BLE / HTTP (learned failures)
 
-- Treat **ESP `/api/v1/midi` `hosts[].connected`** as the host gate, not BlueZ `Connected` alone.
-- Connect **only while advertising / pairing window open** (`acceptNewHosts`); otherwise hostUsed stays 0 with ACL up.
-- Prefer fixing **`ensure_ble_midi` / shared helpers** over per-case ACL hacks.
-
-## HTTP after SPA
-
-- After a large SPA GET, use **`wait_http_quiet`** — do not SYN-flood with `wait_http`.
-- Prefer `/debug` (panic/heap) **before** the 266KB SPA; post-SPA prove a **small** endpoint.
+- Gate on ESP `hosts[].connected`, not BlueZ Connected alone.
+- Connect only while advertising / pairing window open (`acceptNewHosts`).
+- Fix shared `ensure_ble_midi` / helpers — not endless per-case ACL hacks.
+- After large SPA GET: `wait_http_quiet` only (no `wait_http` SYN flood).
+- Prefer `/debug` **before** SPA; post-SPA prove a small endpoint.
 
 ## Streaks
 
-- Gate → streak log under `/tmp/`. On STOP: repro → fix → verify → gate → **one** new streak.
-- Actively watch or hold the run; do not claim you are waiting while idle.
+Gate → log under `/tmp/` → on STOP: repro → fix → verify → gate → **one** new streak. Actively watch; do not fake “waiting.”

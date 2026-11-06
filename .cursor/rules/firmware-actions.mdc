@@ -1,0 +1,20 @@
+---
+description: ActionRules / MIDI booster / looper gain — showbox event vs live entity races
+globs: src/Actions/**/*
+alwaysApply: false
+---
+
+# ActionRules / booster / looper
+
+Canonical: `src/Actions/ActionRules.cpp`, `ActionRules.h`.
+
+## Invariants
+
+- Showbox **conditions** evaluated during `fire("showbox", entity, value)` must prefer the **event value** for that entity (`condShowboxEntity` / `condShowboxValue`). Live store can lag (AutoOff on play, AutoOn skipped).
+- Own gain writes: `noteOwnGainWrite` + `ownGainHist`; do not let wire echoes ratchet `REMEMBERED_GAIN`.
+- Skip / freeze auto-boost during synthetic looper `stop` / `delete` wrap PLAY.
+- `ignoreShowboxUntil` (~`boostIgnoreMs`) is for boost/unboost echoes — suite cases that write user gain after unboost must settle past that window.
+
+## After firmware edits
+
+Flash `esp32-s3-n16r8`, then re-run the **same** minimal suite repro that motivated the change — not a full L3 first.

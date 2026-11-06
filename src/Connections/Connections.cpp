@@ -202,10 +202,10 @@ const char* transportNote(MultiMidi* midi, Hid* hid, const char* id, bool enable
         return midi->ethernetNote();
     }
     if ((strcmp(id, "usbMidiPeripheral") == 0 || strcmp(id, "usbMidiHost") == 0 || strcmp(id, "usbHid") == 0) && enabled) {
-        if (strcmp(id, "usbMidiHost") == 0 && UsbMidiHost::running()) {
+        if (strcmp(id, "usbMidiHost") == 0) {
             return UsbMidiHost::status();
         }
-        if (UsbMidi::running() || UsbMidiHost::running() || (hid != nullptr && hid->usbRunning())) {
+        if (UsbMidi::running() || (hid != nullptr && hid->usbRunning())) {
             return "USB serial/JTAG is off. OTA and the UART connector can still flash.";
         }
         return "Rebooting. USB serial/JTAG turns off. OTA and the UART connector can still flash.";
@@ -782,11 +782,38 @@ bool Connections::sameAddress(const char* left, const char* right) const {
     return strcasecmp(left, right) == 0;
 }
 
+void Connections::flushUsbPrefsNow() {
+    Preferences prefs;
+    if (!prefs.begin("midi", false)) {
+        debugLog("usb prefs begin failed");
+        return;
+    }
+    prefs.putBool("usbdev", usbDeviceEnabled);
+    prefs.putBool("usbhost", usbHostEnabled);
+    prefs.putBool("usbhid", usbHidEnabled);
+    prefs.putInt("usbhidmix", usbHidMix.storedBits());
+    prefs.putBool("usbtest", (usbDeviceEnabled || usbHostEnabled || usbHidEnabled) && usbSafeTest);
+    prefs.putInt("usbfail", 0);
+    prefs.end();
+    usbDirty = false;
+    debugLog("usb prefs flushed host=%d hid=%d dev=%d",
+        usbHostEnabled ? 1 : 0, usbHidEnabled ? 1 : 0, usbDeviceEnabled ? 1 : 0);
+    if (multiMidi != nullptr) {
+        multiMidi->rememberUsbDevice(usbDeviceEnabled);
+    }
+}
+
 void Connections::saveUsbMode(bool device, bool host, bool hidPort) {
     usbDeviceEnabled = device;
     usbHostEnabled = host;
     usbHidEnabled = hidPort;
     usbDirty = true;
+    // USB mode only applies after reboot. Persist immediately — waiting for
+    // !uartHot left usbhost/usbdev unset and the next boot stayed on JTAG.
+    if (showbox != nullptr) {
+        showbox->waitQuiet(30);
+    }
+    flushUsbPrefsNow();
 }
 
 void Connections::setUsbPortMode(UsbPortMode mode) {
@@ -1402,6 +1429,47 @@ void Connections::writeStatusJson(char* buf, size_t cap, size_t* outLen) {
     json.add(jsonBool(radio != nullptr && radio->advertising()));
     json.add(",\"usbJtag\":");
     json.add(jsonBool(!usbDeviceEnabled && !usbHostEnabled && !usbHidEnabled));
+    {
+        const char* mode = "jtag";
+        if (usbHostEnabled) {
+            mode = "host";
+        } else if (usbDeviceEnabled && usbHidEnabled) {
+            mode = "midiHid";
+        } else if (usbDeviceEnabled) {
+            mode = "midi";
+        } else if (usbHidEnabled) {
+            mode = "hid";
+        }
+        json.add(",\"usb\":{\"mode\":\"");
+        json.add(mode);
+        json.add("\",\"host\":");
+        json.add(jsonBool(usbHostEnabled));
+        json.add(",\"peripheralMidi\":");
+        json.add(jsonBool(usbDeviceEnabled));
+        json.add(",\"peripheralHid\":");
+        json.add(jsonBool(usbHidEnabled));
+        json.add(",\"connected\":");
+        json.add(jsonBool(UsbMidiHost::connected()));
+        json.add(",\"deviceName\":\"");
+        json.addEsc(UsbMidiHost::connected() ? UsbMidiHost::deviceName() : "");
+        json.add("\",\"status\":\"");
+        if (usbHostEnabled) {
+            json.addEsc(UsbMidiHost::status());
+        } else if (usbDeviceEnabled || usbHidEnabled) {
+            if (UsbMidi::running() || (hid != nullptr && hid->usbRunning())) {
+                json.addEsc("USB gadget on this port (serial/JTAG off)");
+            } else {
+                json.addEsc("USB gadget preferred; serial/JTAG active this boot (start failed)");
+            }
+        } else {
+            json.addEsc("Serial/JTAG on native USB-C");
+        }
+        json.add("\",\"rxCount\":");
+        json.addU(UsbMidiHost::rxCount());
+        json.add(",\"lastRxMs\":");
+        json.addU(UsbMidiHost::lastRxMs());
+        json.add("}");
+    }
     json.add(",\"bluetoothRadio\":");
     json.add(jsonBool(bluetoothRadioEnabled));
     json.add(",\"wifiRadio\":");
@@ -1830,20 +1898,37 @@ bool Connections::setOption(const String& name, bool enabled, String& error) {
         return multiMidi->setMidiOption("ethernet", enabled, error);
     }
     if (name == "usbMidiPeripheral" || name == "usbDevice" || name == "usbMidiHost" || name == "usbHost" || name == "usbHid") {
-        bool device = false;
-        bool host = false;
-        bool hidPort = false;
-        if (enabled && (name == "usbMidiPeripheral" || name == "usbDevice")) {
-            device = true;
-        } else if (enabled && (name == "usbMidiHost" || name == "usbHost")) {
-            host = true;
-        } else if (enabled && name == "usbHid") {
-            hidPort = true;
+        // Merge with current prefs so MIDI+HID composite can be enabled in one
+        // POST (?usbMidiPeripheral=1&usbHid=1). Host mode stays exclusive.
+        bool device = usbDeviceEnabled;
+        bool host = usbHostEnabled;
+        bool hidPort = usbHidEnabled;
+        if (name == "usbMidiPeripheral" || name == "usbDevice") {
+            device = enabled;
+            if (enabled) {
+                host = false;
+            }
+        } else if (name == "usbMidiHost" || name == "usbHost") {
+            host = enabled;
+            if (enabled) {
+                device = false;
+                hidPort = false;
+            }
+        } else if (name == "usbHid") {
+            hidPort = enabled;
+            if (enabled) {
+                host = false;
+            }
         }
+        const bool nowJtag = !device && !host && !hidPort;
         saveUsbMode(device, host, hidPort);
-        scheduleReboot(enabled
-            ? "The USB port switches after reboot. USB serial/JTAG turns off. OTA and the UART connector can still flash."
-            : "Rebooting so the USB serial/JTAG port comes back.");
+        if (nowJtag) {
+            scheduleReboot("Rebooting so the USB serial/JTAG port comes back.");
+        } else {
+            scheduleReboot(host
+                ? "USB MIDI host starts after reboot. USB serial/JTAG turns off. OTA and the UART connector can still flash."
+                : "USB MIDI/HID peripheral starts after reboot. USB serial/JTAG turns off. Native serial/JTAG is off; the UART USB-serial adapter can still flash.");
+        }
         return true;
     }
     String midiName = name;
@@ -2282,6 +2367,8 @@ void Connections::scheduleReboot(const char* reason) {
     (void)reason;
     rebootPending = true;
     rebootAt = millis() + 1200;
+    // Force status JSON to show reboot + new USB flags immediately.
+    lastStatusMs = 0;
 }
 
 bool Connections::anyHostHid() const {

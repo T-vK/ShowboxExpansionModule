@@ -154,7 +154,7 @@ function mockShowbox() {
       };
       const wifi = {
         sta: true, ssid: "Home", ip: "192.168.3.55", rssi: -48,
-        ap: false, apWanted: true, apAlways: false, apAuto: true, autoConnect: true,
+        ap: true, apWanted: true, apAlways: true, apAuto: true, autoConnect: true,
         apSsid: "ShowboxMod", apPassword: "showboxmod", apIp: "192.168.4.1", apStations: 0,
         portal: false, radio: true,
         remembered: [{ ssid: "Home", saved: true, current: true }, { ssid: "Studio", saved: true, current: false }]

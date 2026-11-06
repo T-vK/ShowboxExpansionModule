@@ -4,6 +4,7 @@
 #include "FrontPanel/FrontPanel.h"
 #include "MackieShowbox/MackieShowbox.h"
 #include "WiredNet/WiredNet.h"
+#include <ETH.h>
 #include "DebugLog.h"
 #include "System/Diag.h"
 #include "MultiMidi/MultiMidi.h"
@@ -31,6 +32,7 @@ static void uartSafeRestart(const char* why) {
 #include <esp_heap_caps.h>
 #include <esp_netif.h>
 #include <cstring>
+#include <fcntl.h>
 #include "esp_private/wifi.h"
 #include "ping/ping_sock.h"
 
@@ -260,45 +262,64 @@ static bool mdnsStaBound = false;
 static bool mdnsIgmpJoined = false;
 static uint32_t lastIgmpReportMs = 0;
 
-static void staJoinMdnsGroup() {
-    IPAddress ip = WiFi.localIP();
-    ip4_addr_t ifaddr = ip4From(ip);
-    if (ifaddr.addr == 0) {
-        return;
+static err_t joinMdnsOnIp(IPAddress ip, ip4_addr_t group, bool preferMulticastDefault) {
+    if (ip[0] == 0) {
+        return ERR_IF;
     }
-    ip4_addr_t group;
-    IP4_ADDR(&group, 224, 0, 0, 251);
-    LOCK_TCPIP_CORE();
+    ip4_addr_t ifaddr = ip4From(ip);
     struct netif* n = staLwipNetifLocked(ip);
-    // Do not netif_set_default(STA): AP+STA still needs the AP default
-    // route for the hotspot, and flipping it killed STA ARP. Point IPv4
-    // multicast at STA so QM answers leave 192.168.x, not 192.168.4.1.
     err_t err = ERR_IF;
     if (n != nullptr) {
         netif_set_flags(n, NETIF_FLAG_IGMP);
 #if LWIP_MULTICAST_TX_OPTIONS
-        ip4_set_default_multicast_netif(n);
+        if (preferMulticastDefault) {
+            // Answer showbox.local from the preferred LAN path (ethernet when
+            // up). Do not flip netif_default — that broke SoftAP routing.
+            ip4_set_default_multicast_netif(n);
+        }
 #endif
         if (igmp_lookfor_group(n, &group) == nullptr) {
             err = igmp_joingroup_netif(n, &group);
-            mdnsIgmpJoined = (err == ERR_OK);
         } else {
             err = ERR_OK;
-            mdnsIgmpJoined = true;
         }
-        if (lastIgmpReportMs == 0 || (int32_t)(millis() - lastIgmpReportMs) >= 15000) {
+        if (err == ERR_OK
+            && (lastIgmpReportMs == 0 || (int32_t)(millis() - lastIgmpReportMs) >= 15000)) {
             igmp_report_groups(n);
             lastIgmpReportMs = millis();
         }
     } else {
         err = igmp_joingroup(&ifaddr, &group);
-        mdnsIgmpJoined = (err == ERR_OK);
     }
+    return err;
+}
+
+static void staJoinMdnsGroup() {
+    ip4_addr_t group;
+    IP4_ADDR(&group, 224, 0, 0, 251);
+    IPAddress sta = WiFi.localIP();
+    IPAddress eth = (ETH.hasIP() ? ETH.localIP() : IPAddress());
+    // Multicast TX default = STA when associated so WiFi mDNS RX/TX works;
+    // still join eth so showbox.local answers on the wire path too.
+    IPAddress preferred = sta[0] != 0 ? sta : eth;
+    LOCK_TCPIP_CORE();
+    err_t errPref = joinMdnsOnIp(preferred, group, true);
+    err_t errSta = ERR_OK;
+    err_t errEth = ERR_OK;
+    if (sta[0] != 0 && sta != preferred) {
+        errSta = joinMdnsOnIp(sta, group, false);
+    }
+    if (eth[0] != 0 && eth != preferred && eth != sta) {
+        errEth = joinMdnsOnIp(eth, group, false);
+    }
+    mdnsIgmpJoined = (errPref == ERR_OK || errSta == ERR_OK || errEth == ERR_OK);
     UNLOCK_TCPIP_CORE();
     static int igmpLogs = 0;
     if (!mdnsIgmpJoined || igmpLogs < 3) {
         igmpLogs++;
-        debugLog("mdns igmp join=%d ok=%d ip=%s", (int)err, mdnsIgmpJoined ? 1 : 0, ip.toString().c_str());
+        debugLog("mdns igmp pref=%d sta=%d eth=%d ok=%d ip=%s",
+            (int)errPref, (int)errSta, (int)errEth, mdnsIgmpJoined ? 1 : 0,
+            preferred.toString().c_str());
     }
 }
 
@@ -506,6 +527,18 @@ void lanNoteBigHttp(bool on) {
     if (on) {
         __atomic_add_fetch(&bigHttpBodies, 1, __ATOMIC_RELAXED);
         lanNoteHttpBody(true);
+        // SoftAP beacons steal STA TX under SoftAP+STA (+BLE). Loopback
+        // HTTP probes still pass, so the wedge path never drops SoftAP —
+        // home-LAN SPA / Range resumes stall at bytes=0. Yield SoftAP when
+        // nobody is joined to the hotspot; CaptivePortal brings it back.
+        if (WiFi.softAPIP()[0] != 0 && WiFi.softAPgetStationNum() == 0) {
+            diagEventForce("http", "big body: SoftAP yield (0 stations)");
+            debugLog("big http: SoftAP yield for STA TX");
+            WiFi.softAPdisconnect(false);
+            WiFi.mode(WIFI_STA);
+            lanNoteApActive(false);
+            lanNoteApYieldForStaTx();
+        }
         return;
     }
     int n = __atomic_add_fetch(&bigHttpBodies, -1, __ATOMIC_RELAXED);
@@ -713,11 +746,7 @@ void mdnsLowerName(const uint8_t* msg, size_t len, size_t& off, char* out, size_
     }
 }
 
-// The module's STA address as a little-endian uint32: written into the A
-// record low-byte-first it comes out in network order, and the same value
-// is what lwIP's IP_MULTICAST_IF expects.
-uint32_t mdnsStaIp() {
-    IPAddress ip = lanIP();
+uint32_t mdnsIpLe(IPAddress ip) {
     if (ip[0] == 0) {
         return 0;
     }
@@ -725,9 +754,70 @@ uint32_t mdnsStaIp() {
         | (static_cast<uint32_t>(ip[2]) << 16) | (static_cast<uint32_t>(ip[3]) << 24);
 }
 
+// Every LAN address we should answer for showbox.local. STA first so suite
+// probes to s.ip pass; ethernet second so clients still have a path when STA
+// TX is wedged under SoftAP/BLE/USB-host coex.
+int mdnsCollectIps(uint32_t* out, int cap) {
+    int n = 0;
+    auto add = [&](IPAddress ip) {
+        uint32_t le = mdnsIpLe(ip);
+        if (le == 0 || n >= cap) {
+            return;
+        }
+        for (int i = 0; i < n; i++) {
+            if (out[i] == le) {
+                return;
+            }
+        }
+        out[n++] = le;
+    };
+    add(WiFi.localIP());
+    if (ETH.hasIP()) {
+        add(ETH.localIP());
+    }
+    return n;
+}
+
+// Prefer STA for multicast TX/membership when associated — WiFi RX filter
+// follows that membership. Fall back to any lanIP().
+uint32_t mdnsStaIp() {
+    uint32_t ips[2] = {};
+    int n = mdnsCollectIps(ips, 2);
+    return n > 0 ? ips[0] : 0;
+}
+
+static void mdnsWriteName(uint8_t* out, size_t& p) {
+    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
+    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
+    out[p++] = 0;
+}
+
+static void mdnsWriteA(uint8_t* out, size_t& p, uint32_t ipAddr, bool cacheFlush, uint32_t ttl) {
+    mdnsWriteName(out, p);
+    out[p++] = 0; out[p++] = 1;  // type A
+    out[p++] = cacheFlush ? 0x80 : 0; out[p++] = 0x01;  // IN
+    out[p++] = static_cast<uint8_t>(ttl >> 24);
+    out[p++] = static_cast<uint8_t>(ttl >> 16);
+    out[p++] = static_cast<uint8_t>(ttl >> 8);
+    out[p++] = static_cast<uint8_t>(ttl);
+    out[p++] = 0; out[p++] = 4;
+    out[p++] = static_cast<uint8_t>(ipAddr);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 8);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 16);
+    out[p++] = static_cast<uint8_t>(ipAddr >> 24);
+}
+
 // Multicast / full-mDNS announce+answer: qd=0, cache-flush bit set.
-size_t mdnsBuildARecord(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid) {
-    if (cap < 41) {
+size_t mdnsBuildARecord(uint8_t* out, size_t cap, const uint32_t* ips, int nip, uint16_t tid) {
+    if (nip <= 0) {
+        return 0;
+    }
+    if (nip > 4) {
+        nip = 4;
+    }
+    // header(12) + nip * (name15 + rr10 + rdata4)
+    const size_t need = 12 + static_cast<size_t>(nip) * 29;
+    if (cap < need) {
         return 0;
     }
     size_t p = 0;
@@ -735,30 +825,27 @@ size_t mdnsBuildARecord(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid)
     out[p++] = static_cast<uint8_t>(tid & 0xFF);
     out[p++] = 0x84; out[p++] = 0x00;  // response, authoritative
     out[p++] = 0; out[p++] = 0;        // qdcount 0
-    out[p++] = 0; out[p++] = 1;        // ancount 1
+    out[p++] = 0; out[p++] = static_cast<uint8_t>(nip);
     out[p++] = 0; out[p++] = 0;        // nscount 0
     out[p++] = 0; out[p++] = 0;        // arcount 0
-    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
-    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
-    out[p++] = 0;
-    out[p++] = 0; out[p++] = 1;        // type A
-    out[p++] = 0x80; out[p++] = 0x01;  // IN + cache-flush
-    out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 120;  // ttl
-    out[p++] = 0; out[p++] = 4;        // rdlength
-    out[p++] = static_cast<uint8_t>(ipAddr);
-    out[p++] = static_cast<uint8_t>(ipAddr >> 8);
-    out[p++] = static_cast<uint8_t>(ipAddr >> 16);
-    out[p++] = static_cast<uint8_t>(ipAddr >> 24);
+    for (int i = 0; i < nip; i++) {
+        mdnsWriteA(out, p, ips[i], true, 120);
+    }
     return p;
 }
 
 // RFC 6762 §6.7 legacy unicast (Android/DnsResolver one-shot mDNS): echo the
 // question, clear cache-flush, and cap TTL. Without this, getaddrinfo for
 // showbox.local on Android 12+ times out even when the module heard the query.
-size_t mdnsBuildLegacyA(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid, uint16_t qtype) {
-    // header(12) + qname(15) + qtype/qclass(4) + aname(15) + rr(10) + rdata(4|0)
+size_t mdnsBuildLegacyA(uint8_t* out, size_t cap, const uint32_t* ips, int nip, uint16_t tid, uint16_t qtype) {
     const bool answerA = (qtype == 1 || qtype == 255);
-    const size_t need = answerA ? 60 : 31;
+    if (!answerA) {
+        nip = 0;
+    } else if (nip > 4) {
+        nip = 4;
+    }
+    // header + question name + qtype/class + nip answers
+    const size_t need = 12 + 15 + 4 + static_cast<size_t>(nip) * 29;
     if (cap < need) {
         return 0;
     }
@@ -767,151 +854,198 @@ size_t mdnsBuildLegacyA(uint8_t* out, size_t cap, uint32_t ipAddr, uint16_t tid,
     out[p++] = static_cast<uint8_t>(tid & 0xFF);
     out[p++] = 0x84; out[p++] = 0x00;  // response, authoritative
     out[p++] = 0; out[p++] = 1;        // qdcount 1
-    out[p++] = 0; out[p++] = answerA ? 1 : 0;
+    out[p++] = 0; out[p++] = static_cast<uint8_t>(nip);
     out[p++] = 0; out[p++] = 0;        // nscount 0
     out[p++] = 0; out[p++] = 0;        // arcount 0
-    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
-    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
-    out[p++] = 0;
+    mdnsWriteName(out, p);
     out[p++] = static_cast<uint8_t>(qtype >> 8);
     out[p++] = static_cast<uint8_t>(qtype & 0xFF);
     out[p++] = 0; out[p++] = 1;        // IN (no QU bit)
-    if (!answerA) {
-        return p;  // NODATA for AAAA etc. so dual-stack resolvers do not hang
+    for (int i = 0; i < nip; i++) {
+        mdnsWriteA(out, p, ips[i], false, 10);
     }
-    out[p++] = 7; memcpy(out + p, "showbox", 7); p += 7;
-    out[p++] = 5; memcpy(out + p, "local", 5); p += 5;
-    out[p++] = 0;
-    out[p++] = 0; out[p++] = 1;        // type A
-    out[p++] = 0; out[p++] = 1;        // IN, no cache-flush
-    out[p++] = 0; out[p++] = 0; out[p++] = 0; out[p++] = 10;  // ttl <= 10s
-    out[p++] = 0; out[p++] = 4;
-    out[p++] = static_cast<uint8_t>(ipAddr);
-    out[p++] = static_cast<uint8_t>(ipAddr >> 8);
-    out[p++] = static_cast<uint8_t>(ipAddr >> 16);
-    out[p++] = static_cast<uint8_t>(ipAddr >> 24);
     return p;
 }
 }  // namespace
 
 static bool sMdnsResponderUp = false;
 
-static void lanMdnsResponderTask(void*) {
+static int mdnsOpenBound(uint32_t ipLe) {
     int sock = lwip_socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
+        return -1;
+    }
+    int yes = 1;
+    lwip_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#if defined(SO_REUSEPORT)
+    lwip_setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = lwip_htons(kMdnsPort);
+    // Bind per-iface: a single INADDR_ANY socket stopped receiving STA
+    // unicast :5353 once ethernet also had an IP (eth still answered).
+    addr.sin_addr.s_addr = ipLe;  // already little-endian == lwIP on-wire order here
+    if (lwip_bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        debugLog("mdnsrsp bind %08x failed errno=%d", (unsigned)ipLe, errno);
+        lwip_close(sock);
+        return -1;
+    }
+    ip_mreq mreq = {};
+    mreq.imr_multiaddr.s_addr = lwip_htonl(kMdnsGroupAddr);
+    mreq.imr_interface.s_addr = ipLe;
+    lwip_setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    in_addr ifAddr;
+    ifAddr.s_addr = ipLe;
+    lwip_setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &ifAddr, sizeof(ifAddr));
+    // Non-blocking so we can poll every iface.
+    int flags = lwip_fcntl(sock, F_GETFL, 0);
+    lwip_fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    return sock;
+}
+
+static void lanMdnsResponderTask(void*) {
+    // Placeholder — sockets opened after first IP appears.
+    int socks[2] = {-1, -1};
+    uint32_t sockIps[2] = {};
+    int nSocks = 0;
+    {
+        // Keep a wildcard listener too until the first per-iface bind succeeds.
+        int anySock = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+        if (anySock >= 0) {
+            int yes = 1;
+            lwip_setsockopt(anySock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+            sockaddr_in addr = {};
+            addr.sin_family = AF_INET;
+            addr.sin_port = lwip_htons(kMdnsPort);
+            addr.sin_addr.s_addr = PP_HTONL(INADDR_ANY);
+            if (lwip_bind(anySock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                socks[0] = anySock;
+                sockIps[0] = 0;
+                nSocks = 1;
+                int flags = lwip_fcntl(anySock, F_GETFL, 0);
+                lwip_fcntl(anySock, F_SETFL, flags | O_NONBLOCK);
+            } else {
+                lwip_close(anySock);
+            }
+        }
+    }
+    if (nSocks == 0) {
         debugLog("mdnsrsp socket failed");
         vTaskDelete(nullptr);
         return;
     }
-    int yes = 1;
-    lwip_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = lwip_htons(kMdnsPort);
-    addr.sin_addr.s_addr = PP_HTONL(INADDR_ANY);
-    if (lwip_bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        debugLog("mdnsrsp bind failed");
-        lwip_close(sock);
-        vTaskDelete(nullptr);
-        return;
-    }
-    ip_mreq mreq = {};
-    mreq.imr_multiaddr.s_addr = lwip_htonl(kMdnsGroupAddr);
-    mreq.imr_interface.s_addr = PP_HTONL(INADDR_ANY);
-    lwip_setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
-    int ttl = 255;
-    lwip_setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
-    lwip_setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
-    // Poll: a blocking recvfrom would park the 1 s announce cadence forever.
-    timeval tv = {};
-    tv.tv_usec = 100 * 1000;
-    lwip_setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    debugLog("mdnsrsp listening on 5353");
+    debugLog("mdnsrsp listening on 5353 (per-iface)");
 
-    // The membership above lands on whatever netif is default at bind time —
-    // in AP+STA that is the AP, and the group dies with it. The STA-side
-    // membership is what feeds the WiFi driver's multicast RX filter, so
-    // re-assert it (and the multicast TX interface) whenever the STA IP is
-    // up, and again whenever it changes.
-    uint32_t joinedFor = 0;
-    uint32_t lastJoinMs = 0;
-
+    uint32_t lastSyncMs = 0;
     uint32_t lastAnnounceMs = 0;
     int announceFails = 0;
     for (;;) {
         uint32_t now = millis();
-        uint32_t ip = mdnsStaIp();
-        if (ip != 0 && (ip != joinedFor || (int32_t)(now - lastJoinMs) >= 10000)) {
-            // Join on the STA netif explicitly and keep refreshing it: the
-            // WiFi driver's multicast RX filter follows this membership.
-            ip_mreq sta = {};
-            sta.imr_multiaddr.s_addr = lwip_htonl(kMdnsGroupAddr);
-            sta.imr_interface.s_addr = ip;
-            if (lwip_setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &sta, sizeof(sta)) == 0) {
-                joinedFor = ip;
+        uint32_t ips[2] = {};
+        int nip = mdnsCollectIps(ips, 2);
+        // Rebuild per-iface sockets when LAN addresses change.
+        if (nip > 0 && (lastSyncMs == 0 || (int32_t)(now - lastSyncMs) >= 5000)) {
+            bool same = (nSocks == nip);
+            for (int i = 0; same && i < nip; i++) {
+                if (sockIps[i] != ips[i]) {
+                    same = false;
+                }
             }
-            lastJoinMs = now;
+            if (!same) {
+                for (int i = 0; i < 2; i++) {
+                    if (socks[i] >= 0) {
+                        lwip_close(socks[i]);
+                        socks[i] = -1;
+                        sockIps[i] = 0;
+                    }
+                }
+                nSocks = 0;
+                for (int i = 0; i < nip && nSocks < 2; i++) {
+                    int fd = mdnsOpenBound(ips[i]);
+                    if (fd < 0) {
+                        continue;
+                    }
+                    socks[nSocks] = fd;
+                    sockIps[nSocks] = ips[i];
+                    nSocks++;
+                }
+                debugLog("mdnsrsp bound ifaces=%d sta/eth", nSocks);
+            }
+            lastSyncMs = now;
         }
-        if (ip != 0 && ((lastAnnounceMs == 0 && (int32_t)(now - lastAnnounceMs) >= 0) || (int32_t)(now - lastAnnounceMs) >= 1000)) {
-            in_addr ifAddr;
-            ifAddr.s_addr = ip;
-            lwip_setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &ifAddr, sizeof(ifAddr));
-            uint8_t pkt[64];
-            size_t n = mdnsBuildARecord(pkt, sizeof(pkt), ip, 0);
-            if (n > 0) {
+        if (nSocks > 0 && nip > 0 && (lastAnnounceMs == 0 || (int32_t)(now - lastAnnounceMs) >= 1000)) {
+            uint8_t pkt[128];
+            size_t pn = mdnsBuildARecord(pkt, sizeof(pkt), ips, nip, 0);
+            if (pn > 0) {
                 sockaddr_in dst = {};
                 dst.sin_family = AF_INET;
                 dst.sin_port = lwip_htons(kMdnsPort);
                 dst.sin_addr.s_addr = lwip_htonl(kMdnsGroupAddr);
-                int sent = lwip_sendto(sock, pkt, n, 0, reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
-                if (sent < 0 && announceFails < 5) {
-                    announceFails++;
-                    debugLog("mdnsrsp announce sendto failed errno=%d", errno);
+                // Announce on every bound iface so WiFi and eth both hear us.
+                for (int i = 0; i < nSocks; i++) {
+                    int sent = lwip_sendto(socks[i], pkt, pn, 0,
+                        reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+                    if (sent < 0 && announceFails < 5) {
+                        announceFails++;
+                        debugLog("mdnsrsp announce if=%08x errno=%d",
+                            (unsigned)sockIps[i], errno);
+                    }
                 }
                 lastAnnounceMs = now;
             }
         }
-        char buf[1500];
-        sockaddr_in from = {};
-        socklen_t flen = sizeof(from);
-        int n = lwip_recvfrom(sock, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&from), &flen);
-        if (n < 12) {
-            continue;
-        }
-        uint16_t flags = (static_cast<uint8_t>(buf[2]) << 8) | static_cast<uint8_t>(buf[3]);
-        if (flags & 0x8000) {
-            continue;  // a response, not a query
-        }
-        uint16_t qdcount = (static_cast<uint8_t>(buf[4]) << 8) | static_cast<uint8_t>(buf[5]);
-        uint16_t tid = (static_cast<uint8_t>(buf[0]) << 8) | static_cast<uint8_t>(buf[1]);
-        size_t off = 12;
-        bool want = false;
-        uint16_t wantType = 1;
-        for (int q = 0; q < qdcount && q < 4; q++) {
-            char name[64] = {};
-            mdnsLowerName(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n), off, name, sizeof(name));
-            if (off + 4 > n) {
-                break;
+        bool got = false;
+        for (int si = 0; si < nSocks; si++) {
+            char buf[1500];
+            sockaddr_in from = {};
+            socklen_t flen = sizeof(from);
+            int n = lwip_recvfrom(socks[si], buf, sizeof(buf), 0,
+                reinterpret_cast<sockaddr*>(&from), &flen);
+            if (n < 12) {
+                continue;
             }
-            uint16_t qtype = (static_cast<uint8_t>(buf[off]) << 8) | static_cast<uint8_t>(buf[off + 1]);
-            off += 4;  // type + class (class may carry QU bit)
-            if (strcmp(name, kMdnsName) == 0 && (qtype == 1 || qtype == 28 || qtype == 255)) {
-                want = true;
-                wantType = qtype;
+            got = true;
+            uint16_t flags = (static_cast<uint8_t>(buf[2]) << 8) | static_cast<uint8_t>(buf[3]);
+            if (flags & 0x8000) {
+                continue;
+            }
+            uint16_t qdcount = (static_cast<uint8_t>(buf[4]) << 8) | static_cast<uint8_t>(buf[5]);
+            uint16_t tid = (static_cast<uint8_t>(buf[0]) << 8) | static_cast<uint8_t>(buf[1]);
+            size_t off = 12;
+            bool want = false;
+            uint16_t wantType = 1;
+            for (int q = 0; q < qdcount && q < 4; q++) {
+                char name[64] = {};
+                mdnsLowerName(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n), off, name, sizeof(name));
+                if (off + 4 > n) {
+                    break;
+                }
+                uint16_t qtype = (static_cast<uint8_t>(buf[off]) << 8) | static_cast<uint8_t>(buf[off + 1]);
+                off += 4;
+                if (strcmp(name, kMdnsName) == 0 && (qtype == 1 || qtype == 28 || qtype == 255)) {
+                    want = true;
+                    wantType = qtype;
+                }
+            }
+            nip = mdnsCollectIps(ips, 2);
+            if (!want || nip <= 0) {
+                continue;
+            }
+            const bool legacy = lwip_ntohs(from.sin_port) != kMdnsPort;
+            uint8_t pkt[128];
+            size_t rn = legacy
+                ? mdnsBuildLegacyA(pkt, sizeof(pkt), ips, nip, tid, wantType)
+                : mdnsBuildARecord(pkt, sizeof(pkt), ips, nip, tid);
+            if (rn > 0) {
+                // Reply on the socket that heard the query so the source IP
+                // matches the iface the client probed (STA vs eth).
+                lwip_sendto(socks[si], pkt, rn, 0,
+                    reinterpret_cast<sockaddr*>(&from), sizeof(from));
             }
         }
-        if (!want || !lanHasIp()) {
-            continue;
-        }
-        // Source port != 5353 → one-shot / legacy unicast (Android DnsResolver,
-        // dig @224.0.0.251, etc.). Full mDNS peers stay on the compact form.
-        const bool legacy = lwip_ntohs(from.sin_port) != kMdnsPort;
-        uint8_t pkt[64];
-        size_t rn = legacy
-            ? mdnsBuildLegacyA(pkt, sizeof(pkt), mdnsStaIp(), tid, wantType)
-            : mdnsBuildARecord(pkt, sizeof(pkt), mdnsStaIp(), tid);
-        if (rn > 0) {
-            lwip_sendto(sock, pkt, rn, 0, reinterpret_cast<sockaddr*>(&from), sizeof(from));
+        if (!got) {
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
 }
@@ -1074,6 +1208,25 @@ void lanNoteApActive(bool on) {
     }
 }
 
+static volatile uint8_t sApForcedDown = 0;
+
+void lanNoteApForcedDown() {
+    sApForcedDown = 1;
+}
+
+void lanNoteApYieldForStaTx() {
+    // Prefer yield over wedge if both race; short SoftAP retry is fine.
+    if (sApForcedDown != 1) {
+        sApForcedDown = 2;
+    }
+}
+
+uint8_t lanTakeApForcedDown() {
+    uint8_t kind = sApForcedDown;
+    sApForcedDown = 0;
+    return kind;
+}
+
 static void lanBleApTick() {
     if (!apYieldForAp) {
         return;
@@ -1206,9 +1359,18 @@ void lanGwPingTick() {
             return;
         }
         // ~8 s of gateway silence: coex starvation is real and only gets
-        // worse. Yield now — no WiFi churn, no rejoin, no restart.
+        // worse. SoftAP beacons often starve STA TX too — drop SoftAP first
+        // (0-station hotspot), then yield BLE. No WiFi rejoin/restart.
         sGwMisses = 0;
         zombieSinceMs = 0;
+        if (WiFi.softAPIP()[0] != 0) {
+            diagEventForce("wifi", "gateway zombie with SoftAP — drop SoftAP");
+            debugLog("wifi zombie SoftAP drop");
+            WiFi.softAPdisconnect(false);
+            WiFi.mode(WIFI_STA);
+            lanNoteApActive(false);
+            lanNoteApForcedDown();
+        }
         lanYieldBleForAssoc("gateway zombie", 1);
         return;
     }
@@ -1319,7 +1481,9 @@ static bool httpListenProbe() {
 }
 
 void lanTickHttpHealth() {
-    if (WiFi.status() != WL_CONNECTED || WiFi.localIP()[0] == 0) {
+    // Probe whenever any LAN path has an IP (STA or ethernet). Gating on STA
+    // alone left eth :80 wedged forever when SoftAP thrash killed WiFi HTTP.
+    if (!lanHasIp()) {
         sHttpProbeFails = 0;
         sHttpRebound = false;
         return;
@@ -1357,6 +1521,23 @@ void lanTickHttpHealth() {
         return;
     }
     sHttpProbeFails++;
+    // SoftAP+STA (+BLE) is the usual way showbox.local dies: loopback probe
+    // fails or remote bodies stall while SoftAP is up. Drop SoftAP first so
+    // STA TX recovers; CaptivePortal will retry SoftAP on its backoff.
+    if (sHttpProbeFails >= 2 && WiFi.softAPIP()[0] != 0) {
+        diagEventForce("http", "wedge with SoftAP up — drop SoftAP to restore STA HTTP");
+        debugLog("http probe fail=%d with SoftAP — softAPdisconnect + STA", sHttpProbeFails);
+        WiFi.softAPdisconnect(false);
+        WiFi.mode(WIFI_STA);
+        lanNoteApActive(false);
+        // CaptivePortal::apUp stays true otherwise and softAPIP can linger —
+        // ensureAp then skips softAP() and leaves a ghost hotspot (API up, no beacons).
+        lanNoteApForcedDown();
+        sHttpProbeFails = 0;
+        sHttpRebound = false;
+        sHttpProbeMs = millis();
+        return;
+    }
     if (lanWsClients() > 0) {
         // Loopback GET can miss under BLE coex while /ws is still live.
         // webServer.end() would leak that client (~3 KB internal).

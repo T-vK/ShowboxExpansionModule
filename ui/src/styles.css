@@ -1899,3 +1899,17 @@ html.phone-preview .overlay { position: absolute; }
 
 .bt-chip { display: flex; align-items: center; padding: 0.25rem 0.4rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; }
 .bt-chip:hover { color: var(--text); border-color: var(--metal); }
+.usb-chip {
+  display: flex; align-items: center; padding: 0.25rem 0.4rem;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  color: var(--muted); cursor: pointer;
+}
+.usb-chip:hover, .usb-chip.on { color: var(--text); border-color: var(--metal); }
+.usb-chip.live { color: var(--accent); border-color: var(--accent); }
+.usb-mode-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.usb-status-card {
+  padding: 0.55rem 0.8rem 0.7rem; margin: 0.45rem 0 0.7rem;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+}
+.usb-status-card h2 { font-size: 0.82rem; letter-spacing: 0.1em; text-transform: uppercase; margin: 0.2rem 0 0.35rem; }
+.usb-page .mode-grid { margin-top: 0.4rem; }

@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Dropdown } from "../ui/Dropdown.jsx";
-import { IconBattery, IconSignalStream, IconWifi, IconBluetooth } from "../mixer/Icons.jsx";
+import { IconBattery, IconSignalStream, IconWifi, IconBluetooth, IconUsb } from "../mixer/Icons.jsx";
 import { useLive } from "../live/LiveContext.jsx";
+
+const USB_MODE_LABEL = {
+  jtag: "Serial / JTAG",
+  host: "MIDI host",
+  midiHid: "MIDI + HID",
+  midi: "MIDI gadget",
+  hid: "HID gadget",
+};
 
 function battClass(pct) {
   const n = Number(pct);
@@ -177,6 +185,80 @@ function WifiPopup() {
   );
 }
 
+function UsbPopup() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/v1/midi", { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => { if (alive && json) setData(json); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 2000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  async function setMode(qs, confirmText) {
+    if (confirmText && !window.confirm(confirmText)) return;
+    setBusy(true);
+    try {
+      await callApi("/api/v1/midi/settings?" + qs);
+      const res = await fetch("/api/v1/midi", { cache: "no-store" });
+      if (res.ok) setData(await res.json());
+    } catch (err) {
+      console.warn("usb mode change failed", err);
+    }
+    setBusy(false);
+  }
+
+  const usb = (data && data.usb) || {};
+  const mode = usb.mode || (data && data.usbJtag ? "jtag" : "jtag");
+  const label = USB_MODE_LABEL[mode] || mode;
+  const connected = !!usb.connected;
+  const rebootNote = "Requires reboot. Native USB-C mode changes; keep the UART USB-serial adapter for flash/console.";
+
+  return (
+    <div class="link-pop">
+      <p class={"link-pop-state " + (connected || mode === "midiHid" || mode === "midi" || mode === "hid" ? "ok" : "")}>
+        USB: {label}
+      </p>
+      {mode === "host" ? (
+        <>
+          <p>{connected ? `Device: ${usb.deviceName || "USB MIDI"}` : "No controller on the module USB-C yet."}</p>
+          <p class="meta">{usb.status || "—"}</p>
+          {connected ? (
+            <p class="meta">
+              MIDI in {Number(usb.rxCount || 0)} bytes
+              {Number(usb.rxCount) > 0 ? " · activity" : " · waiting for notes"}
+            </p>
+          ) : (
+            <p class="meta">Use the module USB-C (not the UART dongle). Bus-powered keyboards often need a powered hub.</p>
+          )}
+        </>
+      ) : mode === "jtag" ? (
+        <p class="meta">Native USB-C is serial/JTAG. Switch to MIDI host, then plug the keyboard into the module.</p>
+      ) : (
+        <p class="meta">{usb.status || "USB gadget mode — this computer is the host."}</p>
+      )}
+      <p class="meta">Mode</p>
+      <p class="actions usb-mode-actions">
+        <button type="button" class={mode === "jtag" ? "" : "ghost"} disabled={busy || mode === "jtag"}
+          onClick={() => setMode("usbHid=0&usbMidiHost=0&usbMidiPeripheral=0", rebootNote)}>JTAG</button>
+        <button type="button" class={mode === "host" ? "" : "ghost"} disabled={busy || mode === "host"}
+          onClick={() => setMode("usbMidiHost=1&usbMidiPeripheral=0&usbHid=0", rebootNote)}>MIDI host</button>
+        <button type="button" class={mode === "midiHid" ? "" : "ghost"} disabled={busy || mode === "midiHid"}
+          onClick={() => setMode("usbMidiHost=0&usbMidiPeripheral=1&usbHid=1", rebootNote)}>MIDI+HID</button>
+      </p>
+      <p class="actions"><a href="/usb" class="bt-page-link">USB settings</a></p>
+      {busy ? <p class="meta">Working…</p> : null}
+    </div>
+  );
+}
+
 export function StatusCluster() {
   const { esp, link } = useLive();
   const [open, setOpen] = useState(false);
@@ -185,8 +267,10 @@ export function StatusCluster() {
   const linkBtn = useRef(null);
   const btBtn = useRef(null);
   const wifiBtn = useRef(null);
+  const usbBtn = useRef(null);
   const battBtn = useRef(null);
   const popAnchor = useRef(null);
+  const [usbInfo, setUsbInfo] = useState(null);
   const pct = link.battery == null || link.battery === ""
     ? null
     : (Number.isFinite(Number(link.battery)) ? Math.round(Number(link.battery)) : null);
@@ -198,14 +282,30 @@ export function StatusCluster() {
     return () => clearInterval(id);
   }, [open]);
 
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/v1/midi", { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => { if (alive && json) setUsbInfo(json.usb || { mode: json.usbJtag ? "jtag" : "jtag" }); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 4000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
   const connectedFor = esp.connected && esp.since ? fmtDur(now - esp.since) : null;
   const lastSession = [...esp.sessions].reverse().find((row) => row.end);
   const lastLasted = lastSession ? fmtDur(lastSession.end - lastSession.start) : null;
+  const usbLive = !!(usbInfo && usbInfo.mode === "host" && usbInfo.connected && Number(usbInfo.rxCount) > 0);
+  const usbOn = !!(usbInfo && usbInfo.mode && usbInfo.mode !== "jtag");
 
   function toggle(which) {
     popAnchor.current = which === "batt" ? battBtn.current
       : which === "bt" ? btBtn.current
       : which === "wifi" ? wifiBtn.current
+      : which === "usb" ? usbBtn.current
       : linkBtn.current;
     setPop(which);
     setOpen((v) => !(v && pop === which));
@@ -233,6 +333,19 @@ export function StatusCluster() {
       >
         <IconWifi />
       </button>
+      <button
+        ref={usbBtn}
+        type="button"
+        class={"usb-chip" + (usbOn ? " on" : "") + (usbLive ? " live" : "")}
+        title={
+          usbInfo && usbInfo.mode === "host"
+            ? (usbInfo.connected ? `USB host: ${usbInfo.deviceName || "MIDI device"}` : "USB MIDI host — no device")
+            : (USB_MODE_LABEL[(usbInfo && usbInfo.mode) || "jtag"] || "USB")
+        }
+        onClick={() => toggle("usb")}
+      >
+        <IconUsb live={usbLive} />
+      </button>
       {link.bleOn ? (
         <button
           ref={btBtn}
@@ -254,7 +367,7 @@ export function StatusCluster() {
         </span>
       </span>
       <Dropdown anchorRef={popAnchor} open={open} wide onClose={() => setOpen(false)}>
-        {pop === "bt" ? <BtPopup /> : pop === "wifi" ? <WifiPopup /> : (
+        {pop === "bt" ? <BtPopup /> : pop === "wifi" ? <WifiPopup /> : pop === "usb" ? <UsbPopup /> : (
           <div class="link-pop">
             <p class={"link-pop-state " + (live ? "ok" : "bad")}>
               {live ? "Connected to Showbox" : (esp.connected ? "Waiting for Showbox" : "Web UI disconnected")}

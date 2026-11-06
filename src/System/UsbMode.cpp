@@ -40,6 +40,7 @@ UsbBoot usbBootMode() {
     prefs.end();
     usbWantMidi = device;
     usbWantHid = hidMode;
+    debugLog("usb boot prefs host=%d hid=%d dev=%d", host ? 1 : 0, hidMode ? 1 : 0, device ? 1 : 0);
     if (host) {
         return UsbBoot::MidiHost;
     }
@@ -110,18 +111,12 @@ void usbLoadIsoAndFailCount() {
     if (!prefs.begin("midi", false)) {
         return;
     }
-    int fails = prefs.getInt("usbfail", 0);
     usbTestBoot = prefs.getBool("usbtest", false);
-    if (usbBoot != UsbBoot::SerialJtag && fails >= 2) {
-        prefs.putBool("usbdev", false);
-        prefs.putBool("usbhost", false);
-        prefs.putBool("usbhid", false);
-        prefs.putBool("usbtest", false);
+    // Do not auto-clear usbhost/usbdev after failed starts — that made MIDI
+    // host look like it never stuck. usbStartSelected() falls back to JTAG
+    // for the current boot only; the user preference stays until changed.
+    if (usbBoot != UsbBoot::SerialJtag) {
         prefs.putInt("usbfail", 0);
-        usbBoot = UsbBoot::SerialJtag;
-        usbTestBoot = false;
-    } else if (usbBoot != UsbBoot::SerialJtag) {
-        prefs.putInt("usbfail", fails + 1);
     }
     prefs.end();
 }
@@ -145,13 +140,14 @@ bool usbStartSelected() {
         }
     }
     if (usbBoot != UsbBoot::SerialJtag && !usbStarted) {
-        usbModeClear();
+        // Keep the preferred mode in NVS so the next boot retries (and the
+        // UI can show host/gadget as selected). Only fall back to JTAG for
+        // this boot so Ethernet/Wi‑Fi stay reachable.
         if (Debug != nullptr) {
-            Debug->println("[ FAIL ] USB mode did not start. Rebooting with the serial/JTAG port.");
+            Debug->println("[ FAIL ] USB mode did not start; keeping NVS preference, using serial/JTAG this boot.");
         }
         usbRestoreJtag();
-        delay(200);
-        ESP.restart();
+        usbBoot = UsbBoot::SerialJtag;
     }
     if (usbBoot != UsbBoot::SerialJtag && Debug != nullptr) {
         Debug->println("[  OK  ] USB serial/JTAG is off. OTA and the UART connector can still flash.");
