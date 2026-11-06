@@ -609,6 +609,43 @@ def setup_gain(s: Suite, auto: float) -> tuple[float, float]:
     return gain, gain + BOOST_DB
 
 
+def _yield_airstep_for_looper(s: Suite) -> bool:
+    """AIRSTEP PTA drops looper CCs after SPA; yield the pedal for the sequence."""
+    try:
+        cf.http_post(
+            f"{s.session.base}/api/v1/midi/ble/auto",
+            {"address": AIRSTEP, "enabled": "0"},
+            timeout=3.0,
+        )
+        cf.http_post(
+            f"{s.session.base}/api/v1/midi/ble/disconnect",
+            {"address": AIRSTEP},
+            timeout=3.0,
+        )
+        time.sleep(1.0)
+        s.info("AIRSTEP yielded for looper MIDI")
+        return True
+    except Exception as exc:
+        s.info(f"AIRSTEP yield for looper: {exc}")
+        return False
+
+
+def _restore_airstep_after_looper(s: Suite) -> None:
+    try:
+        cf.http_post(
+            f"{s.session.base}/api/v1/midi/ble/auto",
+            {"address": AIRSTEP, "enabled": "1"},
+            timeout=3.0,
+        )
+        cf.http_post(
+            f"{s.session.base}/api/v1/midi/ble/connect",
+            {"address": AIRSTEP, "name": "AIRSTEP", "midi": "1", "hid": "0"},
+            timeout=3.0,
+        )
+    except Exception as exc:
+        s.info(f"AIRSTEP restore after looper: {exc}")
+
+
 def _ensure_looper_midi(s: Suite) -> None:
     """RTP after SPA/SoftAP is flaky; prefer a fresh session, else BLE."""
     _drop_rtp(s)
@@ -1568,22 +1605,27 @@ def case_looper_no_autoboost(s: Suite) -> None:
     while time.monotonic() < quiet:
         s.ws.got_entity.wait(timeout=0.2)
         s.ws.got_entity.clear()
-    _ensure_looper_midi(s)
-    looper_clear(s)
-    set_var("AUTO_BOOST", 0)
-    s.wait_var("AUTO_BOOST", 0, timeout=1.5)
-    g0 = s.gain_now()
-    if g0 is None:
-        g0 = entity("INPUT2_GAIN")
-    looper_sequence(s)
-    g1 = s.gain_now()
-    if g1 is None:
-        g1 = entity("INPUT2_GAIN")
-    s.check(
-        "gain unchanged with AUTO_BOOST=0",
-        g0 is not None and g1 is not None and abs(g1 - g0) < 0.4,
-        f"before={g0} after={g1}",
-    )
+    yielded = _yield_airstep_for_looper(s)
+    try:
+        _ensure_looper_midi(s)
+        looper_clear(s)
+        set_var("AUTO_BOOST", 0)
+        s.wait_var("AUTO_BOOST", 0, timeout=1.5)
+        g0 = s.gain_now()
+        if g0 is None:
+            g0 = entity("INPUT2_GAIN")
+        looper_sequence(s)
+        g1 = s.gain_now()
+        if g1 is None:
+            g1 = entity("INPUT2_GAIN")
+        s.check(
+            "gain unchanged with AUTO_BOOST=0",
+            g0 is not None and g1 is not None and abs(g1 - g0) < 0.4,
+            f"before={g0} after={g1}",
+        )
+    finally:
+        if yielded:
+            _restore_airstep_after_looper(s)
 
 
 def _assert_unboosted(s: Suite, g0: float, label: str) -> None:
@@ -1608,27 +1650,32 @@ def case_looper_autoboost(s: Suite) -> None:
     while time.monotonic() < quiet:
         s.ws.got_entity.wait(timeout=0.2)
         s.ws.got_entity.clear()
-    _ensure_looper_midi(s)
-    looper_clear(s)
-    press(s, 102, 1, "rec")
-    g = s.gain_now()
-    s.check("no boost while recording", g is not None and abs(g - g0) < 0.4, f"gain={g}")
-    press(s, 102, 3, "record -> play")
-    g = s.wait_gain(boosted, timeout=5.0)
-    s.check("boost on play", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
-    press(s, 102, 4, "overdub")
-    _assert_unboosted(s, g0, "boost off on overdub")
-    press(s, 103, 2, "stop")
-    _assert_unboosted(s, g0, "no boost while stopped")
-    press(s, 102, 3, "play")
-    g = s.wait_gain(boosted, timeout=5.0)
-    s.check("boost on play again", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
-    press(s, 102, 4, "overdub again")
-    _assert_unboosted(s, g0, "boost off on overdub again")
-    press(s, 103, 2, "stop again")
-    press(s, 104, 0, "clear")
-    _assert_unboosted(s, g0, "boost off after clear")
-    set_var("AUTO_BOOST", 1)
+    yielded = _yield_airstep_for_looper(s)
+    try:
+        _ensure_looper_midi(s)
+        looper_clear(s)
+        press(s, 102, 1, "rec")
+        g = s.gain_now()
+        s.check("no boost while recording", g is not None and abs(g - g0) < 0.4, f"gain={g}")
+        press(s, 102, 3, "record -> play")
+        g = s.wait_gain(boosted, timeout=5.0)
+        s.check("boost on play", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
+        press(s, 102, 4, "overdub")
+        _assert_unboosted(s, g0, "boost off on overdub")
+        press(s, 103, 2, "stop")
+        _assert_unboosted(s, g0, "no boost while stopped")
+        press(s, 102, 3, "play")
+        g = s.wait_gain(boosted, timeout=5.0)
+        s.check("boost on play again", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
+        press(s, 102, 4, "overdub again")
+        _assert_unboosted(s, g0, "boost off on overdub again")
+        press(s, 103, 2, "stop again")
+        press(s, 104, 0, "clear")
+        _assert_unboosted(s, g0, "boost off after clear")
+        set_var("AUTO_BOOST", 1)
+    finally:
+        if yielded:
+            _restore_airstep_after_looper(s)
 
 
 def case_manual_boost(s: Suite) -> None:
