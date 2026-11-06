@@ -438,6 +438,9 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
                 while time.monotonic() < quiet:
                     s.ws.got_entity.wait(timeout=0.2)
                     s.ws.got_entity.clear()
+            # Stale RTP after SPA/AIRSTEP reconnect looks connected but drops CCs.
+            _drop_rtp(s)
+            s.ensure_rtp()
             s.send_cc(102)
             end = time.monotonic() + 5.5
             while time.monotonic() < end:
@@ -507,6 +510,9 @@ def setup_gain(s: Suite, auto: float) -> tuple[float, float]:
 
 def looper_sequence(s: Suite) -> None:
     """rec → play → overdub → play → stop → play → overdub → play → stop → clear."""
+    # http-pwa / AIRSTEP PTA can leave AppleMIDI invited but CCs undelivered.
+    _drop_rtp(s)
+    s.ensure_rtp()
     press(s, 102, 1, "rec")
     press(s, 102, 3, "record -> play")
     press(s, 102, 4, "overdub")
@@ -1443,6 +1449,8 @@ def case_looper_no_autoboost(s: Suite) -> None:
     while time.monotonic() < quiet:
         s.ws.got_entity.wait(timeout=0.2)
         s.ws.got_entity.clear()
+    _drop_rtp(s)
+    s.ensure_rtp()
     looper_clear(s)
     set_var("AUTO_BOOST", 0)
     s.wait_var("AUTO_BOOST", 0, timeout=1.5)
