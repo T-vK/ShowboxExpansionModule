@@ -197,11 +197,51 @@ def _dev_path(address: str) -> str:
     return "/org/bluez/hci0/dev_" + (address or "").replace(":", "_").upper()
 
 
+def _write_acquired(address: str) -> bool:
+    import dbus
+
+    try:
+        bus = dbus.SystemBus()
+        path = _wait_char_path(address, 2.0)
+        props = dbus.Interface(
+            bus.get_object("org.bluez", path), "org.freedesktop.DBus.Properties"
+        )
+        return bool(props.Get("org.bluez.GattCharacteristic1", "WriteAcquired"))
+    except Exception:
+        return False
+
+
+def _bounce_acl_for_write(address: str) -> None:
+    """Drop ACL so a stuck WriteAcquired (orphaned PipeWire FD) can clear."""
+    import dbus
+
+    _pw_destroy_node(address)
+    bus = dbus.SystemBus()
+    dev_path = _dev_path(address)
+    try:
+        dev = dbus.Interface(bus.get_object("org.bluez", dev_path), "org.bluez.Device1")
+        dev.Disconnect()
+    except Exception:
+        pass
+    end = time.monotonic() + 6.0
+    while time.monotonic() < end:
+        if not _write_acquired(address):
+            break
+        time.sleep(0.2)
+    try:
+        dev = dbus.Interface(bus.get_object("org.bluez", dev_path), "org.bluez.Device1")
+        dev.Connect()
+    except Exception:
+        pass
+    time.sleep(0.6)
+
+
 def _acquire_fd(char, address: str):
     import dbus
 
     last = None
-    for _ in range(8):
+    bounced = False
+    for attempt in range(12):
         _pw_destroy_node(address)
         try:
             unix_fd, _mtu = char.AcquireWrite({})
@@ -209,6 +249,23 @@ def _acquire_fd(char, address: str):
             return fd, unix_fd, None
         except dbus.exceptions.DBusException as exc:
             last = exc
+            err = str(exc)
+            if (
+                not bounced
+                and attempt >= 3
+                and ("Write acquired" in err or "NotPermitted" in err)
+            ):
+                bounced = True
+                try:
+                    _bounce_acl_for_write(address)
+                    char_path = _wait_char_path(address, 12.0)
+                    bus = dbus.SystemBus()
+                    char = dbus.Interface(
+                        bus.get_object("org.bluez", char_path),
+                        "org.bluez.GattCharacteristic1",
+                    )
+                except Exception as bounce_exc:
+                    last = bounce_exc
             time.sleep(0.08)
     return None, None, last
 
