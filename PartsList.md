@@ -5,11 +5,11 @@ Note: If any of the links stop working, use the name of the part and search it o
 ### Reference Design
 - [ESP32-S3-DevKit C, N16R8, Dual USB C](https://www.aliexpress.com/item/1005007656791597.html)
 - [2x RJ45 Female Panel Mount Screw Terminal Adapter, D-Type RJ45 8P8C Female to 8pin Terminal](https://www.aliexpress.com/item/1005007506067046.html)
-- [1x P813 RGB LED Driver](https://www.aliexpress.com/item/1005005863723595.html)
+- [1x P9813 RGB LED Driver](https://www.aliexpress.com/item/1005005863723595.html)
 - [1x Momentary LED Switch 12mm Flat Head, Silver, 12-24V, Red Led](https://www.aliexpress.com/item/4001362443186.html)
 - [1x Momentary LED Switch 12mm Flat Head, Silver, 12-24V, Green Led](https://www.aliexpress.com/item/4001362443186.html)
 - [1x Momentary LED Switch 12mm Flat Head, Silver, 12-24V, Blue Led](https://www.aliexpress.com/item/4001362443186.html)
-- [1x Arduinio MIDI Shield](https://www.aliexpress.com/item/32806229252.html)
+- [1x Arduino MIDI Shield](https://www.aliexpress.com/item/32806229252.html)
 - [4x TRS Jack for PCB Right Angle, 1/4" 6.35 mm](https://www.aliexpress.com/item/4001266094691.html)
 - [Silicone Dupont Wires](https://www.aliexpress.com/item/1005007125827279.html)
 - [Dupont Connectors, 2.54mm, various sizes](https://www.aliexpress.com/item/1005004086203680.html) 
