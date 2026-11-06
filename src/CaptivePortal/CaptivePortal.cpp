@@ -362,12 +362,19 @@ void CaptivePortal::ensureAp() {
                 apFailStreak++;
             }
             if (staUp()) {
-                apGaveUpThisSta = true;
                 wifi_mode_t mode = WIFI_MODE_NULL;
                 esp_wifi_get_mode(&mode);
                 if (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP) {
-                    debugLog("ap begin failed — revert to STA, no more SoftAP this assoc");
                     WiFi.mode(WIFI_STA);
+                }
+                // Hotspot+STA (apAlways) must keep retrying SoftAP after a
+                // BLE/coex miss — latching give-up left L1 hotspot dark for
+                // the whole association (ap=false, apIp=0.0.0.0).
+                if (apAlways) {
+                    debugLog("ap begin failed — STA kept, SoftAP retry later (always)");
+                } else {
+                    apGaveUpThisSta = true;
+                    debugLog("ap begin failed — revert to STA, no more SoftAP this assoc");
                 }
             }
             lanNoteApActive(false);
