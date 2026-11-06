@@ -518,11 +518,21 @@ def setup_gain(s: Suite, auto: float) -> tuple[float, float]:
     return gain, gain + BOOST_DB
 
 
+def _ensure_looper_midi(s: Suite) -> None:
+    """RTP after SPA/SoftAP is flaky; prefer a fresh session, else BLE."""
+    _drop_rtp(s)
+    try:
+        s.ensure_rtp()
+        return
+    except CaseFail as exc:
+        s.info(f"RTP for looper unavailable ({exc}); preferring BLE")
+    _ensure_midi(s, prefer_ble=True)
+
+
 def looper_sequence(s: Suite) -> None:
     """rec → play → overdub → play → stop → play → overdub → play → stop → clear."""
     # http-pwa / AIRSTEP PTA can leave AppleMIDI invited but CCs undelivered.
-    _drop_rtp(s)
-    s.ensure_rtp()
+    _ensure_looper_midi(s)
     press(s, 102, 1, "rec")
     press(s, 102, 3, "record -> play")
     press(s, 102, 4, "overdub")
@@ -1448,8 +1458,7 @@ def case_looper_no_autoboost(s: Suite) -> None:
     while time.monotonic() < quiet:
         s.ws.got_entity.wait(timeout=0.2)
         s.ws.got_entity.clear()
-    _drop_rtp(s)
-    s.ensure_rtp()
+    _ensure_looper_midi(s)
     looper_clear(s)
     set_var("AUTO_BOOST", 0)
     s.wait_var("AUTO_BOOST", 0, timeout=1.5)
@@ -1487,6 +1496,7 @@ def case_looper_autoboost(s: Suite) -> None:
     while time.monotonic() < quiet:
         s.ws.got_entity.wait(timeout=0.2)
         s.ws.got_entity.clear()
+    _ensure_looper_midi(s)
     looper_clear(s)
     press(s, 102, 1, "rec")
     g = s.gain_now()

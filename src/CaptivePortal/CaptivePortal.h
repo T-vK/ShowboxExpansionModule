@@ -86,7 +86,10 @@ private:
     static constexpr uint32_t kApBootSettleMs = 90000;
     // After an explicit SoftAP yield, keep SoftAP down this long unless
     // apForceTry (POST ap=true) asks for it again.
-    static constexpr uint32_t kApYieldQuietMs = 180000;
+    // L2/L3 live suite runs past 3 minutes after SoftAP yield; SoftAP return
+    // mid-suite wedges STA HTTP / AppleMIDI. Keep quiet for 15 minutes unless
+    // apForceTry (POST ap=true) asks for SoftAP again.
+    static constexpr uint32_t kApYieldQuietMs = 900000;
     NetCred remembered[8];
     uint8_t rememberedN = 0;
     String pendingStaSsid;
