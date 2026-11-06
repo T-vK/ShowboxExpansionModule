@@ -550,9 +550,9 @@ void CaptivePortal::stopDns() {
 void CaptivePortal::tick() {
     flushWanted();
     runPendingStaJoin();
-    // API set apForceTry — raise SoftAP every loop, not only on the 1 Hz
-    // radio tick, so L1's 35s hotspot wait sees retries under BLE coex.
-    if (apForceTry && apShouldRun()) {
+    // API set apForceTry — raise SoftAP often, but not while an HTTP body is
+    // in flight (softAP() mid-response wedges STA → urllib TimeoutError).
+    if (apForceTry && apShouldRun() && !lanHttpBodyBusy()) {
         ensureAp();
     }
     if (const uint8_t apDown = lanTakeApForcedDown()) {

@@ -687,8 +687,13 @@ def case_hotspot(s: Suite) -> None:
     if wifi.get("sta"):
         # Product default: SoftAP stays up while joined to a home AP.
         if not wifi.get("ap"):
-            api("/api/v1/wifi", {"apAlways": True, "ap": True})
-            wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=35.0) or wifi
+            # SoftAP bring-up can pause STA briefly — use a long POST timeout
+            # and eth fallback; default api() 4s TimeoutError aborted L1 early.
+            try:
+                _wifi_api(s, {"apAlways": True, "ap": True})
+            except Exception as exc:
+                s.info(f"SoftAP enable: {exc}")
+            wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=45.0) or wifi
         s.check(
             "SoftAP up while STA joined",
             bool(wifi.get("ap")) and bool(wifi.get("sta")),
