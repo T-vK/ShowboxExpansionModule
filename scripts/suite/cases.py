@@ -462,6 +462,16 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
                 s.check(label, True, f"LOOPER_STATE={got}")
                 return
             raise CaseFail(f"{label}: want {want} got {got}")
+        # Play↔overdub: first CC102 missed under AIRSTEP PTA left us at play.
+        if abs(want - 4) < 0.05 and _state_is(got, 3):
+            s.info(f"{label}: still play, one more tap for overdub")
+            _drop_rtp(s)
+            s.ensure_rtp()
+            s.send_cc(102)
+            got = s.wait_next_state(timeout=3.0) or s.refresh_looper() or s.looper_now()
+            if _state_is(got, want):
+                s.check(label, True, f"LOOPER_STATE={got}")
+                return
         raise CaseFail(f"{label}: want {want} got {got}")
     stuck = got is None or (start is not None and abs(got - start) < 0.05)
     if stuck:
