@@ -1488,6 +1488,9 @@ def case_wifi_midi(s: Suite) -> None:
 
 
 def case_looper_no_autoboost(s: Suite) -> None:
+    # http-pwa can leave :80 quiet for a beat; setup_gain needs vars/entities.
+    if not wait_http_quiet(s.ip, timeout=16.0):
+        raise CaseFail("HTTP quiet before looper-no-autoboost failed")
     setup_gain(s, auto=0)
     quiet = time.monotonic() + 2.0
     while time.monotonic() < quiet:
@@ -1526,6 +1529,8 @@ def _assert_unboosted(s: Suite, g0: float, label: str) -> None:
 
 
 def case_looper_autoboost(s: Suite) -> None:
+    if not wait_http_quiet(s.ip, timeout=16.0):
+        raise CaseFail("HTTP quiet before looper-autoboost failed")
     g0, boosted = setup_gain(s, auto=1)
     quiet = time.monotonic() + 2.0
     while time.monotonic() < quiet:
