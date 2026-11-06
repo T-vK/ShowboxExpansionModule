@@ -59,6 +59,15 @@ void UltimateBaseFirmware::setDeviceUrl(const char* deviceUrl) {
     _deviceUrl = deviceUrl;
 }
 
+void UltimateBaseFirmware::setSetupPortalAp(const char* ssid, const char* password) {
+    _setupPortalSsid = ssid;
+    _setupPortalPassword = password;
+}
+
+void UltimateBaseFirmware::setSetupPortalTitle(const char* title) {
+    _setupPortalTitle = title;
+}
+
 // Getter methods
 AsyncWebServer* UltimateBaseFirmware::getWebServer() {
     return _server;
@@ -336,8 +345,14 @@ bool UltimateBaseFirmware::startSetupPortal(uint32_t timeoutMs) {
     }
     // Provisioning needs the AP interface back (freed after boot connect).
     WiFi.mode(WIFI_AP_STA);
+    if (_setupPortalTitle != nullptr) {
+        _wifiManager->setTitle(_setupPortalTitle);
+    }
     _wifiManager->setConfigPortalTimeout((timeoutMs + 999) / 1000);
-    _wifiManager->startConfigPortal("ShowboxExpansionModuleAP", "showbox");
+    // Generic compile fallback only; products should call setSetupPortalAp().
+    const char* ssid = _setupPortalSsid != nullptr ? _setupPortalSsid : "UBFW-Setup";
+    const char* password = _setupPortalPassword;
+    _wifiManager->startConfigPortal(ssid, password);
     return _wifiManager->getConfigPortalActive();
 }
 

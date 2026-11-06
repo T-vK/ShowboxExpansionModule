@@ -1,0 +1,55 @@
+---
+description: Module boundaries, DI, and extractable-lib rules for firmware
+globs: src/**/*.{cpp,h,hpp},lib/**/*.{cpp,h,hpp},platformio.ini
+alwaysApply: false
+---
+
+# Clean architecture (firmware)
+
+Canonical plan: `docs/architecture-refactor-plan.md`.
+
+## Composition root
+
+- Wire app objects only in `src/main.cpp` (setters / `begin` / callbacks).
+- **Forbidden** in feature modules: `extern LiveSocket`, `extern BleRadio`, `extern MackieShowbox`, `extern MultiMidi`, `extern UltimateBaseFirmware` (Diag/boot leftovers are debt — do not add more).
+
+## Dependency direction
+
+```
+main → RestApi / Actions / Connections / CaptivePortal / LanKeep / LiveSocket
+         ↓                ↓
+    MultiMidi (lib-bound)   MackieShowbox (lib-bound)
+         ↓                        ↓
+    BleRadio / Hid          UARTInterceptor
+```
+
+- App modules may depend on extractable libs.
+- Extractable libs must **not** depend on Actions, LiveSocket, LanKeep, CaptivePortal, RestApi, Connections, FrontPanel, WebUi.
+
+## Extractable units (live under `lib/` now; future separate repos)
+
+| Unit | May depend on | Must not depend on |
+|------|---------------|--------------------|
+| `lib/UARTInterceptor` | Arduino / ESP-IDF only | anything in `src/` |
+| `lib/MackieShowbox` | UARTInterceptor, Packet/constants/string maps, ShowboxLog hooks | Actions, LiveSocket, REST, LanKeep, MultiMidi |
+| `lib/MultiMidi` | BleRadio, MidiInbound/LanCoex/AppHooks ports; app-provided `debugLog` | ActionRules, LanKeep, HttpsGate, CaptivePortal, WiredNet, Diag headers |
+| `lib/UltimateBaseFirmware` | WiFi/OTA helpers; app supplies setup-portal SSID via setters | product SoftAP (CaptivePortal owns that) |
+
+When adding a call from MultiMidi/Showbox into app policy, **inject a port** (callback / small interface) and register it from `main` — never `#include` the app module.
+
+## DI patterns
+
+- Prefer `setX(T*)` / `begin(...)` already used by RestApiRouter / Connections / LiveSocket.
+- Null-check optional deps before use.
+- Cross-cutting coexistence (BLE ↔ Wi‑Fi airtime) goes through a `LanCoex` (or equivalent) port owned by the app, implemented with LanKeep/HttpsGate.
+
+## SoftAP / STA
+
+- **CaptivePortal owns SoftAP** bring-up (`ensureAp`) and teardown (`stopAp` / `dropApForSta`).
+- LanKeep health paths must call `lanDropSoftApForSta` / `CaptivePortal::dropApForSta` — never raw `WiFi.softAPdisconnect` for product SoftAP.
+- Register the portal from `main` via `lanSetCaptivePortal`.
+- Do not sprinkle `WiFi.*` SoftAP/STA control into MIDI/Showbox/Actions.
+
+## After boundary edits
+
+Flash `esp32-s3-n16r8`, then minimal suite ≥3× (`snapshot-mixer` / `websocket` / `ws-multiclient` / relevant BLE cases) — not a full L3 first.

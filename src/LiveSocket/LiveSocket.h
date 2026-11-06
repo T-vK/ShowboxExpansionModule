@@ -42,7 +42,9 @@ private:
     uint32_t lastLinkMs = 0;
     uint32_t lastMixerMs = 0;
     char namesJson[640] = "{\"type\":\"names\",\"channels\":{},\"snapshots\":[\"1\",\"2\",\"3\",\"4\",\"5\"]}";
-    static constexpr uint8_t kRetryCap = 8;
+    // Burst entity writes / multi-client fanout used to overflow at 8 and
+    // drop mid-snapshot deltas. 32 covers a full mixer touch with headroom.
+    static constexpr uint8_t kRetryCap = 32;
     char retryId[kRetryCap][28] {};
     char retryVal[kRetryCap][28] {};
     uint8_t retryN = 0;
@@ -52,4 +54,8 @@ private:
     bool analogDirty[2] = {};
     uint32_t lastAnalogMs = 0;
     uint32_t lastDumpSeq = 0;
+    // Post-RECALL paced fan-out: one client per tick (12 KB × N at once
+    // aborted sockets under ws-sync-stress).
+    uint32_t mixerBroadcastAt = 0;
+    uint8_t mixerFanRemaining = 0;
 };

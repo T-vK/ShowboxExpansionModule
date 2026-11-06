@@ -5,10 +5,12 @@
 class MackieShowbox;
 class FrontPanel;
 class MultiMidi;
+class CaptivePortal;
 
 void lanKeepMdns();
 void lanQueueMdnsRefresh();
 void lanSetMultiMidi(MultiMidi* mm);
+void lanSetCaptivePortal(CaptivePortal* portal);
 void lanPreferWifiAirtime();
 void lanPreferWifiWithBle();
 void lanRefreshPhy();

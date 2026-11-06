@@ -10,6 +10,7 @@
 class ActionRules;
 class LiveSocket;
 class CaptivePortal;
+class BleRadio;
 
 class RestApiRouter {
 public:
@@ -21,6 +22,7 @@ public:
     void setConnections(Connections* connections);
     void setActions(ActionRules* actions);
     void setLiveSocket(LiveSocket* socket);
+    void setBleRadio(BleRadio* radio);
     void setCaptivePortal(CaptivePortal* portal);
     void setDebugSerial(Print* serial);
 
@@ -30,6 +32,7 @@ private:
     Connections* _connections = nullptr;
     ActionRules* _actions = nullptr;
     LiveSocket* _live = nullptr;
+    BleRadio* _bleRadio = nullptr;
     CaptivePortal* _portal = nullptr;
     Print *Debug = &Serial;
 };

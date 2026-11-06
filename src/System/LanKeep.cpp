@@ -8,6 +8,7 @@
 #include "DebugLog.h"
 #include "System/Diag.h"
 #include "MultiMidi/MultiMidi.h"
+#include "CaptivePortal/CaptivePortal.h"
 
 // UART-safe restart: the Showbox base wedges when the module reboots
 // mid-transaction (blind watchdog reboots soft-bricked it repeatedly on
@@ -47,6 +48,8 @@ extern "C" {
 #include "lwip/tcpip.h"
 }
 
+static void lanDropSoftApForSta(uint8_t kind);
+
 volatile bool gMdnsUp = false;
 volatile bool gSetupDone = false;
 
@@ -69,7 +72,7 @@ uint32_t lastArpMs = 0;
 volatile bool bleLive = false;
 volatile int wsClients = 0;
 volatile uint32_t lastWsRxMs = 0;
-constexpr int kWsRemoteMax = 8;
+constexpr int kWsRemoteMax = 12;
 uint16_t wsRemotePorts[kWsRemoteMax];
 int wsRemoteN = 0;
 uint32_t lastRejoinMs = 0;
@@ -534,10 +537,7 @@ void lanNoteBigHttp(bool on) {
         if (WiFi.softAPIP()[0] != 0 && WiFi.softAPgetStationNum() == 0) {
             diagEventForce("http", "big body: SoftAP yield (0 stations)");
             debugLog("big http: SoftAP yield for STA TX");
-            WiFi.softAPdisconnect(false);
-            WiFi.mode(WIFI_STA);
-            lanNoteApActive(false);
-            lanNoteApYieldForStaTx();
+            lanDropSoftApForSta(2);
         }
         return;
     }
@@ -1116,6 +1116,7 @@ static volatile int sGwZombieRejoins = 0;
 // zombie mode is coex starvation, and with the pedal gone the gateway
 // answers again without any re-association.
 static MultiMidi* sMultiMidi = nullptr;
+static CaptivePortal* sPortal = nullptr;
 static int assocFails = 0;
 static uint32_t lastAssocTryMs = 0;
 static bool bleYieldForWifi = false;
@@ -1123,6 +1124,29 @@ static uint32_t bleYieldHealthyMs = 0;
 
 void lanSetMultiMidi(MultiMidi* mm) {
     sMultiMidi = mm;
+}
+
+void lanSetCaptivePortal(CaptivePortal* portal) {
+    sPortal = portal;
+}
+
+// SoftAP teardown belongs to CaptivePortal (clears apUp latch + DNS).
+static void lanDropSoftApForSta(uint8_t kind) {
+    if (sPortal != nullptr) {
+        sPortal->dropApForSta(kind);
+        return;
+    }
+    if (WiFi.softAPIP()[0] == 0) {
+        return;
+    }
+    WiFi.softAPdisconnect(false);
+    WiFi.mode(WIFI_STA);
+    lanNoteApActive(false);
+    if (kind == 2) {
+        lanNoteApYieldForStaTx();
+    } else {
+        lanNoteApForcedDown();
+    }
 }
 
 static void lanYieldBleForAssoc(const char* why, int failCount) {
@@ -1366,10 +1390,7 @@ void lanGwPingTick() {
         if (WiFi.softAPIP()[0] != 0) {
             diagEventForce("wifi", "gateway zombie with SoftAP — drop SoftAP");
             debugLog("wifi zombie SoftAP drop");
-            WiFi.softAPdisconnect(false);
-            WiFi.mode(WIFI_STA);
-            lanNoteApActive(false);
-            lanNoteApForcedDown();
+            lanDropSoftApForSta(1);
         }
         lanYieldBleForAssoc("gateway zombie", 1);
         return;
@@ -1526,13 +1547,9 @@ void lanTickHttpHealth() {
     // STA TX recovers; CaptivePortal will retry SoftAP on its backoff.
     if (sHttpProbeFails >= 2 && WiFi.softAPIP()[0] != 0) {
         diagEventForce("http", "wedge with SoftAP up — drop SoftAP to restore STA HTTP");
-        debugLog("http probe fail=%d with SoftAP — softAPdisconnect + STA", sHttpProbeFails);
-        WiFi.softAPdisconnect(false);
-        WiFi.mode(WIFI_STA);
-        lanNoteApActive(false);
-        // CaptivePortal::apUp stays true otherwise and softAPIP can linger —
-        // ensureAp then skips softAP() and leaves a ghost hotspot (API up, no beacons).
-        lanNoteApForcedDown();
+        debugLog("http probe fail=%d with SoftAP — CaptivePortal drop", sHttpProbeFails);
+        // CaptivePortal::dropApForSta clears apUp so ensureAp can softAP() again.
+        lanDropSoftApForSta(1);
         sHttpProbeFails = 0;
         sHttpRebound = false;
         sHttpProbeMs = millis();

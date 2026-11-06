@@ -408,6 +408,27 @@ void CaptivePortal::stopAp() {
     debugLog("ap stop");
 }
 
+void CaptivePortal::dropApForSta(uint8_t kind) {
+    if (WiFi.softAPIP()[0] == 0 && !apUp) {
+        return;
+    }
+    stopAp();
+    // Health-driven drops must not inherit a prior softAP() fail latch —
+    // otherwise Hotspot+STA stays dark for the whole association.
+    apGaveUpThisSta = false;
+    apFailStreak = 0;
+    if (kind == 2) {
+        lanNoteApYieldForStaTx();
+        // SoftAP back in ~2.5s so hotspot-air stays usable.
+        lastApTryMs = millis() - kApRetryMs + 2500;
+        debugLog("ap: yielded for STA TX — SoftAP retry soon");
+    } else {
+        lanNoteApForcedDown();
+        lastApTryMs = millis();
+        debugLog("ap: forced down for STA — SoftAP retry after backoff");
+    }
+}
+
 void CaptivePortal::startDns() {
     if (dnsUp || WiFi.softAPIP()[0] == 0) {
         return;
