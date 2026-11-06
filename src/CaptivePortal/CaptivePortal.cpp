@@ -549,9 +549,10 @@ void CaptivePortal::stopDns() {
 void CaptivePortal::tick() {
     flushWanted();
     runPendingStaJoin();
-    // API set apForceTry — raise SoftAP often, but not while an HTTP body is
-    // in flight (softAP() mid-response wedges STA → urllib TimeoutError).
-    if (apForceTry && apShouldRun() && !lanHttpBodyBusy()) {
+    // API set apForceTry — raise SoftAP from the main loop. Do not gate on
+    // lanHttpBodyBusy(): L1's continuous /wifi poll keeps httpBodies>0 so
+    // quietMs never hits 10s and SoftAP stayed dark for the whole 45s wait.
+    if (apForceTry && apShouldRun()) {
         ensureAp();
     }
     if (const uint8_t apDown = lanTakeApForcedDown()) {
