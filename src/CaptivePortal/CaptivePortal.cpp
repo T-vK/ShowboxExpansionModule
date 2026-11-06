@@ -7,6 +7,7 @@
 #include <esp_wifi.h>
 #include <esp_netif.h>
 #include <esp_coexist.h>
+#include <esp_heap_caps.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
@@ -415,11 +416,17 @@ void CaptivePortal::ensureAp() {
                 WiFi.mode(WIFI_AP);
             }
         }
-        // softAP() under a live BLE host starves STA HTTP. Yield the pedal
-        // then continue in this tick — deferring forever left L1 hotspot dark
-        // when hostConnected() stayed true after dropHostLink().
-        if (lanYieldBleForSoftAp()) {
-            delay(30);
+        // softAP() under a live BLE host (or with a fragmented heap) fails
+        // into STA HTTP wedges. Yield the pedal first; if the largest
+        // internal block is still tiny, wait — mdns errno=12 / SoftAP miss.
+        lanYieldBleForSoftAp();
+        {
+            const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            if (largest < 40960u) {
+                debugLog("ap: defer softAP, largest=%u", (unsigned)largest);
+                lastApTryMs = millis() - kApRetryMs + 2500;
+                return;
+            }
         }
         // Already advertising ShowboxMod — do not softAP() again; bind IP.
         if (apSsidOnAir()) {
