@@ -689,11 +689,9 @@ def case_hotspot(s: Suite) -> None:
         if not wifi.get("ap"):
             # SoftAP bring-up can pause STA briefly — use a long POST timeout
             # and eth fallback; default api() 4s TimeoutError aborted L1 early.
-            try:
-                _wifi_api(s, {"apAlways": True, "ap": True})
-            except Exception as exc:
-                s.info(f"SoftAP enable: {exc}")
-            wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=45.0) or wifi
+            # A timed-out POST never clears apYieldQuiet / apForceTry, so SoftAP
+            # stays dark for the whole wait — retry enable while polling.
+            wifi = _wait_softap_up(s, timeout=70.0) or wifi
         s.check(
             "SoftAP up while STA joined",
             bool(wifi.get("ap")) and bool(wifi.get("sta")),
@@ -708,8 +706,7 @@ def case_hotspot(s: Suite) -> None:
         # LanKeep may drop SoftAP during that settle — bring it back before air scan.
         if wifi.get("sta") and not wifi.get("ap"):
             s.info("SoftAP dropped during settle — re-enable")
-            api("/api/v1/wifi", {"apAlways": True, "ap": True})
-            wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=35.0) or wifi
+            wifi = _wait_softap_up(s, timeout=45.0) or wifi
         s.check(
             "SoftAP still up after STA settle",
             bool(wifi.get("ap")) and bool(wifi.get("sta")),
@@ -829,6 +826,35 @@ def _eth_fallback_ip(s: Suite) -> str:
             if part.count(".") == 3 and part[0].isdigit():
                 return part
     return "192.168.3.234"
+
+
+def _wait_softap_up(s: Suite, timeout: float = 70.0) -> dict | None:
+    """POST ap=true until SoftAP is live. Retries when STA HTTP times out —
+    a single failed POST leaves apForceTry clear and SoftAP quiet forever."""
+    deadline = time.monotonic() + timeout
+    last: dict | None = None
+    posts = 0
+    last_post = 0.0
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if posts < 8 and now - last_post >= 8.0:
+            try:
+                last = _wifi_api(s, {"apAlways": True, "ap": True})
+                posts += 1
+                last_post = now
+                s.info(f"SoftAP enable POST {posts}")
+            except Exception as exc:
+                posts += 1
+                last_post = now
+                s.info(f"SoftAP enable POST {posts}: {exc}")
+        try:
+            last = _wifi_api(s)
+            if last.get("sta") and last.get("ap"):
+                return last
+        except Exception as exc:
+            s.info(f"wifi poll: {exc}")
+        time.sleep(1.0)
+    return last
 
 
 def _wifi_api(s: Suite, payload: dict | None = None) -> dict:
@@ -3018,8 +3044,7 @@ def case_https(s: Suite) -> None:
 
 def case_hotspot_air(s: Suite) -> None:
     """Air-scan SoftAP while STA stays joined (Hotspot+STA). Leaves coex on."""
-    _wifi_api(s, {"apAlways": True, "ap": True})
-    wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=40.0)
+    wifi = _wait_softap_up(s, timeout=70.0)
     if not wifi:
         raise CaseFail("wifi status unreachable while enabling SoftAP")
     s.check("STA stayed up for air scan", bool(wifi.get("sta")), f"{wifi}")
