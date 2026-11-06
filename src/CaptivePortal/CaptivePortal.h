@@ -46,6 +46,8 @@ private:
     bool apShouldRun() const;
     // SoftAP IP + AP/APSTA mode + ShowboxMod SSID (+ optional channel match).
     bool apIfaceLive(uint8_t expectChannel) const;
+    bool apSsidOnAir() const;
+    void bindApAddress();
     void persistWanted();
     void flushWanted();
     void adoptFallbackAp();
@@ -74,7 +76,12 @@ private:
     uint32_t staJoinDeadlineMs = 0;
     uint8_t apFailStreak = 0;
     bool apGaveUpThisSta = false;
+    // setWantedAp/setAlwaysAp: skip the boot SoftAP settle window.
+    bool apForceTry = false;
     static constexpr uint32_t kApRetryMs = 15000;
+    // Automatic SoftAP while STA is up waits this long after boot so L1
+    // uart/mdns/telnet are not racing softAP() coex wedges.
+    static constexpr uint32_t kApBootSettleMs = 90000;
     NetCred remembered[8];
     uint8_t rememberedN = 0;
     String pendingStaSsid;

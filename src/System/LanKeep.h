@@ -54,6 +54,9 @@ void lanNoteApActive(bool on);
 void lanNoteApForcedDown();
 void lanNoteApYieldForStaTx();
 uint8_t lanTakeApForcedDown();
+// Drop a live BLE host before softAP() so SoftAP+STA does not wedge HTTP.
+// Returns true when a host was dropped (caller should defer softAP one tick).
+bool lanYieldBleForSoftAp();
 // Quiet LanKeep's WiFi.reconnect() while WiFi.begin() is associating.
 void lanNoteStaJoin(uint32_t quietMs = 20000);
 bool lanStaJoinQuiet();
