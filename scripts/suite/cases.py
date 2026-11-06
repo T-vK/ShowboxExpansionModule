@@ -1177,9 +1177,20 @@ def case_http_pwa(s: Suite) -> None:
     # Prove HTTP is answering before pulling the gzip SPA. BLE-coex can
     # refuse :80 for a beat while ping still flows. Waiting beats hammering
     # 76 KB Range GETs into a dead listener (that wedges it further).
-    if not wait_http(s.ip, timeout=10.0):
-        raise CaseFail("HTTP /services did not recover")
-    code, body = http_get(f"http://{s.ip}/services", timeout=2.0)
+    try:
+        wifi = _wifi_api(s)
+        if wifi.get("ap"):
+            s.info("SoftAP up before http-pwa — yielding")
+            _wifi_api(s, {"ap": False})
+            time.sleep(2.0)
+    except Exception as exc:
+        s.info(f"SoftAP check before http-pwa: {exc}")
+    if not wait_http_quiet(s.ip, timeout=25.0):
+        if not wait_http(s.ip, timeout=15.0):
+            raise CaseFail("HTTP /services did not recover")
+    code, body = http_get_retry(
+        f"http://{s.ip}/services", timeout=3.0, attempts=6, min_bytes=100, quiet=True
+    )
     s.check("HTTP /services", code == 200 and len(body) > 200, f"code={code} bytes={len(body)}")
     # /debug BEFORE the 266KB SPA. Post-SPA /debug under AIRSTEP PTA is a
     # landmine: listen PCB rebinds, http_get_retry's wait_http SYN-flood
