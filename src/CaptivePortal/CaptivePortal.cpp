@@ -416,18 +416,10 @@ void CaptivePortal::ensureAp() {
                 WiFi.mode(WIFI_AP);
             }
         }
-        // softAP() under a live BLE host (or with a fragmented heap) fails
-        // into STA HTTP wedges. Yield the pedal first; if the largest
-        // internal block is still tiny, wait — mdns errno=12 / SoftAP miss.
+        // softAP() under a live BLE host starves STA HTTP. Yield the pedal;
+        // do not gate on heapLargest — this board often sits ~7–8 KB largest
+        // with BLE+UART and a 20 KB floor deferred SoftAP forever (L1 dark).
         lanYieldBleForSoftAp();
-        {
-            const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-            if (largest < 40960u) {
-                debugLog("ap: defer softAP, largest=%u", (unsigned)largest);
-                lastApTryMs = millis() - kApRetryMs + 2500;
-                return;
-            }
-        }
         // Already advertising ShowboxMod — do not softAP() again; bind IP.
         if (apSsidOnAir()) {
             bindApAddress();
@@ -694,6 +686,8 @@ String CaptivePortal::statusJson() const {
     doc["apPassword"] = kApPass;
     doc["apIp"] = WiFi.softAPIP().toString();
     doc["apStations"] = (int)WiFi.softAPgetStationNum();
+    doc["heapLargest"] = (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    doc["heapFree"] = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     // Hotspot client addresses: station MACs from the WiFi driver, resolved
     // through the DHCP server's lease table.
     {
