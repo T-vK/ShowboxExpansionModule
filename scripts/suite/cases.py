@@ -499,17 +499,44 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         # Play↔overdub: first CC102 missed under AIRSTEP PTA left us at play.
         if abs(want - 4) < 0.05 and _state_is(got, 3):
             s.info(f"{label}: still play, one more tap for overdub")
-            _ensure_looper_midi(s)
-            s.send_cc(102)
-            got = s.wait_next_state(timeout=3.0) or s.refresh_looper() or s.looper_now()
-            if _state_is(got, want):
-                s.check(label, True, f"LOOPER_STATE={got}")
-                return
+            try:
+                _ensure_looper_midi(s)
+            except CaseFail as exc:
+                s.info(f"{label}: midi revive {exc}")
+            for tap in range(2):
+                try:
+                    s.send_cc(102)
+                except CaseFail as exc:
+                    raise CaseFail(f"{label}: want {want} got {got} ({exc})") from exc
+                end = time.monotonic() + 4.0
+                while time.monotonic() < end:
+                    cur = s.looper_now()
+                    if cur is not None:
+                        got = cur
+                    if _state_is(got, want):
+                        s.check(label, True, f"LOOPER_STATE={got}")
+                        return
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    s.ws.got_entity.wait(timeout=min(0.3, remaining))
+                    s.ws.got_entity.clear()
+                got = s.refresh_looper() or s.looper_now() or got
+                if _state_is(got, want):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
+                s.info(f"{label}: overdub tap {tap + 1} still {got}")
         # Rec→play: firmware cycle retries exhausted under AIRSTEP PTA.
         if abs(want - 3) < 0.05 and _state_is(got, 1):
             s.info(f"{label}: still rec, one more tap for play")
-            _ensure_looper_midi(s)
-            s.send_cc(102)
+            try:
+                _ensure_looper_midi(s)
+            except CaseFail as exc:
+                s.info(f"{label}: midi revive {exc}")
+            try:
+                s.send_cc(102)
+            except CaseFail as exc:
+                raise CaseFail(f"{label}: want {want} got {got} ({exc})") from exc
             end = time.monotonic() + 8.0
             while time.monotonic() < end:
                 cur = s.looper_now()
