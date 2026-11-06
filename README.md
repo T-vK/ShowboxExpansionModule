@@ -30,9 +30,60 @@ Open `http://showbox.local` for a live mixer, snapshots, tuner, looper, and syst
 
 ![Web UI mixer](./docs/webui-mixer.gif)
 
+Useful settings pages in the SPA:
+
+| Page | What it covers |
+|------|----------------|
+| **Network** | Join home Wi‑Fi, remembered networks, mixer hotspot |
+| **USB** | Serial/JTAG vs MIDI host vs MIDI/HID gadget on the ESP USB‑C |
+| **Bluetooth** | Pair MIDI/HID pedals and page turners |
+| **System** | Services, OTA, diagnostics |
+| **Actions** | Wire triggers to Showbox, MIDI, HID, and module behavior |
+
 The **Actions** page is where you wire footswitches, MIDI, panel buttons, and Showbox state changes to whatever should happen next:
 
 ![Web UI actions](./docs/webui-actions.png)
+
+### First connection (Wi‑Fi)
+
+Out of the box the module can raise a **mixer hotspot**:
+
+- SSID: `ShowboxMod`
+- Password: `showboxmod`
+
+Join that network from your phone or laptop, then open Chrome or Safari to `http://showbox.local` (or the hotspot IP shown in Network settings, often `192.168.4.1`).
+
+In **Network**:
+
+1. Scan and **Join** your home Wi‑Fi (SSID + password). The module remembers networks and can auto-reconnect.
+2. Leave **Always-on hotspot** on if you still want phones to reach the captive portal while the module is also on home Wi‑Fi. Turn it off if you prefer more airtime for Bluetooth or cleaner `showbox.local` on the LAN.
+3. **Auto hotspot** brings the mixer SSID back if home Wi‑Fi cannot be reached, so you are not locked out.
+
+Optional **Ethernet** (W5500 on the reference design) uses DHCP with hostname `showbox`. When both Ethernet and Wi‑Fi have addresses, prefer the Ethernet IP for browsing; that is what `showbox.local` advertises.
+
+#### If `showbox.local` does not open
+
+The name is served with mDNS. On Android 12+, turn **Private DNS** off (or use a DNS that does not break local names). If a phone cached a bad lookup, toggle Wi‑Fi once, bookmark the numeric IP from Network settings, or add a router DNS override `showbox` → that IP.
+
+### USB‑C modes
+
+The ESP32‑S3 has **one** native USB‑C data port. It can be only one of these at a time (change in **USB**; MIDI/HID modes reboot):
+
+| Mode | Use |
+|------|-----|
+| **Serial / JTAG** | Default. Flash and serial console over the ESP USB‑C. |
+| **MIDI host** | Plug a class-compliant USB MIDI controller into the module (powered hub recommended). |
+| **MIDI gadget** | Module appears as a USB MIDI device to a computer or tablet. |
+| **HID gadget** | Module appears as a USB keyboard / mouse / pointer (page turner, etc.). |
+| **MIDI + HID** | Composite gadget; MIDI and HID share the port. |
+
+MIDI or HID gadget modes turn off native USB serial/JTAG on that port. Keep a **UART USB‑serial adapter** wired for console/flash recovery, or use OTA while the module is on the network. Switching back to Serial/JTAG restores direct USB flashing.
+
+Pass-through USB‑C jacks on the reference case are for **powering** pedals/devices; they are not the ESP data port.
+
+### Bluetooth MIDI and HID
+
+Open **Bluetooth** in the web UI to scan, pair, connect, disconnect, and forget devices. Peers can carry MIDI, HID (page turner), or both, depending on the pedal. Pairing uses the usual Bluetooth slots on the module; forget a device there if you need to re-pair.
 
 ### Actions
 
@@ -58,6 +109,14 @@ Actions are *when → (optional if) → then* rules stored on the module and edi
 
 Groups of rules can be enabled or disabled together. Built-in groups ship ready for a TRS or MIDI looper pedal, a MIDI/TRS booster, and the front-panel buttons. Edit or replace them as you like.
 
+### Firmware updates
+
+Three supported paths:
+
+1. **[Web Installer](https://t-vk.github.io/ShowboxExpansionModule/)** in Chrome or another Chromium browser (WebUSB). Put the ESP USB‑C in Serial/JTAG mode, connect it, and flash from the page.
+2. **OTA** while the module is on your network: ArduinoOTA on UDP port `3232`. With PlatformIO, use env `esp32-s3-n16r8-ota` (`upload_port = showbox.local`). Network serial monitor can use `socket://showbox.local:23`.
+3. **USB serial** with PlatformIO env `esp32-s3-n16r8` (default upload port `/dev/ttyACM0` on Linux). If the port is in MIDI/HID gadget mode, use the UART adapter or OTA instead.
+
 ### Getting started
 
 Build a minimal ESP32 + two RJ45 breakouts, or the full reference design:
@@ -68,11 +127,20 @@ Build a minimal ESP32 + two RJ45 breakouts, or the full reference design:
 - [3D Model](https://grabcad.com/library/showboxexpansionmodule-v1-1)
 - [Firmware Web Installer](https://t-vk.github.io/ShowboxExpansionModule/)
 
-Firmware can also be built and flashed with PlatformIO.
+#### Build with PlatformIO
+
+```bash
+pio run -e esp32-s3-n16r8 -t upload
+pio run -e esp32-s3-n16r8-ota -t upload   # when networked; cable unplugged from Espressif USB JTAG
+```
+
+The default board is the ESP32‑S3 N16R8 DevKit. A larger NVS partition overlay is already selected in `platformio.ini` so Wi‑Fi, BLE, and action data fit.
 
 ### Hardware
 
 Everything is off-the-shelf (AliExpress, eBay, etc.): ESP32-S3, RJ45 breakouts, optional MIDI DIN, W5500 Ethernet, TRS jacks, and a 3D-printable case. The reference design wires all supported features; a minimal build only needs the ESP and the two Showbox links.
+
+Front-panel colors on the reference design: green ≈ Wi‑Fi, red ≈ USB, blue ≈ Bluetooth (behavior is customizable via Actions). White is a latching power button (not an ESP GPIO).
 
 #### Schematics
 
