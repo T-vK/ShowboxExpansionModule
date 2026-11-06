@@ -56,6 +56,12 @@ void CaptivePortal::loadPrefs() {
         apWanted = true;
         persistWanted();
     }
+    // Temporary SoftAP yields used to persist apWanted=false; Hotspot+STA
+    // must still raise SoftAP after reboot.
+    if (apAlways && !apWanted) {
+        apWanted = true;
+        persistWanted();
+    }
 }
 
 void CaptivePortal::begin(AsyncWebServer* /*server*/, UltimateBaseFirmware* firmwareIn) {
@@ -174,6 +180,20 @@ bool CaptivePortal::setWantedAp(bool on) {
     // status=6 forever).
     if (!on && radioOn() && !staUp() && !apAlways && rememberedN == 0) {
         on = true;
+    }
+    // Hotspot+STA (apAlways): POST ap=false is a temporary SoftAP yield for
+    // STA HTTP (L1 after air scan), not a permanent prefs change. Persisting
+    // apWanted=false left SoftAP dark across reboot for the whole association.
+    if (!on && apAlways) {
+        apGaveUpThisSta = false;
+        apFailStreak = 0;
+        apForceTry = false;
+        // Back off SoftAP retries so STA HTTP can recover; tick will raise
+        // SoftAP again after kApRetryMs because apWanted stays true.
+        lastApTryMs = millis();
+        stopAp();
+        debugLog("ap: temporary SoftAP yield (apAlways) — prefs keep wanted");
+        return true;
     }
     apWanted = on;
     apGaveUpThisSta = false;
