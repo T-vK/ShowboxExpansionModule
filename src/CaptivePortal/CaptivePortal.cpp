@@ -323,14 +323,17 @@ void CaptivePortal::ensureAp() {
         lanNoteApActive(false);
     }
     if (!apUp || WiFi.softAPIP()[0] == 0) {
-        // Let STA HTTP settle before the first SoftAP bring-up. softAP() while
-        // BLE+STA is associating is what wedges showbox.local after ~30s.
-        if (staUp() && millis() < 45000) {
+        // Let STA HTTP settle briefly after association before the first
+        // SoftAP try. A hard 45s boot wall outlived L1's 35s wait and left
+        // SoftAP dark; ~12s is enough for BLE+STA to finish associating.
+        if (staUp() && apFailStreak == 0 && lastApTryMs == 0 && millis() < 12000) {
             return;
         }
-        const uint32_t backoff = (staUp() && apFailStreak > 0)
+        // Hotspot+STA: keep retries short. Long 120s/300s backoff after a
+        // coex miss made L1 hotspot time out while SoftAP was still dark.
+        const uint32_t backoff = (!apAlways && staUp() && apFailStreak > 0)
             ? (apFailStreak >= 2 ? 300000u : 120000u)
-            : kApRetryMs;
+            : (apAlways && apFailStreak > 0 ? (apFailStreak >= 3 ? 45000u : kApRetryMs) : kApRetryMs);
         if (lastApTryMs != 0 && (int32_t)(millis() - lastApTryMs) < (int32_t)backoff) {
             return;
         }
@@ -352,21 +355,33 @@ void CaptivePortal::ensureAp() {
                 WiFi.mode(WIFI_AP);
             }
         }
+        // Pin SoftAP addressing before softAP() — blank SSID/IP races under
+        // BLE coex were reporting ap=false while air still saw ShowboxMod.
+        WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
+            IPAddress(255, 255, 255, 0));
         apUp = WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
         debugLog("ap begin=%d ip=%s ch=%u wanted=%d always=%d fail=%u ssid=%s", apUp ? 1 : 0,
             WiFi.softAPIP().toString().c_str(), (unsigned)channel, apWanted ? 1 : 0,
             apAlways ? 1 : 0, (unsigned)apFailStreak, WiFi.softAPSSID().c_str());
+        // softAP() can return true with an IP while SSID is still blank
+        // (BLE/coex race). Reassert once before counting a hard fail.
+        if (apUp && WiFi.softAPIP()[0] != 0 && !apIfaceLive(channel)) {
+            debugLog("ap begin partial (ssid=%s) — reassert", WiFi.softAPSSID().c_str());
+            WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
+                IPAddress(255, 255, 255, 0));
+            apUp = WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
+            delay(30);
+        }
         if (!apUp || WiFi.softAPIP()[0] == 0 || !apIfaceLive(channel)) {
             apUp = false;
             if (apFailStreak < 250) {
                 apFailStreak++;
             }
             if (staUp()) {
-                wifi_mode_t mode = WIFI_MODE_NULL;
-                esp_wifi_get_mode(&mode);
-                if (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP) {
-                    WiFi.mode(WIFI_STA);
-                }
+                // softAPdisconnect keeps STA; WiFi.mode(WIFI_STA) after a
+                // partial softAP() was wedging STA HTTP (timeouts) while a
+                // ghost ShowboxMod beacon lingered on air.
+                WiFi.softAPdisconnect(false);
                 // Hotspot+STA (apAlways) must keep retrying SoftAP after a
                 // BLE/coex miss — latching give-up left L1 hotspot dark for
                 // the whole association (ap=false, apIp=0.0.0.0).
@@ -374,7 +389,7 @@ void CaptivePortal::ensureAp() {
                     debugLog("ap begin failed — STA kept, SoftAP retry later (always)");
                 } else {
                     apGaveUpThisSta = true;
-                    debugLog("ap begin failed — revert to STA, no more SoftAP this assoc");
+                    debugLog("ap begin failed — SoftAP abandoned this assoc");
                 }
             }
             lanNoteApActive(false);
