@@ -1193,37 +1193,43 @@ def case_http_pwa(s: Suite) -> None:
     if largest is not None and largest < 1024:
         raise CaseFail(f"heap collapsed largest={largest} heap={heap}")
     s.check("heap present", heap is not None, f"heap={heap} largest={largest}")
-    spa_code, spa_body = http_get_resumable(
-        f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=6, min_bytes=1000, deadline=12.0
-    )
-    raw = gunzip_if(spa_body)
-    shell = b"ShowboxMod" in raw and (b"/assets/" in raw or len(raw) > 10000)
-    # Truncated gzip (53 KB, still compressed) used to pass on len>10000
-    # then the BLE-coex SPA send had already wedged :80.
-    if spa_code != 200 or not shell:
-        wait_http_quiet(s.ip, timeout=6.0)
+    # AIRSTEP PTA truncates the ~266KB SPA (L2: 36KB shell=False). Yield pedal.
+    yielded = _yield_airstep_for_looper(s)
+    try:
         spa_code, spa_body = http_get_resumable(
-            f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=4, min_bytes=1000, deadline=8.0
+            f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=6, min_bytes=1000, deadline=12.0
         )
         raw = gunzip_if(spa_body)
         shell = b"ShowboxMod" in raw and (b"/assets/" in raw or len(raw) > 10000)
-    s.check("HTTP / SPA", spa_code == 200 and shell, f"code={spa_code} bytes={len(raw)} shell={shell}")
-    if not wait_http_quiet(s.ip, timeout=16.0):
-        raise CaseFail("HTTP died after SPA GET")
-    code, body = http_get(f"http://{s.ip}/manifest.webmanifest", timeout=6.0)
-    if not (code == 200 and b"ShowboxMod" in body):
-        time.sleep(2.0)
-        wait_http_quiet(s.ip, timeout=8.0)
+        # Truncated gzip (53 KB, still compressed) used to pass on len>10000
+        # then the BLE-coex SPA send had already wedged :80.
+        if spa_code != 200 or not shell:
+            wait_http_quiet(s.ip, timeout=6.0)
+            spa_code, spa_body = http_get_resumable(
+                f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=4, min_bytes=1000, deadline=8.0
+            )
+            raw = gunzip_if(spa_body)
+            shell = b"ShowboxMod" in raw and (b"/assets/" in raw or len(raw) > 10000)
+        s.check("HTTP / SPA", spa_code == 200 and shell, f"code={spa_code} bytes={len(raw)} shell={shell}")
+        if not wait_http_quiet(s.ip, timeout=16.0):
+            raise CaseFail("HTTP died after SPA GET")
         code, body = http_get(f"http://{s.ip}/manifest.webmanifest", timeout=6.0)
-    s.check("PWA manifest", code == 200 and b"ShowboxMod" in body, f"code={code}")
-    # Post-SPA: only prove a small endpoint still answers. Never require
-    # /debug again (and never wait_http-flood after SPA).
-    if not wait_http_quiet(s.ip, timeout=12.0):
-        raise CaseFail("HTTP quiet after manifest failed")
-    code, body = http_get_retry(
-        f"http://{s.ip}/services", timeout=3.0, attempts=4, min_bytes=100, quiet=True
-    )
-    s.check("HTTP /services after SPA", code == 200 and len(body) > 100, f"code={code} bytes={len(body)}")
+        if not (code == 200 and b"ShowboxMod" in body):
+            time.sleep(2.0)
+            wait_http_quiet(s.ip, timeout=8.0)
+            code, body = http_get(f"http://{s.ip}/manifest.webmanifest", timeout=6.0)
+        s.check("PWA manifest", code == 200 and b"ShowboxMod" in body, f"code={code}")
+        # Post-SPA: only prove a small endpoint still answers. Never require
+        # /debug again (and never wait_http-flood after SPA).
+        if not wait_http_quiet(s.ip, timeout=12.0):
+            raise CaseFail("HTTP quiet after manifest failed")
+        code, body = http_get_retry(
+            f"http://{s.ip}/services", timeout=3.0, attempts=4, min_bytes=100, quiet=True
+        )
+        s.check("HTTP /services after SPA", code == 200 and len(body) > 100, f"code={code} bytes={len(body)}")
+    finally:
+        if yielded:
+            _restore_airstep_after_looper(s)
 
 
 def case_telnet_ota(s: Suite) -> None:
