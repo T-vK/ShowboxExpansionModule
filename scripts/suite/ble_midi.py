@@ -68,10 +68,17 @@ class BleMidiOut:
         self._char = None
         self._fd: int | None = None
         self._unix_fd = None
+        # PipeWire bluez_midi can hold WriteAcquired forever; WriteValue still
+        # delivers BLE MIDI CCs to the ESP (L1 ble-midi after SoftAP yield).
+        self._write_value_only = False
 
     @property
     def connected(self) -> bool:
-        return self._fd is not None and self._fd > 2 and self._char is not None
+        if self._char is None:
+            return False
+        if self._write_value_only:
+            return True
+        return self._fd is not None and self._fd > 2
 
     def start(self, address: str, timeout: float = 25.0) -> None:
         if self.connected and self.address.lower() == address.lower():
@@ -89,12 +96,22 @@ class BleMidiOut:
         except dbus.exceptions.DBusException:
             pass
         fd, unix_fd, last = _acquire_fd(char, address)
-        if fd is None or fd <= 2:
-            raise RuntimeError(f"BLE MIDI AcquireWrite failed on {path}: {last}")
         self._char = char
-        self._fd = fd
-        self._unix_fd = unix_fd
         self._port_name = path
+        if fd is not None and fd > 2:
+            self._fd = fd
+            self._unix_fd = unix_fd
+            self._write_value_only = False
+        else:
+            # Write acquired by PipeWire/wireplumber — still send via WriteValue.
+            err = str(last or "")
+            if "Write acquired" not in err and "NotPermitted" not in err:
+                self._char = None
+                self._port_name = ""
+                raise RuntimeError(f"BLE MIDI AcquireWrite failed on {path}: {last}")
+            self._fd = None
+            self._unix_fd = None
+            self._write_value_only = True
         self.cc(20, 0)
 
     def cc(self, number: int, value: int = 127, channel: int = 1) -> None:
@@ -102,44 +119,55 @@ class BleMidiOut:
             raise RuntimeError("BLE MIDI is not connected")
         pkt = _ble_midi_cc(number, value, channel)
         last = "BLE MIDI write failed"
-        for attempt in range(3):
-            _pw_destroy_node(self.address)
-            if self._fd is None or self._fd <= 2:
+        import dbus
+
+        if not self._write_value_only:
+            for attempt in range(3):
+                _pw_destroy_node(self.address)
+                if self._fd is None or self._fd <= 2:
+                    try:
+                        self._reacquire()
+                    except Exception as exc:
+                        last = str(exc)
+                        continue
+                try:
+                    n = os.write(self._fd, pkt)
+                    if n == len(pkt):
+                        return
+                    last = f"BLE MIDI short write {n}/{len(pkt)}"
+                except OSError as exc:
+                    last = str(exc)
                 try:
                     self._reacquire()
                 except Exception as exc:
                     last = str(exc)
-                    continue
-            try:
-                n = os.write(self._fd, pkt)
-                if n == len(pkt):
-                    return
-                last = f"BLE MIDI short write {n}/{len(pkt)}"
-            except OSError as exc:
-                last = str(exc)
-            try:
-                self._reacquire()
-            except Exception as exc:
-                last = str(exc)
-        import dbus
-
+                    if "Write acquired" in last or "NotPermitted" in last:
+                        self._write_value_only = True
+                        break
         payload = [dbus.Byte(b) for b in pkt]
-        try:
-            self._char.WriteValue(payload, {"type": "command"})
-            return
-        except dbus.exceptions.DBusException as exc:
-            last = str(exc)
+        for _ in range(3):
+            try:
+                self._char.WriteValue(payload, {"type": "command"})
+                return
+            except dbus.exceptions.DBusException as exc:
+                last = str(exc)
+                time.sleep(0.05)
         raise RuntimeError(last)
 
     def _reacquire(self) -> None:
         if self._char is None:
             raise RuntimeError("BLE MIDI is not connected")
         self._drop_fd()
-        fd, unix_fd, _last = _acquire_fd(self._char, self.address)
+        fd, unix_fd, last = _acquire_fd(self._char, self.address)
         if fd is None or fd <= 2:
+            err = str(last or "")
+            if "Write acquired" in err or "NotPermitted" in err:
+                self._write_value_only = True
+                return
             raise RuntimeError("BLE MIDI AcquireWrite failed")
         self._fd = fd
         self._unix_fd = unix_fd
+        self._write_value_only = False
 
     def _drop_fd(self) -> None:
         fd = self._fd
@@ -154,6 +182,7 @@ class BleMidiOut:
     def close(self) -> None:
         char = self._char
         self._drop_fd()
+        self._write_value_only = False
         if char is not None:
             try:
                 char.ReleaseWrite()
