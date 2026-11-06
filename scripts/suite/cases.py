@@ -741,6 +741,23 @@ def case_hotspot(s: Suite) -> None:
                 if healed
                 else "SoftAP lower: STA HTTP not settled yet"
             )
+            # SoftAP bring-up yields the BLE host; give the laptop ACL time to
+            # return before ble-pair / ble-midi (otherwise hostUsed stays 0).
+            try:
+                cf.laptop_open_ads(s.session)
+            except Exception:
+                pass
+            host = ""
+            end = time.monotonic() + 25.0
+            while time.monotonic() < end:
+                host = cf.live_host_address(s.session, "")
+                if host:
+                    break
+                time.sleep(0.5)
+            if host:
+                s.info(f"BLE host back after SoftAP yield: {host}")
+            else:
+                s.info("BLE host not back yet after SoftAP yield — ble-pair will reconnect")
         except Exception as exc:
             s.info(f"SoftAP lower after air scan: {exc}")
 
