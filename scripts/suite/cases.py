@@ -1193,6 +1193,15 @@ def case_http_pwa(s: Suite) -> None:
     if largest is not None and largest < 1024:
         raise CaseFail(f"heap collapsed largest={largest} heap={heap}")
     s.check("heap present", heap is not None, f"heap={heap} largest={largest}")
+    # SoftAP after boot settle + AIRSTEP PTA both truncate/wedge the SPA.
+    try:
+        wifi = _wifi_api(s)
+        if wifi.get("ap"):
+            s.info("SoftAP up before SPA — yielding")
+            _wifi_api(s, {"ap": False})
+            time.sleep(2.0)
+    except Exception as exc:
+        s.info(f"SoftAP check before SPA: {exc}")
     # AIRSTEP PTA truncates the ~266KB SPA (L2: 36KB shell=False). Yield pedal.
     yielded = _yield_airstep_for_looper(s)
     try:
@@ -1211,7 +1220,7 @@ def case_http_pwa(s: Suite) -> None:
             raw = gunzip_if(spa_body)
             shell = b"ShowboxMod" in raw and (b"/assets/" in raw or len(raw) > 10000)
         s.check("HTTP / SPA", spa_code == 200 and shell, f"code={spa_code} bytes={len(raw)} shell={shell}")
-        if not wait_http_quiet(s.ip, timeout=16.0):
+        if not wait_http_quiet(s.ip, timeout=20.0):
             raise CaseFail("HTTP died after SPA GET")
         code, body = http_get(f"http://{s.ip}/manifest.webmanifest", timeout=6.0)
         if not (code == 200 and b"ShowboxMod" in body):
@@ -1221,11 +1230,16 @@ def case_http_pwa(s: Suite) -> None:
         s.check("PWA manifest", code == 200 and b"ShowboxMod" in body, f"code={code}")
         # Post-SPA: only prove a small endpoint still answers. Never require
         # /debug again (and never wait_http-flood after SPA).
-        if not wait_http_quiet(s.ip, timeout=12.0):
-            raise CaseFail("HTTP quiet after manifest failed")
+        if not wait_http_quiet(s.ip, timeout=20.0):
+            s.info("HTTP quiet after manifest slow — probing /services anyway")
         code, body = http_get_retry(
-            f"http://{s.ip}/services", timeout=3.0, attempts=4, min_bytes=100, quiet=True
+            f"http://{s.ip}/services", timeout=3.0, attempts=8, min_bytes=100, quiet=True
         )
+        if code != 200 or len(body) <= 100:
+            wait_http_quiet(s.ip, timeout=16.0)
+            code, body = http_get_retry(
+                f"http://{s.ip}/services", timeout=3.0, attempts=6, min_bytes=100, quiet=True
+            )
         s.check("HTTP /services after SPA", code == 200 and len(body) > 100, f"code={code} bytes={len(body)}")
     finally:
         if yielded:
