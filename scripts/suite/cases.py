@@ -763,6 +763,37 @@ def case_hotspot(s: Suite) -> None:
                 s.info(f"BLE host back after SoftAP yield: {host}")
             else:
                 s.info("BLE host not back yet after SoftAP yield — ble-pair will reconnect")
+            # SoftAP coex can wipe the peripheral list (ble-status then fails
+            # AIRSTEP listed peer=None). Re-arm autoConnect + connect.
+            try:
+                cf.http_post(
+                    f"{s.session.base}/api/v1/midi/ble/auto",
+                    {"address": AIRSTEP, "enabled": "1"},
+                    timeout=3.0,
+                )
+                cf.http_post(
+                    f"{s.session.base}/api/v1/midi/ble/connect",
+                    {"address": AIRSTEP, "name": "AIRSTEP", "midi": "1", "hid": "0"},
+                    timeout=3.0,
+                )
+                air_deadline = time.monotonic() + 25.0
+                while time.monotonic() < air_deadline:
+                    midi2 = s.midi_status()
+                    peer = None
+                    for p in midi2.get("peripherals") or []:
+                        if same_addr(str(p.get("address") or ""), AIRSTEP) or str(
+                            p.get("name") or ""
+                        ).upper() == "AIRSTEP":
+                            peer = p
+                            break
+                    if peer and peer.get("connected"):
+                        s.info(f"AIRSTEP back after SoftAP yield: {peer.get('address')}")
+                        break
+                    time.sleep(0.5)
+                else:
+                    s.info("AIRSTEP not back yet after SoftAP yield — ble-status will retry")
+            except Exception as exc:
+                s.info(f"AIRSTEP restore after SoftAP: {exc}")
         except Exception as exc:
             s.info(f"SoftAP lower after air scan: {exc}")
 
@@ -1106,7 +1137,8 @@ def case_ble_status(s: Suite) -> None:
         if airstep and airstep.get("connected"):
             break
         now = time.monotonic()
-        if airstep and not airstep.get("connected") and posts < 3 and now - last_connect >= 4.0:
+        # SoftAP coex can wipe peripherals entirely — still POST connect.
+        if (airstep is None or not airstep.get("connected")) and posts < 4 and now - last_connect >= 4.0:
             cf.http_post(
                 f"{s.session.base}/api/v1/midi/ble/auto",
                 {"address": AIRSTEP, "enabled": "1"},
@@ -1119,7 +1151,10 @@ def case_ble_status(s: Suite) -> None:
             )
             last_connect = now
             posts += 1
-            s.info(f"AIRSTEP listed but down, connect POST {posts}")
+            s.info(
+                f"AIRSTEP connect POST {posts} "
+                f"({'missing' if airstep is None else 'down'})"
+            )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
