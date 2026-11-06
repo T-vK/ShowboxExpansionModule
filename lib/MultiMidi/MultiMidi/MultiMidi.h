@@ -41,6 +41,8 @@ public:
     bool enableBleClassicMidi(const char* name = "BleMidi");
     void setHostPolicy(BleMidiHostPolicy* policy);
     void setRadio(class BleRadio* radio);
+    void setCoex(const struct LanCoex* hooks);
+    void setAppHooks(const struct MidiAppHooks* hooks);
     void setEthernetPins(uint8_t sclk, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t reset);
 
     // Set MIDI Action
@@ -134,6 +136,7 @@ private:
     bool appleMidiStarted = false;
     BleClassicMidi classic;
     EthernetMidi ethernet;
+    const struct MidiAppHooks* appHooks = nullptr;
     char bleTargetAddress[18] = "";
 
     void saveSettings();

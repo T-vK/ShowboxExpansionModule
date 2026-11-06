@@ -9,9 +9,8 @@
 #include <host/ble_gap.h>
 #include <host/ble_hs.h>
 #include "MidiCommon.h"
-#include "DebugLog.h"
-#include "System/LanKeep.h"
-#include "System/HttpsGate.h"
+// debugLog provided by app (DebugLog.cpp)
+void debugLog(const char* fmt, ...);
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_coexist.h>
@@ -284,7 +283,7 @@ void BleMidi::scanLoop() {
         }
         // Association to pfSense can take >20s under coex; keep BLE quiet.
         bool holdForWifi = !wifiUp && (int32_t)(millis() - wifiDownSince) < 45000;
-        bool holdForHttps = httpsHoldOutgoing();
+        bool holdForHttps = lanCoexHoldOutgoingHttps(coex);
         bool holdAdv = connectedCount() > 0 || (radio != nullptr && radio->hasIncoming());
         if (!wifiUp && !holdAdv) {
             BLEAdvertising* advertising = BLEDevice::getAdvertising();
@@ -298,7 +297,7 @@ void BleMidi::scanLoop() {
         bool hostLive = radio != nullptr && radio->hasIncoming();
         bool room = hasRoomForOutgoing();
         int outCount = connectedCount();
-        lanNoteBleLive(outCount > 0 || hostLive);
+        lanCoexNoteBleLive(coex, outCount > 0 || hostLive);
         bool recentFail = lastOutgoingFailMs != 0 && (int32_t)(millis() - lastOutgoingFailMs) < 8000;
         // Quiet only at boot. Re-arming outgoingReadyMs on every
         // allowOutgoing(true) (PWA yield restore) used to lock out AIRSTEP
@@ -321,7 +320,7 @@ void BleMidi::scanLoop() {
             }
             debugLog("ble largest=%u out=%d midi=%d scan=%d auto=%d ws=%d hold=%d rx=%u",
                 (unsigned)heapBlock, connectedCount(), midiChars, scanning ? 1 : 0, autoConnectOn ? 1 : 0,
-                lanWsLive() ? 1 : 0, lanHoldMidi() ? 1 : 0, (unsigned)bleMidiRx);
+                lanCoexWsLive(coex) ? 1 : 0, lanCoexHoldMidi(coex) ? 1 : 0, (unsigned)bleMidiRx);
         }
         bool heapTight = heapBlock < 2048;
         if (directConnect && connectOnce && target[0] != '\0') {
@@ -359,9 +358,9 @@ void BleMidi::scanLoop() {
                 lastLinkMs = millis();
                 refreshLink();
             }
-            const uint32_t quiet = lanHttpQuietMs();
+            const uint32_t quiet = lanCoexHttpQuietMs(coex);
             const bool httpBusy = quiet != 0xFFFFFFFFu && quiet < 300;
-            vTaskDelay(pdMS_TO_TICKS(needGatt ? (httpBusy ? 400 : 250) : (lanHoldMidi() ? 200 : 60)));
+            vTaskDelay(pdMS_TO_TICKS(needGatt ? (httpBusy ? 400 : 250) : (lanCoexHoldMidi(coex) ? 200 : 60)));
             continue;
         }
         // Remembered pedals must connect by address. A discovery scan used to
@@ -379,8 +378,8 @@ void BleMidi::scanLoop() {
                     int pickType = typeForAddress(pickAddress);
                     debugLog("ble auto %s heap=%u type=%d", pickName[0] != '\0' ? pickName : pickAddress, (unsigned)heapBlock, pickType);
                     Debug->printf("Auto-connecting to '%s'\n", pickName[0] != '\0' ? pickName : pickAddress);
-                    lanPreferWifiWithBle();
-                    lanRecoverUnicast();
+                    lanCoexPreferWifiWithBle(coex);
+                    lanCoexRecoverUnicast(coex);
                     if (!connectAddressNow(pickAddress, pickName, 5000, pickType)) {
                         lastOutgoingFailMs = millis();
                     } else {
@@ -493,6 +492,10 @@ void BleMidi::setPolicy(BleMidiHostPolicy* connectPolicy) {
 
 void BleMidi::setRadio(BleRadio* bleRadio) {
     radio = bleRadio;
+}
+
+void BleMidi::setCoex(const LanCoex* hooks) {
+    coex = hooks;
 }
 
 void BleMidi::setAdvertising(bool enabled) {
@@ -1071,7 +1074,7 @@ void BleMidi::advertiseIfEnabled() {
 
 void BleMidi::keepAdvertising() {
     applyPendingGap();
-    lanRestoreBleSleepIfIdle();
+    lanCoexRestoreBleSleepIfIdle(coex);
     if (radio != nullptr) {
         radio->setPedalShare(connectedCount() > 0);
         if (connectedCount() == 0) {
@@ -1129,43 +1132,43 @@ void BleMidi::attachMidiGatt() {
         if (outgoing[i].sinceMs != 0 && (int32_t)(millis() - outgoing[i].sinceMs) < 1500) {
             continue;
         }
-        const uint32_t quiet = lanHttpQuietMs();
+        const uint32_t quiet = lanCoexHttpQuietMs(coex);
         if (quiet != 0xFFFFFFFFu && quiet < 300) {
             continue;
         }
         // getService() still waits for HTTP quiet. Do not skip CCC just
         // because STA or the mixer /ws is up — that left midi=0 forever.
-        if (lanHoldMidi()) {
+        if (lanCoexHoldMidi(coex)) {
             outgoing[i].gattAt = millis() + 4000;
             continue;
         }
         outgoing[i].gattAt = 0;
-        lanPreferWifiWithBle();
+        lanCoexPreferWifiWithBle(coex);
         BLERemoteService* service = outgoing[i].client->getService(BLEUUID(MIDI_SERVICE_UUID));
         if (service == nullptr) {
             Debug->printf("Bluetooth MIDI no service on %s\n", outgoing[i].address);
             outgoing[i].gattAt = millis() + 4000;
-            lanKickArp();
+            lanCoexKickArp(coex);
             continue;
         }
         BLERemoteCharacteristic* ch = service->getCharacteristic(BLEUUID(MIDI_CHARACTERISTIC_UUID));
         if (ch == nullptr) {
             Debug->printf("Bluetooth MIDI no characteristic on %s\n", outgoing[i].address);
             outgoing[i].gattAt = millis() + 4000;
-            lanKickArp();
+            lanCoexKickArp(coex);
             continue;
         }
         bool notifications = ch->canNotify();
         if (!notifications && !ch->canIndicate()) {
             Debug->printf("Bluetooth MIDI characteristic not notifiable on %s\n", outgoing[i].address);
             outgoing[i].gattAt = millis() + 4000;
-            lanKickArp();
+            lanCoexKickArp(coex);
             continue;
         }
         if (!ch->subscribe(notifications, BleMidi::onNotify, false)) {
             Debug->printf("Bluetooth MIDI subscribe failed on %s\n", outgoing[i].address);
             outgoing[i].gattAt = millis() + 4000;
-            lanKickArp();
+            lanCoexKickArp(coex);
             continue;
         }
         outgoing[i].characteristic = ch;
@@ -1173,10 +1176,10 @@ void BleMidi::attachMidiGatt() {
         Debug->printf("Bluetooth MIDI notify on %s %s\n",
             outgoing[i].name[0] != '\0' ? outgoing[i].name : outgoing[i].address,
             outgoing[i].address);
-        lanNoteBleLive(true);
-        lanRecoverUnicast();
+        lanCoexNoteBleLive(coex, true);
+        lanCoexRecoverUnicast(coex);
         vTaskDelay(pdMS_TO_TICKS(80));
-        lanRecoverUnicast();
+        lanCoexRecoverUnicast(coex);
     }
 }
 
@@ -1225,7 +1228,7 @@ void BleMidi::syncNotifyHold() {
     // the next suite pass cannot scan-wake it. Incoming notifies are
     // already ignored in onNotify while lanHoldMidi() — that is enough
     // to keep MIDI off the Wi-Fi HOL without a GATT write.
-    if (lanHoldMidi()) {
+    if (lanCoexHoldMidi(coex)) {
         return;
     }
     for (int i = 0; i < kMaxOutgoing; i++) {
@@ -1250,7 +1253,7 @@ void BleMidi::onNotify(BLERemoteCharacteristic* /*characteristic*/, uint8_t* dat
     if (instance == nullptr || data == nullptr || length == 0) {
         return;
     }
-    if (lanHoldMidi()) {
+    if (lanCoexHoldMidi(instance->coex)) {
         return;
     }
     enqueueBleMidi(data, length);
@@ -1318,8 +1321,8 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
         debugLog("ble skip connect largest=%u", (unsigned)largest);
         return false;
     }
-    lanPreferWifiWithBle();
-    lanKickArp();
+    lanCoexPreferWifiWithBle(coex);
+    lanCoexKickArp(coex);
     if (outgoing[slot].client == nullptr) {
         outgoing[slot].client = BLEDevice::createClient();
         outgoing[slot].client->setClientCallbacks(this);
@@ -1359,7 +1362,7 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
     };
     // JTAG: PREFER_BALANCE during this 5s connect left ICMP up and
     // parked TCP data on unsent (unacked nil). Keep WIFI on the PTA.
-    lanPreferWifiWithBle();
+    lanCoexPreferWifiWithBle(coex);
     // Dual-role connect while GAP is still advertising often returns HCI
     // timeout 13. Force GAP idle for this attempt; isAdvertising() lies.
     if (radio != nullptr) {
@@ -1441,7 +1444,7 @@ bool BleMidi::connectAddressNow(const char* address, const char* name, uint32_t 
         snprintf(line, sizeof(line), "Connected to %s", label);
         policy->note(line);
     }
-    lanNoteBleLive(true);
-    lanRecoverUnicast();
+    lanCoexNoteBleLive(coex, true);
+    lanCoexRecoverUnicast(coex);
     return true;
 }

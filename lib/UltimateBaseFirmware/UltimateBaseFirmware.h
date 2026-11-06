@@ -19,6 +19,9 @@
 
 #include <ArduinoOTA.h>
 
+// Product SoftAP is CaptivePortal's job; UBF's WiFiManager setup portal is
+// optional/dev only (front-panel long-press). The app supplies AP SSID,
+// password, and portal display title via the setters below.
 class UltimateBaseFirmware {
 public:
     // Constructor
@@ -42,6 +45,9 @@ public:
     void setHostName(const char* hostName);
     void setVersion(const char* version);
     const char* version() const { return _version ? _version : ""; }
+    // Credentials / branding for the optional WiFiManager setup portal.
+    void setSetupPortalAp(const char* ssid, const char* password = nullptr);
+    void setSetupPortalTitle(const char* title);
 
     // Getter methods
     const char* getHostName();
@@ -79,6 +85,9 @@ private:
     const char* _deviceName;
     const char* _deviceUrl;
     const char* _hostName;
+    const char* _setupPortalSsid = nullptr;
+    const char* _setupPortalPassword = nullptr;
+    const char* _setupPortalTitle = nullptr;
     const char* _chipFamily;
     bool _customDebugSerial = false;
     bool _customServer = false;
@@ -117,7 +126,6 @@ private:
     void initializeOTA();
     void initializeImprovSerial();
     void initializeMdns();
-    void initializeCaptivePortal();
 
     void setDebugSerial(Print& debug);
 

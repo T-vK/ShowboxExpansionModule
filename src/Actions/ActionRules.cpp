@@ -19,8 +19,6 @@
 #include <cstdlib>
 #include <cstring>
 
-extern LiveSocket liveSocket;
-
 namespace {
 ActionRules* instance = nullptr;
 // The boost state must survive an ESP.restart() so the boot undo knows a
@@ -337,8 +335,8 @@ void entityHeard(entity_id id, const char* value) {
             Serial.println("[actions] entity event ring overflow");
         }
     }
-    if (value != nullptr) {
-        liveSocket.noteEntity(name->second.c_str(), value);
+    if (value != nullptr && instance != nullptr) {
+        instance->notifyLiveEntity(name->second.c_str(), value);
     }
 }
 
@@ -347,9 +345,8 @@ void packetHeard(const uint8_t* data, size_t length, const char* dir) {
         uint8_t type = data[3];
         if (type == TUNER_TOGGLE || type == TUNER_FEEDBACK || type == SD_CARD_EVENT
             || type == SNAPSHOT_MENU || type == SNAPSHOT || type == ALL_ENTITIES) {
-            liveSocket.noteLink();
-            if (type == ALL_ENTITIES) {
-                liveSocket.flushMixer();
+            if (instance != nullptr) {
+                instance->notifyLiveLink(type == ALL_ENTITIES);
             }
         }
         if (type == ENTITY && length >= 6) {
@@ -528,6 +525,27 @@ void ActionRules::jackDouble(void* parameter) {
     int index = (int)(intptr_t)parameter;
     if (instance != nullptr && index >= 0 && index < 8) {
         instance->fire("trs", kJacks[index], "double", "", "");
+    }
+}
+
+void ActionRules::setLiveSocket(LiveSocket* socket) {
+    live = socket;
+}
+
+void ActionRules::notifyLiveEntity(const char* name, const char* value) {
+    if (live == nullptr || name == nullptr || value == nullptr) {
+        return;
+    }
+    live->noteEntity(name, value);
+}
+
+void ActionRules::notifyLiveLink(bool flushMixer) {
+    if (live == nullptr) {
+        return;
+    }
+    live->noteLink();
+    if (flushMixer) {
+        live->flushMixer();
     }
 }
 
@@ -2024,11 +2042,15 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
         int slot = jsonInt(step["slot"], 1);
         if (slot >= 1 && slot <= 5) {
             showbox->snapshotAction(snapshot_action::RECALL, static_cast<snapshot_slot>(slot - 1));
-            liveSocket.noteLink();
+            if (live != nullptr) {
+                live->noteLink();
+            }
         }
     } else if (type == "sdcard" && showbox != nullptr) {
         showbox->toggleSdCardRecord();
-        liveSocket.noteLink();
+        if (live != nullptr) {
+            live->noteLink();
+        }
     } else if (type == "tuner" && showbox != nullptr) {
         tuner_chan chan = static_cast<tuner_chan>(jsonInt(step["chan"], 0));
         if (jsonText(step["action"]) == "off") {
@@ -2036,7 +2058,9 @@ bool ActionRules::runStep(Job& job, JsonObjectConst step) {
         } else {
             showbox->tunerAction(tuner_action::TURN_ON, chan);
         }
-        liveSocket.noteLink();
+        if (live != nullptr) {
+            live->noteLink();
+        }
     }
     inAction = false;
     inActionSinceMs = 0;

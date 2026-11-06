@@ -1417,6 +1417,584 @@ def case_websocket(s: Suite) -> None:
     s.check("websocket connected", not s.ws.error or healthy(), s.ws.error)
     s.check("websocket link message", s.ws.got_link.is_set() or bool(s.ws.last_link), f"err={s.ws.error}")
     s.check("websocket entity message", s.ws.got_entity.is_set() or bool(s.ws.entities), f"n={len(s.ws.entities)}")
+    # Single-client sync: HTTP write must land as a WS entity delta.
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    before = s.ws.gen("INPUT1_MUTE")
+    try:
+        http_cur = entity("INPUT1_MUTE")
+    except Exception:
+        http_cur = None
+    want = not bool(int(http_cur)) if http_cur is not None else True
+    api("/api/v1/showbox/entities/INPUT1_MUTE", {"value": want})
+    got = s.ws.wait_entity(
+        "INPUT1_MUTE",
+        lambda v: v is not None and bool(int(v)) is bool(want),
+        timeout=4.0,
+        after_seq=before,
+    )
+    s.check(
+        "websocket sync INPUT1_MUTE",
+        got is not None and bool(int(got)) is bool(want),
+        f"want={want} got={got}",
+    )
+    api("/api/v1/showbox/entities/INPUT1_MUTE", {"value": not want})
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+
+
+def _ws_multiclient_run(ip: str, n: int = 10, hold_s: float = 2.5) -> dict[str, Any]:
+    """Open N websocket clients; return sync stats. Caller mutes MAIN."""
+    import asyncio
+    import websockets
+
+    async def _run() -> dict[str, Any]:
+        uri = f"ws://{ip}/ws"
+        stop = asyncio.Event()
+        states: list[dict[str, Any]] = [
+            {"entities": {}, "gen": {}, "link": False, "err": "", "pong": 0}
+            for _ in range(n)
+        ]
+
+        async def one(idx: int) -> None:
+            st = states[idx]
+            try:
+                async with websockets.connect(uri, max_size=None, open_timeout=5, close_timeout=2) as ws:
+                    end = time.monotonic() + 8.0
+                    while time.monotonic() < end and not st["link"]:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                        except asyncio.TimeoutError:
+                            continue
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("type") == "link":
+                            st["link"] = True
+                        elif msg.get("type") == "entity":
+                            eid = str(msg.get("id"))
+                            st["entities"][eid] = msg.get("value")
+                            st["gen"][eid] = int(st["gen"].get(eid, 0)) + 1
+                    if not st["link"]:
+                        st["err"] = "no link"
+                        return
+                    while not stop.is_set():
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.35)
+                        except asyncio.TimeoutError:
+                            try:
+                                await ws.send("p")
+                            except Exception:
+                                break
+                            continue
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        kind = msg.get("type")
+                        if kind == "entity":
+                            eid = str(msg.get("id"))
+                            st["entities"][eid] = msg.get("value")
+                            st["gen"][eid] = int(st["gen"].get(eid, 0)) + 1
+                        elif kind == "link":
+                            st["link"] = True
+                        elif kind == "pong":
+                            st["pong"] = int(st["pong"]) + 1
+                    # Drain briefly so the last deltas are not lost on close.
+                    drain_end = time.monotonic() + 1.0
+                    while time.monotonic() < drain_end:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.2)
+                        except asyncio.TimeoutError:
+                            break
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("type") == "entity":
+                            eid = str(msg.get("id"))
+                            st["entities"][eid] = msg.get("value")
+                            st["gen"][eid] = int(st["gen"].get(eid, 0)) + 1
+            except Exception as exc:
+                st["err"] = str(exc)
+
+        tasks = [asyncio.create_task(one(i)) for i in range(n)]
+        ready_deadline = time.monotonic() + 10.0
+        while time.monotonic() < ready_deadline:
+            if sum(1 for st in states if st["link"] or st["err"]) >= n:
+                break
+            await asyncio.sleep(0.1)
+        linked_n = sum(1 for st in states if st["link"])
+        watch = ("FRONT_LED", "FX_BYPASS", "INPUT1_GAIN")
+        before = [{k: int(st["gen"].get(k, 0)) for k in watch} for st in states]
+
+        def _post(eid: str, val: Any) -> None:
+            api(f"/api/v1/showbox/entities/{eid}", {"value": val})
+
+        # Two phases so gens must move; final WS cache must match HTTP truth.
+        await asyncio.to_thread(_post, "MAIN_MUTE", True)
+        await asyncio.to_thread(_post, "FRONT_LED", False)
+        await asyncio.to_thread(_post, "FX_BYPASS", True)
+        await asyncio.to_thread(_post, "INPUT1_GAIN", 16)
+        await asyncio.to_thread(_post, "MAIN_MUTE", True)
+        await asyncio.sleep(hold_s)
+        await asyncio.to_thread(_post, "FRONT_LED", True)
+        await asyncio.to_thread(_post, "FX_BYPASS", False)
+        await asyncio.to_thread(_post, "INPUT1_GAIN", 32)
+        await asyncio.to_thread(_post, "MAIN_MUTE", True)
+        await asyncio.sleep(hold_s)
+
+        def _http_bulk() -> dict[str, Any]:
+            doc = api("/api/v1/showbox/entities")
+            out: dict[str, Any] = {}
+            for row in doc.get("entities") or []:
+                eid = row.get("id")
+                if eid in watch or eid == "MAIN_MUTE":
+                    out[str(eid)] = row.get("value")
+            return out
+
+        truth = await asyncio.to_thread(_http_bulk)
+        stop.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        def _as_bool(v: Any) -> Optional[bool]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return bool(int(v))
+            s = str(v).strip().lower()
+            if s in ("1", "true", "on"):
+                return True
+            if s in ("0", "false", "off"):
+                return False
+            return None
+
+        def _match(st: dict[str, Any], eid: str, want: Any, gen0: int) -> bool:
+            if int(st["gen"].get(eid, 0)) <= gen0:
+                return False
+            got = st["entities"].get(eid)
+            if eid == "INPUT1_GAIN":
+                try:
+                    return got is not None and abs(float(got) - float(want)) < 0.6
+                except (TypeError, ValueError):
+                    return False
+            return _as_bool(got) is _as_bool(want)
+
+        sync_ok = 0
+        details: list[str] = []
+        for i, st in enumerate(states):
+            if st["err"] or not st["link"]:
+                details.append(f"c{i}:{st['err'] or 'no-link'}")
+                continue
+            b = before[i]
+            ok = all(_match(st, k, truth.get(k), b[k]) for k in watch)
+            if ok:
+                sync_ok += 1
+            else:
+                details.append(
+                    f"c{i}:led={st['entities'].get('FRONT_LED')!r}"
+                    f"/fx={st['entities'].get('FX_BYPASS')!r}"
+                    f"/gain={st['entities'].get('INPUT1_GAIN')!r}"
+                    f" want={ {k: truth.get(k) for k in watch} }"
+                )
+        return {
+            "linked": linked_n,
+            "sync_ok": sync_ok,
+            "errors": sum(1 for st in states if st["err"]),
+            "details": details[:6],
+            "truth": truth,
+            "pongs": sum(int(st["pong"]) for st in states),
+        }
+
+    return asyncio.run(_run())
+
+
+def case_ws_multiclient(s: Suite) -> None:
+    """10 concurrent WS clients must each receive the same entity deltas.
+
+    L1 `websocket` only checks one suite socket. Firmware previously
+    cleanupClients(3), so a 10-tab wall could not stay connected.
+    """
+    n = 10
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    # Free the suite socket so all N slots are for this probe.
+    s.ws.close()
+    try:
+        if not wait_http_quiet(s.ip, timeout=8.0):
+            raise CaseFail("HTTP down before ws-multiclient")
+        s.info(f"opening {n} websocket clients")
+        result = _ws_multiclient_run(s.ip, n=n, hold_s=2.0)
+        s.check(
+            f"{n} clients got link",
+            result["linked"] >= n,
+            f"linked={result['linked']} err={result['errors']}",
+        )
+        s.check(
+            f"{n} clients synced entity deltas",
+            result["sync_ok"] >= n,
+            f"sync_ok={result['sync_ok']} details={result['details']}",
+        )
+        s.check("HTTP alive after multi-ws", wait_http_quiet(s.ip, timeout=8.0), "http down")
+        mute = _entities_map().get("MAIN_MUTE")
+        s.check(
+            "MAIN muted after multi-ws",
+            mute is True or mute == 1 or str(mute).lower() == "true",
+            f"MAIN_MUTE={mute!r}",
+        )
+    finally:
+        api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+        s.ws = LiveWs(s.ip)
+        s.ws.start()
+        s.ws.got_link.wait(6.0)
+
+
+def _ws_json_messages(raw: Any) -> list[dict[str, Any]]:
+    """Decode one or more JSON objects (handles coalesced WS text frames)."""
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", "replace")
+    else:
+        text = str(raw)
+    text = text.strip()
+    if not text:
+        return []
+    out: list[dict[str, Any]] = []
+    dec = json.JSONDecoder()
+    i = 0
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = end
+    return out
+
+
+def _ws_sync_stress_run(ip: str, n: int = 10) -> dict[str, Any]:
+    """Latency + initial sync + on-demand mixer + snapshot burst under N clients."""
+    import asyncio
+    import statistics
+    import websockets
+
+    async def _run() -> dict[str, Any]:
+        uri = f"ws://{ip}/ws"
+        out: dict[str, Any] = {
+            "latency_ms": [],
+            "initial_mixer": 0,
+            "initial_entity_n": [],
+            "m_mixer_ok": 0,
+            "snap_mixer_ok": 0,
+            "snap_sync_ok": 0,
+            "snap_ms": [],
+            "errors": [],
+        }
+
+        # --- latency with N clients ---
+        got: asyncio.Queue = asyncio.Queue()
+        stop = asyncio.Event()
+        states: list[dict[str, Any]] = [
+            {"ents": {}, "types": [], "mixer": 0, "snap": 0, "err": ""} for _ in range(n)
+        ]
+
+        def _ingest(st: dict[str, Any], msg: dict[str, Any], idx: int) -> None:
+            kind = msg.get("type")
+            if kind == "mixer":
+                st["mixer"] += 1
+                for e in msg.get("entities") or []:
+                    st["ents"][e.get("id")] = e.get("value")
+            elif kind == "entity":
+                eid = msg.get("id")
+                st["ents"][eid] = msg.get("value")
+                if eid == "FRONT_LED":
+                    got.put_nowait((idx, time.perf_counter(), msg.get("value")))
+            elif kind == "snapshot":
+                st["snap"] += 1
+
+        async def client(idx: int) -> None:
+            st = states[idx]
+            try:
+                async with websockets.connect(uri, max_size=None, open_timeout=5, close_timeout=2) as ws:
+                    # Capture initial messages briefly.
+                    end = time.monotonic() + 2.0
+                    while time.monotonic() < end:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.3)
+                        except asyncio.TimeoutError:
+                            if st["types"]:
+                                break
+                            continue
+                        for msg in _ws_json_messages(raw):
+                            kind = msg.get("type")
+                            st["types"].append(kind)
+                            _ingest(st, msg, idx)
+                            if kind == "link" and "names" in st["types"]:
+                                end = min(end, time.monotonic() + 0.4)
+
+                    # Stagger on-demand mixer so 10×12 KB does not hit at once.
+                    await asyncio.sleep(0.08 * idx)
+                    await ws.send("m")
+                    m_deadline = time.monotonic() + 4.0
+                    while time.monotonic() < m_deadline and st["mixer"] < 1:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                        except asyncio.TimeoutError:
+                            try:
+                                await ws.send("p")
+                            except Exception:
+                                break
+                            continue
+                        for msg in _ws_json_messages(raw):
+                            _ingest(st, msg, idx)
+
+                    # Latency + snapshot phase (ping so long SAVE waits do not idle-drop).
+                    while not stop.is_set():
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.35)
+                        except asyncio.TimeoutError:
+                            try:
+                                await ws.send("p")
+                            except Exception:
+                                break
+                            continue
+                        for msg in _ws_json_messages(raw):
+                            _ingest(st, msg, idx)
+            except Exception as exc:
+                st["err"] = str(exc)
+
+        tasks = [asyncio.create_task(client(i)) for i in range(n)]
+        await asyncio.sleep(3.5)  # initial + "m" settle
+        out["initial_mixer"] = sum(1 for st in states if "mixer" in (st["types"] or []))
+        out["initial_entity_n"] = [len(st["ents"]) for st in states]
+        out["m_mixer_ok"] = sum(1 for st in states if st["mixer"] >= 1)
+
+        # Latency rounds
+        for r in range(12):
+            want = bool(r % 2)
+            while not got.empty():
+                got.get_nowait()
+            t0 = time.perf_counter()
+            await asyncio.to_thread(api, "/api/v1/showbox/entities/FRONT_LED", {"value": want})
+            seen: set[int] = set()
+            last = None
+            deadline = time.perf_counter() + 2.0
+            while time.perf_counter() < deadline and len(seen) < n:
+                try:
+                    i, t, _v = await asyncio.wait_for(got.get(), timeout=max(0.01, deadline - time.perf_counter()))
+                except asyncio.TimeoutError:
+                    break
+                if i not in seen:
+                    seen.add(i)
+                    last = t
+            if len(seen) == n and last is not None:
+                out["latency_ms"].append((last - t0) * 1000.0)
+            await asyncio.sleep(0.05)
+
+        # Drop latency sockets before SAVE — holding 10 through the 5s busy
+        # window intermittently aborted them (no close frame) and poisoned RECALL.
+        stop.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Snapshot without WS listeners, then attach fresh clients for RECALL fan-out.
+        await asyncio.to_thread(api, "/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+        for eid, val in (
+            ("INPUT1_GAIN", 12),
+            ("INPUT2_GAIN", 24),
+            ("FX_BYPASS", True),
+            ("FRONT_LED", False),
+            ("SELECTED_CHAN", 2),
+            ("MAIN_MASTER_GAIN", -24.0),
+            ("MAIN_MUTE", True),
+        ):
+            await asyncio.to_thread(api, f"/api/v1/showbox/entities/{eid}", {"value": val})
+        await asyncio.to_thread(api, "/api/v1/showbox/action/snapshot", {"action": "SAVE", "slot": 0})
+        await asyncio.sleep(5.5)
+        for eid, val in (
+            ("INPUT1_GAIN", 40),
+            ("INPUT2_GAIN", 8),
+            ("FX_BYPASS", False),
+            ("FRONT_LED", True),
+            ("SELECTED_CHAN", 3),
+            ("MAIN_MASTER_GAIN", -6.0),
+            ("MAIN_MUTE", True),
+        ):
+            await asyncio.to_thread(api, f"/api/v1/showbox/entities/{eid}", {"value": val})
+        await asyncio.sleep(0.3)
+
+        snap_states: list[dict[str, Any]] = [
+            {"ents": {}, "mixer": 0, "snap": 0, "err": "", "linked": False} for _ in range(n)
+        ]
+        snap_stop = asyncio.Event()
+
+        async def snap_client(idx: int) -> None:
+            st = snap_states[idx]
+            try:
+                async with websockets.connect(uri, max_size=None, open_timeout=5, close_timeout=2) as ws:
+                    end = time.monotonic() + 3.0
+                    while time.monotonic() < end and not st["linked"]:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.4)
+                        except asyncio.TimeoutError:
+                            continue
+                        for msg in _ws_json_messages(raw):
+                            if msg.get("type") == "link":
+                                st["linked"] = True
+                    while not snap_stop.is_set():
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.35)
+                        except asyncio.TimeoutError:
+                            try:
+                                await ws.send("p")
+                            except Exception:
+                                break
+                            continue
+                        for msg in _ws_json_messages(raw):
+                            kind = msg.get("type")
+                            if kind == "mixer":
+                                st["mixer"] += 1
+                                for e in msg.get("entities") or []:
+                                    st["ents"][e.get("id")] = e.get("value")
+                            elif kind == "entity":
+                                st["ents"][msg.get("id")] = msg.get("value")
+                            elif kind == "snapshot":
+                                st["snap"] += 1
+            except Exception as exc:
+                st["err"] = str(exc)
+
+        snap_tasks = [asyncio.create_task(snap_client(i)) for i in range(n)]
+        ready_deadline = time.monotonic() + 6.0
+        while time.monotonic() < ready_deadline:
+            if sum(1 for st in snap_states if st["linked"] or st["err"]) >= n:
+                break
+            await asyncio.sleep(0.1)
+
+        t_recall = time.perf_counter()
+        await asyncio.to_thread(api, "/api/v1/showbox/action/snapshot", {"action": "RECALL", "slot": 0})
+        # Busy ~3.5s + paced mixer (~40ms × 10).
+        deadline = t_recall + 9.0
+        while time.perf_counter() < deadline:
+            if all(st["mixer"] >= 1 for st in snap_states if not st["err"]):
+                break
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        truth_doc = await asyncio.to_thread(api, "/api/v1/showbox/entities")
+        truth = {row["id"]: row["value"] for row in (truth_doc.get("entities") or []) if "id" in row}
+        keys = ("INPUT1_GAIN", "INPUT2_GAIN", "FX_BYPASS", "FRONT_LED", "SELECTED_CHAN", "MAIN_MASTER_GAIN")
+
+        def _b(v: Any) -> Optional[bool]:
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return v
+            try:
+                return bool(int(v))
+            except (TypeError, ValueError):
+                s = str(v).strip().lower()
+                if s in ("true", "1", "on"):
+                    return True
+                if s in ("false", "0", "off"):
+                    return False
+                return None
+
+        for st in snap_states:
+            if st["err"]:
+                out["errors"].append(st["err"])
+                continue
+            if st["mixer"] >= 1:
+                out["snap_mixer_ok"] += 1
+                out["snap_ms"].append((time.perf_counter() - t_recall) * 1000.0)
+            ok = True
+            for k in keys:
+                got = st["ents"].get(k)
+                want = truth.get(k)
+                if got is None or want is None:
+                    ok = False
+                    break
+                if k in ("FX_BYPASS", "FRONT_LED"):
+                    if _b(got) is None or _b(got) != _b(want):
+                        ok = False
+                        break
+                else:
+                    try:
+                        if abs(float(got) - float(want)) > 0.75:
+                            ok = False
+                            break
+                    except (TypeError, ValueError):
+                        ok = False
+                        break
+            if ok:
+                out["snap_sync_ok"] += 1
+
+        snap_stop.set()
+        await asyncio.gather(*snap_tasks, return_exceptions=True)
+        if out["latency_ms"]:
+            out["latency_p50"] = statistics.median(out["latency_ms"])
+            out["latency_p95"] = sorted(out["latency_ms"])[max(0, int(len(out["latency_ms"]) * 0.95) - 1)]
+            out["latency_max"] = max(out["latency_ms"])
+        return out
+
+    return asyncio.run(_run())
+
+
+def case_ws_sync_stress(s: Suite) -> None:
+    """WS latency, on-demand initial mixer sync, and snapshot burst with 10 clients."""
+    n = 10
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    s.ws.close()
+    try:
+        if not wait_http_quiet(s.ip, timeout=8.0):
+            raise CaseFail("HTTP down before ws-sync-stress")
+        s.info(f"ws-sync-stress with {n} clients")
+        r = _ws_sync_stress_run(s.ip, n=n)
+        # Connect must stay light (no automatic mixer blob — HOL risk).
+        s.check(
+            "connect skips full mixer",
+            r["initial_mixer"] == 0,
+            f"initial_mixer_clients={r['initial_mixer']}",
+        )
+        s.check(
+            f"{n} clients got mixer via 'm'",
+            r["m_mixer_ok"] >= n,
+            f"m_mixer_ok={r['m_mixer_ok']} ents0={r['initial_entity_n'][:3]}",
+        )
+        lat_n = len(r.get("latency_ms") or [])
+        p95 = float(r.get("latency_p95") or 9999)
+        s.check(
+            "10-client entity latency samples",
+            lat_n >= 8,
+            f"n={lat_n} p50={r.get('latency_p50')} p95={p95} max={r.get('latency_max')}",
+        )
+        s.check(
+            "10-client entity latency p95 < 100ms",
+            p95 < 100.0,
+            f"p95={p95:.1f} max={r.get('latency_max')}",
+        )
+        s.info(
+            f"latency p50={r.get('latency_p50')} p95={p95} max={r.get('latency_max')} "
+            f"snap_mixer={r['snap_mixer_ok']} snap_sync={r['snap_sync_ok']}"
+        )
+        s.check(
+            f"{n} clients got mixer after snapshot",
+            r["snap_mixer_ok"] >= n,
+            f"snap_mixer_ok={r['snap_mixer_ok']} errors={r['errors'][:3]}",
+        )
+        s.check(
+            f"{n} clients match HTTP after snapshot",
+            r["snap_sync_ok"] >= n,
+            f"snap_sync_ok={r['snap_sync_ok']}",
+        )
+        api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+        s.check("HTTP alive after sync-stress", wait_http_quiet(s.ip, timeout=8.0), "http down")
+    finally:
+        api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+        s.ws = LiveWs(s.ip)
+        s.ws.start()
+        s.ws.got_link.wait(6.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1809,6 +2387,326 @@ def case_fresh_pair(s: Suite) -> None:
         s.info("unpaired laptop (--no-keep-host)")
     else:
         s.info("keeping laptop bond")
+
+
+# Writable mixer fields for snapshot-mixer. Clip meters and LOOPER_STATE
+# are omitted (read-only / transport). MAIN_MUTE stays true in both profiles.
+
+
+def _snapshot_profile_a() -> dict[str, Any]:
+    # Amounts / sends are normalized 0..1. LOOPER_LEVEL / HEADPHONE top out ~10.
+    return {
+        "FRONT_LED": False,
+        "FEEDBACK_ELIM": 1,
+        "AMP_PA_MODE": False,
+        "LOCATION_MODE": False,
+        "SELECTED_CHAN": 2,
+        "INPUT1_GAIN": 12,
+        "INPUT1_VOLUME": -12.0,
+        "INPUT1_MUTE": True,
+        "INPUT1_EFFECT_1_MUTE": True,
+        "INPUT1_EFFECT_1_AMOUNT": 0.25,
+        "INPUT1_EFFECT_2_MUTE": False,
+        "INPUT1_EFFECT_2_AMOUNT": 0.7,
+        "INPUT1_EQ_ENABLE": False,
+        "INPUT1_EQ_LOW_GAIN": 4.0,
+        "INPUT1_EQ_MID_GAIN": -4.0,
+        "INPUT1_EQ_HIGH_GAIN": 2.0,
+        "INPUT1_COMPRESSOR_ENABLE": False,
+        "INPUT1_COMPRESSOR_AMOUNT": 0.3,
+        "INPUT1_EXT_FX_MUTE": True,
+        "INPUT1_EXT_FX_SENDS": 0.2,
+        "INPUT2_GAIN": 24,
+        "INPUT2_VOLUME": -6.0,
+        "INPUT2_MUTE": True,
+        "INPUT2_EFFECT_1_MUTE": False,
+        "INPUT2_EFFECT_1_AMOUNT": 0.5,
+        "INPUT2_EFFECT_2_MUTE": True,
+        "INPUT2_EFFECT_2_AMOUNT": 0.15,
+        "INPUT2_EQ_ENABLE": True,
+        "INPUT2_EQ_LOW_GAIN": -2.0,
+        "INPUT2_EQ_MID_GAIN": 3.0,
+        "INPUT2_EQ_HIGH_GAIN": -3.0,
+        "INPUT2_COMPRESSOR_ENABLE": True,
+        "INPUT2_COMPRESSOR_AMOUNT": 0.75,
+        "INPUT2_EXT_FX_MUTE": False,
+        "INPUT2_EXT_FX_SENDS": 0.8,
+        "INPUT3_GAIN": 36,
+        "INPUT3_VOLUME": 0.0,
+        "INPUT3_MUTE": False,
+        "INPUT3_EFFECT_1_MUTE": True,
+        "INPUT3_EFFECT_1_AMOUNT": 0.1,
+        "INPUT3_EFFECT_2_MUTE": False,
+        "INPUT3_EFFECT_2_AMOUNT": 0.9,
+        "INPUT3_EQ_ENABLE": False,
+        "INPUT3_EQ_LOW_GAIN": 5.0,
+        "INPUT3_EQ_MID_GAIN": 0.0,
+        "INPUT3_EQ_HIGH_GAIN": -5.0,
+        "INPUT3_COMPRESSOR_ENABLE": False,
+        "INPUT3_COMPRESSOR_AMOUNT": 0.45,
+        "INPUT3_EXT_FX_MUTE": True,
+        "INPUT3_EXT_FX_SENDS": 0.35,
+        "INPUT4_GAIN": 48,
+        "INPUT4_VOLUME": 4.0,
+        "INPUT4_MUTE": True,
+        "INPUT4_EFFECT_1_MUTE": False,
+        "INPUT4_EFFECT_1_AMOUNT": 0.6,
+        "INPUT4_EFFECT_2_MUTE": True,
+        "INPUT4_EFFECT_2_AMOUNT": 0.05,
+        "INPUT4_EQ_ENABLE": True,
+        "INPUT4_EQ_LOW_GAIN": 1.0,
+        "INPUT4_EQ_MID_GAIN": -1.0,
+        "INPUT4_EQ_HIGH_GAIN": 6.0,
+        "INPUT4_COMPRESSOR_ENABLE": True,
+        "INPUT4_COMPRESSOR_AMOUNT": 0.2,
+        "INPUT4_EXT_FX_MUTE": False,
+        "INPUT4_EXT_FX_SENDS": 0.55,
+        "STEREO_INPUT1_VOLUME": -9.0,
+        "STEREO_INPUT1_MUTE": True,
+        "STEREO_INPUT1_EQ_ENABLE": False,
+        "STEREO_INPUT1_EQ_LOW_GAIN": 2.0,
+        "STEREO_INPUT1_EQ_MID_GAIN": -2.0,
+        "STEREO_INPUT1_EQ_HIGH_GAIN": 3.0,
+        "EFFECT11_TYPEID": 1,
+        "EFFECT12_TYPEID": 2,
+        "EFFECT13_TYPEID": 3,
+        "EFFECT14_TYPEID": 4,
+        "EFFECT21_TYPEID": 5,
+        "EFFECT22_TYPEID": 6,
+        "MAIN_HEADPHONE_GAIN": 8.0,
+        "MAIN_MASTER_GAIN": -24.0,
+        "MAIN_MUTE": True,
+        "LOOPER_LEVEL": 5.0,
+        "FX_BYPASS": True,
+    }
+
+
+def _snapshot_profile_b() -> dict[str, Any]:
+    # Distinct from A on every key (except MAIN_MUTE stays muted).
+    a = _snapshot_profile_a()
+    b: dict[str, Any] = {}
+    for key, val in a.items():
+        if key == "MAIN_MUTE":
+            b[key] = True
+        elif isinstance(val, bool):
+            b[key] = not val
+        elif isinstance(val, int) and not isinstance(val, bool):
+            if "TYPEID" in key or key in ("FEEDBACK_ELIM", "SELECTED_CHAN"):
+                b[key] = (val + 3) % 8
+            else:
+                b[key] = val + 8
+        elif key in (
+            "INPUT1_EFFECT_1_AMOUNT", "INPUT1_EFFECT_2_AMOUNT", "INPUT1_COMPRESSOR_AMOUNT", "INPUT1_EXT_FX_SENDS",
+            "INPUT2_EFFECT_1_AMOUNT", "INPUT2_EFFECT_2_AMOUNT", "INPUT2_COMPRESSOR_AMOUNT", "INPUT2_EXT_FX_SENDS",
+            "INPUT3_EFFECT_1_AMOUNT", "INPUT3_EFFECT_2_AMOUNT", "INPUT3_COMPRESSOR_AMOUNT", "INPUT3_EXT_FX_SENDS",
+            "INPUT4_EFFECT_1_AMOUNT", "INPUT4_EFFECT_2_AMOUNT", "INPUT4_COMPRESSOR_AMOUNT", "INPUT4_EXT_FX_SENDS",
+        ):
+            fv = float(val)
+            b[key] = 0.95 if fv < 0.5 else 0.05
+        elif key in ("LOOPER_LEVEL", "MAIN_HEADPHONE_GAIN"):
+            b[key] = 2.0 if float(val) >= 5 else 10.0
+        elif "EQ_" in key and "GAIN" in key:
+            # EQ bands quantize in ~2.14 dB steps and clamp near ±6.
+            b[key] = -float(val) if abs(float(val)) > 0.5 else -5.0
+        else:
+            b[key] = float(val) + 8.0 if float(val) < 10 else float(val) - 8.0
+    return b
+
+
+def _entities_map() -> dict[str, Any]:
+    doc = api("/api/v1/showbox/entities")
+    out: dict[str, Any] = {}
+    for row in doc.get("entities") or []:
+        eid = row.get("id")
+        if eid:
+            out[str(eid)] = row.get("value")
+    return out
+
+
+def _ensure_main_mute(s: Suite) -> None:
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    end = time.monotonic() + 4.0
+    while time.monotonic() < end:
+        got = _entities_map().get("MAIN_MUTE")
+        if got is True or got == 1 or str(got).lower() == "true":
+            return
+        time.sleep(0.2)
+        api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    raise CaseFail(f"MAIN_MUTE stuck unmuted got={_entities_map().get('MAIN_MUTE')!r}")
+
+
+def _set_entities(s: Suite, values: dict[str, Any]) -> None:
+    # MAIN_MUTE first so later loud fader moves stay silent.
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    for eid, val in values.items():
+        if eid == "MAIN_MUTE":
+            continue
+        api(f"/api/v1/showbox/entities/{eid}", {"value": val})
+    # Second pass: UART/API drops under burst are common; reinforce diffs.
+    time.sleep(0.3)
+    for eid, val in values.items():
+        if eid == "MAIN_MUTE":
+            continue
+        api(f"/api/v1/showbox/entities/{eid}", {"value": val})
+    api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+    time.sleep(0.8)
+    _ensure_main_mute(s)
+
+
+def _field_tol(key: str, want: Any, base: float = 0.6) -> float:
+    # Normalized 0..1 amounts need a tight band; dB/gain can quantize coarser.
+    if key.endswith("_AMOUNT") or key.endswith("_SENDS"):
+        return 0.12
+    if key in ("LOOPER_LEVEL", "MAIN_HEADPHONE_GAIN"):
+        return 0.6
+    try:
+        if abs(float(want)) <= 1.5 and "GAIN" not in key and "VOLUME" not in key:
+            return min(base, 0.2)
+    except (TypeError, ValueError):
+        pass
+    return base
+
+
+def _vals_close(a: Any, b: Any, tol: float = 0.6, key: str = "") -> bool:
+    if a is None or b is None:
+        return a is b
+    # Bool / UINT8 mute flags: JSON may use true/false or 0/1.
+    if isinstance(a, bool) or isinstance(b, bool):
+        try:
+            return bool(int(a)) is bool(int(b))
+        except (TypeError, ValueError):
+            return bool(a) is bool(b)
+    try:
+        use = _field_tol(key, b, base=tol) if key else tol
+        return abs(float(a) - float(b)) <= use
+    except (TypeError, ValueError):
+        return a == b
+
+
+def _read_profile(keys: list[str]) -> dict[str, Any]:
+    cur = _entities_map()
+    return {k: cur.get(k) for k in keys}
+
+
+def _assert_profile(s: Suite, label: str, expected: dict[str, Any], tol: float = 0.75) -> None:
+    got = _read_profile(list(expected.keys()))
+    bad: list[str] = []
+    for key, want in expected.items():
+        have = got.get(key)
+        if not _vals_close(have, want, tol=tol, key=key):
+            bad.append(f"{key}: want={want!r} got={have!r}")
+    s.check(f"{label}: MAIN muted", bool(got.get("MAIN_MUTE")) is True, f"MAIN_MUTE={got.get('MAIN_MUTE')!r}")
+    s.check(f"{label}: {len(expected)} fields match", not bad, f"mismatches={len(bad)} " + "; ".join(bad[:8]))
+
+
+def _snapshot_action(s: Suite, action: str, slot: int) -> None:
+    """SAVE/RECALL via REST. Slot is 0-based (SNAPSHOT_1=0)."""
+    # Firmware busy: SAVE ~5s, RECALL ~3.5s. dumpSeq often does not bump
+    # mid-session; wait the busy window then a short settle.
+    wait_s = 5.5 if action.upper() == "SAVE" else 4.0
+    api("/api/v1/showbox/action/snapshot", {"action": action, "slot": slot})
+    time.sleep(wait_s)
+    _ensure_main_mute(s)
+
+
+def case_snapshot_mixer(s: Suite) -> None:
+    """Full mixer snapshot: set→save→mutate→recall on slot 1 (API slot 0).
+
+    Broader than webui snapshot e2e (single INPUT1_GAIN via Chromium). MAIN
+    stays muted the whole time.
+    """
+    slot = 0  # SNAPSHOT_1
+    hold_before = api("/api/v1/showbox/analog-hold") or {}
+    # Analog hold fights HEADPHONE / LOOPER_LEVEL writes and recall mirror.
+    api("/api/v1/showbox/analog-hold", {"phones": False, "loop": False})
+    try:
+        _ensure_main_mute(s)
+        profile_a = _snapshot_profile_a()
+        profile_b = _snapshot_profile_b()
+        # Analog pots stream continuously; they are written but not part of the
+        # strict save/recall compare (SAVE busy window often overwrites them).
+        analog_skip = {"LOOPER_LEVEL", "MAIN_HEADPHONE_GAIN"}
+        keys = [k for k in profile_a.keys() if k not in analog_skip]
+        s.check("profiles cover mixer fields", len(keys) >= 60, f"n={len(keys)}")
+
+        s.info(f"apply profile A ({len(profile_a)} fields, compare {len(keys)})")
+        _set_entities(s, profile_a)
+        # Quantized readback is the golden snapshot payload — not the posted floats.
+        time.sleep(1.0)
+        golden = _read_profile(keys)
+        golden["MAIN_MUTE"] = True
+        missing = [k for k, v in golden.items() if v is None]
+        s.check("profile A readable", not missing, f"missing={missing[:8]}")
+        _assert_profile(s, "after set A", golden)
+
+        s.info("SAVE snapshot 1")
+        _snapshot_action(s, "SAVE", slot)
+        _assert_profile(s, "after SAVE", golden)
+
+        s.info(f"apply profile B ({len(keys)} fields)")
+        _set_entities(s, profile_b)
+        time.sleep(1.0)
+        after_b = _read_profile(keys)
+        after_b["MAIN_MUTE"] = True
+        def _diff_from_golden(cur: dict[str, Any]) -> tuple[int, list[str]]:
+            ch = 0
+            st: list[str] = []
+            for key in keys:
+                if key == "MAIN_MUTE":
+                    continue
+                if _vals_close(cur.get(key), golden.get(key), tol=0.75, key=key):
+                    st.append(key)
+                else:
+                    ch += 1
+            return ch, st
+
+        changed, stuck = _diff_from_golden(after_b)
+        # Re-poke any fields that did not leave golden A (UART drop / clamp).
+        if stuck:
+            s.info(f"re-poke {len(stuck)} stuck B fields")
+            for key in stuck:
+                api(f"/api/v1/showbox/entities/{key}", {"value": profile_b[key]})
+            api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+            time.sleep(0.8)
+            after_b = _read_profile(keys)
+            after_b["MAIN_MUTE"] = True
+            changed, stuck = _diff_from_golden(after_b)
+        s.check(
+            "profile B differs from A",
+            changed >= max(40, len(keys) // 2) and len(stuck) <= 8,
+            f"changed={changed} stuck={stuck[:12]}",
+        )
+        _ensure_main_mute(s)
+
+        s.info("RECALL snapshot 1")
+        _snapshot_action(s, "RECALL", slot)
+        # Mirror / UART settle; poll until close or timeout.
+        end = time.monotonic() + 12.0
+        last_bad = "not checked"
+        while time.monotonic() < end:
+            got = _read_profile(keys)
+            bad = [
+                k for k, w in golden.items()
+                if k != "MAIN_MUTE" and not _vals_close(got.get(k), w, tol=0.9, key=k)
+            ]
+            if not bad and bool(got.get("MAIN_MUTE")) is True:
+                last_bad = ""
+                break
+            last_bad = ",".join(bad[:8])
+            time.sleep(0.35)
+        _ensure_main_mute(s)
+        _assert_profile(s, "after RECALL", golden, tol=0.9)
+        if last_bad:
+            s.info(f"recall settle leftover noted: {last_bad}")
+    finally:
+        api(
+            "/api/v1/showbox/analog-hold",
+            {
+                "phones": bool(hold_before.get("phones", True)),
+                "loop": bool(hold_before.get("loop", True)),
+            },
+        )
+        _ensure_main_mute(s)
 
 
 def case_webui(s: Suite) -> None:
@@ -2607,6 +3505,9 @@ LEVEL2: list[tuple[str, CaseFn]] = [
     ("laptop-le-scan", case_laptop_le_scan),
     ("hid-smoke", case_hid_smoke),
     ("airstep-held", case_airstep_held),
+    ("snapshot-mixer", case_snapshot_mixer),
+    ("ws-multiclient", case_ws_multiclient),
+    ("ws-sync-stress", case_ws_sync_stress),
     ("webui", case_webui),
     ("rec-timer", case_rec_timer),
     ("https", case_https),

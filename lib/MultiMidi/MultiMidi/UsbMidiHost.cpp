@@ -1,6 +1,7 @@
 #include "UsbMidiHost.h"
 
-#include "DebugLog.h"
+// debugLog provided by app (DebugLog.cpp)
+void debugLog(const char* fmt, ...);
 #include "MidiAction.h"
 #include "MidiCommon.h"
 #include "MultiMidi/FullMidiParser.h"

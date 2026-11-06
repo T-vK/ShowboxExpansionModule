@@ -296,12 +296,19 @@ private:
     void loadAnalogHold();
     void saveAnalogHold();
     void armSnapshotDone(uint8_t action, uint8_t slot);
+    void captureSnapshotMirror(uint8_t slot);
+    void applySnapshotMirror(uint8_t slot);
     uint8_t snapshotPendingAction = 0;
     uint8_t snapshotPendingSlot = 0;
     uint32_t snapshotBusyUntil = 0;
     uint8_t snapshotQueuedAction = 0;
     uint8_t snapshotQueuedSlot = 0;
     bool snapshotQueued = false;
+    // Mixer recall restores DSP but often does not re-dump entities mid-session
+    // (dumpSeq stays put). Mirror what we SAVE so RECALL can refresh the cache.
+    static constexpr uint8_t kSnapshotMirrorSlots = 6; // SNAPSHOT_1..DEFAULT
+    EntityValue snapshotMirror[kSnapshotMirrorSlots][FX_BYPASS + 1] = {};
+    bool snapshotMirrorValid[kSnapshotMirrorSlots] = {};
     bool uartTaskRunning = false;
     // Base-wedge recovery ladder state
     uint32_t wedgeSinceMs = 0;

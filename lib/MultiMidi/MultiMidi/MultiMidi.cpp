@@ -1,10 +1,10 @@
 #include "MultiMidi.h"
-#include "../System/Diag.h"
 #include "UsbMidiHost.h"
 #include "MultiMidi/BleMidiDecode.h"
 #include "MultiMidi/FullMidiParser.h"
-#include "Actions/ActionRules.h"
-#include "DebugLog.h"
+#include "MultiMidi/AppHooks.h"
+// debugLog provided by app (DebugLog.cpp)
+void debugLog(const char* fmt, ...);
 #include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -13,7 +13,6 @@
 #include <ETH.h>
 #include <ESPmDNS.h>
 #include <AsyncUDP.h>
-#include "WiredNet/WiredNet.h"
 #include <esp_heap_caps.h>
 
 namespace {
@@ -40,6 +39,7 @@ FullMidiParser appleParser;
 volatile bool appleParsing = false;
 volatile uint8_t appleInData = 0;
 const char* inboundSourceName = "ext";
+MidiRulesFn inboundRulesFn = nullptr;
 
 void enqueueApplePkt(AsyncUDPPacket& packet, uint8_t isData) {
     if (appleQ == nullptr) {
@@ -207,6 +207,10 @@ void midiInboundSetSource(const char* name) {
     inboundSourceName = (name != nullptr && name[0] != '\0') ? name : "ext";
 }
 
+void midiInboundSetRules(MidiRulesFn fn) {
+    inboundRulesFn = fn;
+}
+
 const char* midiKindFromStatus(uint8_t status) {    if (status >= 0xF0) {
         switch (status) {
             case 0xF0: return "sysex";
@@ -260,7 +264,9 @@ void midiInboundDispatch(midi::MidiAction* action, uint8_t status, uint8_t p1, u
             return;
         }
     }
-    actionRulesOnMidi(midiKindFromStatus(status), channel, p1, p2);
+    if (inboundRulesFn != nullptr) {
+        inboundRulesFn(midiKindFromStatus(status), channel, p1, p2);
+    }
 }
 
 void MultiMidi::testDispatch(uint8_t status, uint8_t p1, uint8_t p2) {
@@ -441,6 +447,14 @@ void MultiMidi::setHostPolicy(BleMidiHostPolicy* policy) {
 
 void MultiMidi::setRadio(BleRadio* radio) {
     bleMidi.setRadio(radio);
+}
+
+void MultiMidi::setCoex(const LanCoex* hooks) {
+    bleMidi.setCoex(hooks);
+}
+
+void MultiMidi::setAppHooks(const MidiAppHooks* hooks) {
+    appHooks = hooks;
 }
 
 void MultiMidi::setEthernetPins(uint8_t sclk, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t reset) {
@@ -634,7 +648,7 @@ void MultiMidi::tryStartAppleMidi() {
     if (!appleMidiEnabled || appleMidiStarted) {
         return;
     }
-    if (!lanHasIp()) {
+    if (!midiAppHasIp(appHooks)) {
         return;
     }
     appleMidiStarted = listenAppleMidi(appleMidiPort, &action);
@@ -753,7 +767,7 @@ void MultiMidi::writeData(MidiMessage *msg, int len, uint16_t ports){
     if (msg == nullptr || len <= 0) {
         return;
     }
-    diagNoteMidiOut((size_t)len + 1);
+    midiAppNoteMidiOut(appHooks, (size_t)len + 1);
     if (midiPortWanted(ports, kMidiPortDin) && dinEnabled && serialStreamOut) {
         serialStreamOut->write(msg, len);
     }

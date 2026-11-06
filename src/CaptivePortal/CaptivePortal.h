@@ -13,6 +13,9 @@ public:
     void tick();
     void ensureAp();
     void stopAp();
+    // Sole SoftAP teardown entry for LanKeep (HTTP wedge / SPA yield / gw zombie).
+    // kind 1 = forced down (long backoff), 2 = yield for STA TX (short retry).
+    void dropApForSta(uint8_t kind);
     bool setWantedAp(bool on);
     bool setAlwaysAp(bool on);
     bool setAutoAp(bool on);

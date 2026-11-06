@@ -26,6 +26,7 @@ ESP32-S3 expansion module firmware (PlatformIO) + live Python suite against real
 - Work as a **senior** by default (see `.cursor/rules/senior-engineer.mdc`). Never wait to be told.
 - Debug with **minimal repro → fix → verify repro**; full level streaks are confirmation only.
 - Fight **context rot**: keep the main chat for decisions; shove noisy work into subagents that return short verdicts.
+- Respect **module boundaries / DI** (`.cursor/rules/clean-architecture.mdc`, plan in `docs/architecture-refactor-plan.md`). `main.cpp` is the composition root; no new app-object `extern`s; MultiMidi / MackieShowbox / UARTInterceptor stay extractable (no Actions/LanKeep/LiveSocket includes inside those libs).
 - User chat overrides these files for that turn.
 
 ## Rule index (Cursor)
@@ -38,6 +39,7 @@ ESP32-S3 expansion module firmware (PlatformIO) + live Python suite against real
 | `live-fixture.mdc` | Always — serial / Wi‑Fi / BLE / gate / flash |
 | `suite-live.mdc` | `scripts/suite/**`, suite e2e scripts |
 | `firmware-actions.mdc` | `src/Actions/**` |
+| `clean-architecture.mdc` | `src/**`, `lib/**` — DI, no app externs, extractable libs |
 
 ## Skills (on-demand)
 
