@@ -694,11 +694,50 @@ def case_hotspot(s: Suite) -> None:
             bool(wifi.get("ap")) and bool(wifi.get("sta")),
             f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
         )
+        # softAP() can starve STA HTTP for a few seconds; wait until /wifi
+        # answers again so the next L1 case is not a TimeoutError.
+        settled = _wait_wifi_pred(s, lambda w: bool(w.get("sta")), timeout=20.0)
+        if settled:
+            wifi = settled
+            s.info("STA HTTP settled after SoftAP bring-up")
+        # LanKeep may drop SoftAP during that settle — bring it back before air scan.
+        if wifi.get("sta") and not wifi.get("ap"):
+            s.info("SoftAP dropped during settle — re-enable")
+            api("/api/v1/wifi", {"apAlways": True, "ap": True})
+            wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=35.0) or wifi
+        s.check(
+            "SoftAP still up after STA settle",
+            bool(wifi.get("ap")) and bool(wifi.get("sta")),
+            f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
+        )
     if not wifi.get("ap"):
         s.info("AP still off — skip air scan")
         return
-    ssids = _scan_ssids()
+    ssids: list[str] = []
+    for _ in range(4):
+        ssids = _scan_ssids()
+        if "ShowboxMod" in ssids:
+            break
+        time.sleep(1.5)
     s.check("air scan sees ShowboxMod", "ShowboxMod" in ssids, f"ssids={ssids[:8]}")
+    # SoftAP+STA coex still starves STA HTTP for later L1 cases. Drop the
+    # hotspot after the air scan; apAlways stays true so L2 coex can raise it.
+    if int(getattr(s.args, "level", 1) or 1) <= 1:
+        try:
+            # STA HTTP is often already mute under SoftAP — use eth fallback.
+            _wifi_api(s, {"ap": False})
+            healed = _wait_wifi_pred(
+                s, lambda w: bool(w.get("sta")) and not w.get("ap"), timeout=25.0
+            )
+            time.sleep(2.0)
+            healed = _wait_wifi_pred(s, lambda w: bool(w.get("sta")), timeout=20.0) or healed
+            s.info(
+                "SoftAP lowered after L1 air scan"
+                if healed
+                else "SoftAP lower: STA HTTP not settled yet"
+            )
+        except Exception as exc:
+            s.info(f"SoftAP lower after air scan: {exc}")
 
 
 def _scan_ssids() -> list[str]:
@@ -969,6 +1008,16 @@ def case_telnet_ota(s: Suite) -> None:
         finally:
             try:
                 _wifi_api(s, {"ap": True, "apAlways": True})
+                # SoftAP reclaim after ap=false can take a few softAP ticks;
+                # hotspot runs next and only waits 35s — wait here so L1 does
+                # not race a deferred BLE-yield softAP.
+                restored = _wait_wifi_pred(
+                    s, lambda w: bool(w.get("sta") and w.get("ap")), timeout=45.0
+                )
+                if restored:
+                    s.info("SoftAP restored after telnet yield")
+                else:
+                    s.info("SoftAP not back yet after telnet yield — hotspot will retry")
             except Exception as exc:
                 s.info(f"SoftAP restore after telnet: {exc}")
     s.check("telnet RemoteDebug", ok, detail)

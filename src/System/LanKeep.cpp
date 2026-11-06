@@ -1232,6 +1232,28 @@ void lanNoteApActive(bool on) {
     }
 }
 
+bool lanYieldBleForSoftAp() {
+    lanPreferWifiAirtime();
+    if (sMultiMidi == nullptr || !sMultiMidi->hostConnected()) {
+        return false;
+    }
+    // dropHostLink() can leave hostConnected() true for a few hundred ms.
+    // Yield once, then let softAP proceed — otherwise SoftAP is deferred
+    // forever after telnet-ota restores the hotspot (L1 hotspot FAIL).
+    static uint32_t lastYieldMs = 0;
+    if (lastYieldMs != 0 && (int32_t)(millis() - lastYieldMs) < 8000) {
+        return false;
+    }
+    lastYieldMs = millis();
+    apYieldForAp = true;
+    apYieldSinceMs = millis();
+    sMultiMidi->dropHostLink();
+    sMultiMidi->allowOutgoing(false);
+    diagEventForce("wifi", "SoftAP bring-up: BLE host yielded first");
+    debugLog("ap: yield BLE host before softAP");
+    return true;
+}
+
 static volatile uint8_t sApForcedDown = 0;
 
 void lanNoteApForcedDown() {
