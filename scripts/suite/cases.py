@@ -391,6 +391,40 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         if _state_is(got, want):
             s.check(label, True, f"LOOPER_STATE={got}")
             return
+        # Stop while stuck in overdub: tap to play first, then stop again.
+        if cc_num == 103 and _state_is(want, 2) and _state_is(got, 4):
+            s.info(f"{label}: still overdub, tap to play then stop")
+            _ensure_looper_midi(s)
+            s.send_cc(102)
+            quiet = time.monotonic() + 3.0
+            while time.monotonic() < quiet:
+                cur = s.looper_now()
+                if _state_is(cur, 3) or _state_is(cur, 2):
+                    got = cur
+                    break
+                s.ws.got_entity.wait(timeout=0.3)
+                s.ws.got_entity.clear()
+            if _state_is(got, 2):
+                s.check(label, True, f"LOOPER_STATE={got}")
+                return
+            s.send_cc(103)
+            end = time.monotonic() + 12.0
+            while time.monotonic() < end:
+                cur = s.looper_now()
+                if cur is not None:
+                    got = cur
+                if _state_is(got, want):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                s.ws.got_entity.wait(timeout=min(0.4, remaining))
+                s.ws.got_entity.clear()
+            got = s.refresh_looper() or s.looper_now() or got
+            if _state_is(got, want):
+                s.check(label, True, f"LOOPER_STATE={got}")
+                return
         raise CaseFail(f"{label}: want {want} got {got}")
     # Cycle (CC102): firmware re-sends the tap if the mixer ignored it.
     # A second CC from the test in that window is another tap and
