@@ -740,36 +740,48 @@ def case_hotspot(s: Suite) -> None:
         wifi.get("apAlways") is True,
         f"apAlways={wifi.get('apAlways')!r}",
     )
+    level = int(getattr(s.args, "level", 1) or 1)
     if wifi.get("sta"):
         # Product default: SoftAP stays up while joined to a home AP.
-        if not wifi.get("ap"):
+        # L2/L3: SoftAP raise here wedges BLE before ble-* cases; hotspot-air /
+        # hotspot-sta-coex cover SoftAP coex later. L1 still forces SoftAP up.
+        if not wifi.get("ap") and level <= 1:
             # SoftAP bring-up can pause STA briefly — use a long POST timeout
             # and eth fallback; default api() 4s TimeoutError aborted L1 early.
             # A timed-out POST never clears apYieldQuiet / apForceTry, so SoftAP
             # stays dark for the whole wait — retry enable while polling.
             wifi = _wait_softap_up(s, timeout=70.0) or wifi
-        s.check(
-            "SoftAP up while STA joined",
-            bool(wifi.get("ap")) and bool(wifi.get("sta")),
-            f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
-        )
-        # Do NOT poll /wifi for 20s under SoftAP+STA+BLE — that SYN flood is
-        # what LanKeep treats as an HTTP wedge and softAPdisconnects (L1 then
-        # fails SoftAP still up after settle). One quiet probe is enough.
-        time.sleep(1.5)
-        try:
-            wifi = _wifi_api(s) or wifi
-            s.info("STA HTTP probed after SoftAP bring-up")
-        except Exception as exc:
-            s.info(f"STA HTTP probe after SoftAP: {exc}")
-        if wifi.get("sta") and not wifi.get("ap"):
-            s.info("SoftAP dropped before air scan — re-enable")
-            wifi = _wait_softap_up(s, timeout=45.0) or wifi
-        s.check(
-            "SoftAP up for air scan",
-            bool(wifi.get("ap")) and bool(wifi.get("sta")),
-            f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
-        )
+        if level <= 1:
+            s.check(
+                "SoftAP up while STA joined",
+                bool(wifi.get("ap")) and bool(wifi.get("sta")),
+                f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
+            )
+        else:
+            s.info(
+                f"L{level}: SoftAP raise deferred to hotspot-air "
+                f"(ap={wifi.get('ap')} apAlways={wifi.get('apAlways')})"
+            )
+        if level <= 1:
+            # Do NOT poll /wifi for 20s under SoftAP+STA+BLE — that SYN flood is
+            # what LanKeep treats as an HTTP wedge and softAPdisconnects (L1 then
+            # fails SoftAP still up after settle). One quiet probe is enough.
+            time.sleep(1.5)
+            try:
+                wifi = _wifi_api(s) or wifi
+                s.info("STA HTTP probed after SoftAP bring-up")
+            except Exception as exc:
+                s.info(f"STA HTTP probe after SoftAP: {exc}")
+            if wifi.get("sta") and not wifi.get("ap"):
+                s.info("SoftAP dropped before air scan — re-enable")
+                wifi = _wait_softap_up(s, timeout=45.0) or wifi
+            s.check(
+                "SoftAP up for air scan",
+                bool(wifi.get("ap")) and bool(wifi.get("sta")),
+                f"ap={wifi.get('ap')} sta={wifi.get('sta')} apIp={wifi.get('apIp')!r}",
+            )
+    if level > 1:
+        return
     if not wifi.get("ap"):
         s.info("AP still off — skip air scan")
         return
@@ -780,9 +792,8 @@ def case_hotspot(s: Suite) -> None:
             break
         time.sleep(1.5)
     s.check("air scan sees ShowboxMod", "ShowboxMod" in ssids, f"ssids={ssids[:8]}")
-    # SoftAP+STA coex starves STA HTTP for later cases (L2 websocket timed out
-    # with SoftAP left up). Drop the hotspot after the air scan on every level;
-    # apAlways stays true so L2 hotspot-air / hotspot-sta-coex can raise it.
+    # SoftAP+STA coex starves STA HTTP for later cases. Drop the hotspot after
+    # the L1 air scan; apAlways stays true so L2 SoftAP cases can raise it.
     try:
         # STA HTTP is often already mute under SoftAP — use eth fallback.
         _wifi_api(s, {"ap": False})
