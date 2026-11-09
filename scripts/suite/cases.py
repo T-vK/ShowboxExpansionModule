@@ -2676,11 +2676,47 @@ def case_hid_smoke(s: Suite) -> None:
 
 
 def case_airstep_held(s: Suite) -> None:
+    """autoConnect peripherals must stay up (or rejoin) while the laptop is host.
+
+    USB JTAG↔gadget switches reboot the module; AIRSTEP autoConnect typically
+    returns in ~8s. Do not fail on a one-shot read right after that reboot
+    (L3 after L2 usb-midi-hid: down=['AIRSTEP'] at t=0 while auto=true).
+    """
     midi = s.midi_status()
     autos = [p for p in (midi.get("peripherals") or []) if p.get("autoConnect")]
     if not autos:
         raise CaseSkip("no autoConnect peripheral saved")
-    down = [p.get("name") or p.get("address") for p in autos if not p.get("connected")]
+    deadline = time.monotonic() + 20.0
+    last_connect = 0.0
+    posts = 0
+    down: list[Any] = [p.get("name") or p.get("address") for p in autos if not p.get("connected")]
+    while down and time.monotonic() < deadline:
+        now = time.monotonic()
+        if posts < 3 and now - last_connect >= 4.0:
+            for p in autos:
+                if p.get("connected"):
+                    continue
+                addr = str(p.get("address") or "")
+                name = str(p.get("name") or "AIRSTEP")
+                if not addr:
+                    continue
+                cf.http_post(
+                    f"{s.session.base}/api/v1/midi/ble/auto",
+                    {"address": addr, "enabled": "1"},
+                    timeout=3.0,
+                )
+                cf.http_post(
+                    f"{s.session.base}/api/v1/midi/ble/connect",
+                    {"address": addr, "name": name, "midi": "1", "hid": "0"},
+                    timeout=3.0,
+                )
+            last_connect = now
+            posts += 1
+            s.info(f"autoConnect peri down after USB/radio load — connect POST {posts}: {down}")
+        time.sleep(0.5)
+        midi = s.midi_status()
+        autos = [p for p in (midi.get("peripherals") or []) if p.get("autoConnect")]
+        down = [p.get("name") or p.get("address") for p in autos if not p.get("connected")]
     s.check("AIRSTEP still up while laptop is host", not down, f"down={down}")
 
 
