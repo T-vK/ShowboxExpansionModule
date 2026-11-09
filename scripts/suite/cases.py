@@ -3519,23 +3519,24 @@ def case_hotspot_sta_coex(s: Suite) -> None:
     s.check("coex STA IP stable", str(wifi.get("ip") or "") == s.ip, f"ip={wifi.get('ip')}")
     code, body = http_get_retry(f"http://{s.ip}/api/v1/wifi", timeout=3.0, attempts=5, min_bytes=20)
     s.check("STA /api/v1/wifi while SoftAP", code == 200 and b'"sta"' in body, f"code={code} bytes={len(body)}")
-    # /services is the HTML health shell; under SoftAP+L2 load STA :80 can
-    # briefly refuse the bigger body while /wifi still answers — quiet retry.
+    # Do not GET /services (HTML health shell) on STA under SoftAP+L2 — that
+    # body wedges :80 (code=0) while small JSON still answers. Prove STA HTTP
+    # with /showbox/link; SoftAP captive/HTML is covered after join below.
     if not wait_http_quiet(s.ip, timeout=10.0):
-        s.info("STA not quiet before /services under SoftAP")
+        s.info("STA not quiet before /showbox/link under SoftAP")
     code, body = http_get_retry(
-        f"http://{s.ip}/services", timeout=4.0, attempts=8, min_bytes=100, quiet=True
+        f"http://{s.ip}/api/v1/showbox/link", timeout=4.0, attempts=8, min_bytes=20, quiet=True
     )
-    if code != 200 or len(body) <= 100:
+    if code != 200 or b'"ok"' not in body:
         eth = _eth_fallback_ip(s)
         if eth and eth != s.ip:
-            s.info(f"STA /services via eth {eth} after SoftAP coex fail")
+            s.info(f"STA /showbox/link via eth {eth} after SoftAP coex fail")
             code, body = http_get_retry(
-                f"http://{eth}/services", timeout=4.0, attempts=4, min_bytes=100, quiet=True
+                f"http://{eth}/api/v1/showbox/link", timeout=4.0, attempts=4, min_bytes=20, quiet=True
             )
     s.check(
-        "STA /services while SoftAP",
-        code == 200 and (b"ShowboxMod" in body or len(body) > 100),
+        "STA /showbox/link while SoftAP",
+        code == 200 and b'"ok"' in body,
         f"code={code} bytes={len(body)}",
     )
 
