@@ -53,7 +53,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          # pioarduino/platform-espressif32 rejects 3.15+ ("must be 3.10–3.14").
+          python-version: '3.12'
 
       - name: Install PlatformIO
         run: pip install platformio
@@ -124,10 +125,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p firmware/${{ steps.semantic_release.outputs.new_release_tag }}
-          mv .pio/build/*/sbxm-firmware-*.bin firmware/${{ steps.semantic_release.outputs.new_release_tag }}/
+          TAG="${{ steps.semantic_release.outputs.new_release_tag }}"
+          mkdir -p "firmware/${TAG}"
+          mapfile -t BINS < <(find .pio/build -type f -name 'sbxm-firmware-*.bin' | sort)
+          if [ ${#BINS[@]} -eq 0 ]; then
+            echo "No sbxm-firmware-*.bin under .pio/build — merge_bin post-action failed?"
+            find .pio/build -type f -name '*.bin' | head -50
+            exit 1
+          fi
+          mv "${BINS[@]}" "firmware/${TAG}/"
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add firmware/${{ steps.semantic_release.outputs.new_release_tag }}
+          git add "firmware/${TAG}"
           git commit --amend --no-edit
           git push --force origin gh-pages

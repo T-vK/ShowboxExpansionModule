@@ -1,52 +1,33 @@
 Import("env")
 from os.path import join, exists
+from shutil import copyfile
 import sys
 
 def after_build(source, target, env):
+    """Publish sbxm-firmware-<env>.bin for GitHub release / gh-pages.
+
+    pioarduino already merges bootloader+partitions+boot_app0+firmware into
+    firmware.factory.bin at the board's real app offset. Calling esptool.py
+    again broke CI on tool-esptoolpy 5.4 (ModuleNotFoundError: rich_click)
+    and used a stale 0x10000 app offset (this board's app0 is 0x20000).
+    """
     env_name = env.get("PIOENV")
-    flash_size = env.BoardConfig().get("upload.flash_size", "4MB")
-    flash_mode = env["__get_board_flash_mode"](env)
-    flash_freq = env["__get_board_f_flash"](env)
-    chip_type = env.get("BOARD_MCU")
-
-    # Check if all necessary variables are set
-    if not all([env_name, flash_size, flash_mode, flash_freq, chip_type]):
-        print("Error: One or more necessary variables are not set.")
+    if not env_name:
+        print("Error: PIOENV is not set.")
         sys.exit(1)
 
-    # Define paths to necessary files
-    firmware_path = join(env.subst("$BUILD_DIR"), "firmware.bin")
-    bootloader_path = join(env.subst("$BUILD_DIR"), "bootloader.bin")
-    partitions_path = join(env.subst("$BUILD_DIR"), "partitions.bin")
-    boot_app0_path = join(env.subst("$PROJECT_PACKAGES_DIR"), "framework-arduinoespressif32", "tools", "partitions", "boot_app0.bin")
-    merged_firmware_path = join(env.subst("$BUILD_DIR"), f"sbxm-firmware-{env_name}.bin")
+    build_dir = env.subst("$BUILD_DIR")
+    factory_path = join(build_dir, "firmware.factory.bin")
+    merged_firmware_path = join(build_dir, f"sbxm-firmware-{env_name}.bin")
 
-    # Check for the existence of necessary files
-    if not all(exists(path) for path in [firmware_path, bootloader_path, partitions_path, boot_app0_path]):
-        print(f"Error: One or more required files for environment {env_name} are missing.")
+    if not exists(factory_path):
+        print(f"Error: missing factory image {factory_path}")
         sys.exit(1)
 
-    # Prepare the esptool command
-    esptool_command = (
-        f"esptool.py --chip {chip_type} "
-        f"merge_bin -o {merged_firmware_path} "
-        f"--flash_mode {flash_mode} --flash_freq {flash_freq} --flash_size {flash_size} "
-        f"0x0000 {bootloader_path} "
-        f"0x8000 {partitions_path} "
-        f"0xe000 {boot_app0_path} "
-        f"0x10000 {firmware_path}"
-    )
-    
-    # Print the command before executing
-    print("Executing command:", esptool_command)
-
-    # Execute the merge command
-    env.Execute(esptool_command)
+    copyfile(factory_path, merged_firmware_path)
+    if not exists(merged_firmware_path):
+        print(f"Error: failed to write {merged_firmware_path}")
+        sys.exit(1)
+    print(f"Release image: {merged_firmware_path}")
 
 env.AddPostAction("buildprog", after_build)
-
-# Dump global construction environment (for debug purpose)
-#print(env.Dump())
-
-# Dump project construction environment (for debug purpose)
-#print(projenv.Dump())

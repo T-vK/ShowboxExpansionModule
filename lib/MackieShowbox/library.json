@@ -1,0 +1,7 @@
+{
+  "name": "MackieShowbox",
+  "version": "1.0.0",
+  "description": "Showbox UART protocol + entity cache (depends on UARTInterceptor)",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

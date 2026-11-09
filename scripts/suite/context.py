@@ -611,22 +611,90 @@ class Suite:
     def ensure_rtp(self) -> None:
         if self.rtp is not None:
             return
+        import os
+        import urllib.parse
+        import urllib.request
+
         from suite.rtp_midi import RtpMidi
 
-        last = "AppleMIDI connect failed"
-        for _attempt in range(3):
-            rtp = RtpMidi(self.ip)
+        # Dual-homed fixture: AsyncUDP AppleMIDI often answers on eth
+        # (SHOWBOX_ETH) while STA HTTP still works — try both.
+        eth = os.environ.get("SHOWBOX_ETH", "192.168.3.234").strip()
+        targets = [self.ip]
+        if eth and eth != self.ip:
+            targets.append(eth)
+
+        def _try_targets() -> str:
+            last_err = "AppleMIDI connect failed"
+            for target in targets:
+                for _attempt in range(3):
+                    rtp = RtpMidi(target)
+                    try:
+                        detail = rtp.connect()
+                        self.rtp = rtp
+                        self.info(f"AppleMIDI session {detail} via {target}")
+                        return ""
+                    except Exception as exc:
+                        last_err = f"{target}: {exc}"
+                        try:
+                            rtp.close()
+                        except Exception:
+                            pass
+            return last_err
+
+        last = _try_targets()
+        if not last:
+            return
+        # Invite-NO usually means peer slots stuck after a leaked session.
+        # One soft reboot clears AppleMIDI state on this baseline tag.
+        if " got NO" in last or last.endswith("NO"):
+            self.info(f"AppleMIDI stuck ({last}); soft-reboot to flush peers")
             try:
-                detail = rtp.connect()
-                self.rtp = rtp
-                self.info(f"AppleMIDI session {detail}")
-                return
+                body = urllib.parse.urlencode({"cmd": "reboot"}).encode()
+                urllib.request.urlopen(
+                    urllib.request.Request(f"http://{self.ip}/api/v1/console", data=body),
+                    timeout=3,
+                )
             except Exception as exc:
-                last = str(exc)
+                self.info(f"reboot post: {exc}")
+            end = time.monotonic() + 75.0
+            up = False
+            while time.monotonic() < end:
+                if ping_ok(self.ip):
+                    code, body = http_get(f"http://{self.ip}/api/v1/showbox/link", timeout=1.5)
+                    if code == 200 and body:
+                        up = True
+                        break
+                time.sleep(1.0)
+            if not up:
+                raise CaseFail(f"{last}; reboot did not return")
+            # WS + BLE host die across reboot.
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+            self.ws = LiveWs(self.ip)
+            self.ws.start()
+            if getattr(self.args, "keep_host", True):
                 try:
-                    rtp.close()
-                except Exception:
-                    pass
+                    import check_features as cf
+
+                    addr = self.module_addr or cf.bt_find_showbox()
+                    if addr:
+                        self.module_addr = addr
+                        session = self.session or cf.Session(self.ip, self.host, STALE_MS)
+                        self.session = session
+                        cf.laptop_open_ads(session)
+                        if not cf.bt_connected(addr):
+                            ok, how = cf.laptop_pair(addr, session)
+                            self.info(f"post-reboot host pair {ok} {how}")
+                        else:
+                            cf.laptop_bond_connect(addr, session)
+                except Exception as exc:
+                    self.info(f"post-reboot host revive: {exc}")
+            last = _try_targets()
+            if not last:
+                return
         raise CaseFail(last)
 
     def send_cc(self, number: int, value: int = 127) -> None:

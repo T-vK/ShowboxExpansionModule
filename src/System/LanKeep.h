@@ -5,10 +5,12 @@
 class MackieShowbox;
 class FrontPanel;
 class MultiMidi;
+class CaptivePortal;
 
 void lanKeepMdns();
 void lanQueueMdnsRefresh();
 void lanSetMultiMidi(MultiMidi* mm);
+void lanSetCaptivePortal(CaptivePortal* portal);
 void lanPreferWifiAirtime();
 void lanPreferWifiWithBle();
 void lanRefreshPhy();
@@ -47,6 +49,14 @@ void lanTickHttpHealth();
 // after a failed rebind (EADDRINUSE / -8 while the listen list looks empty).
 void lanReleaseHttpPort();
 void lanNoteApActive(bool on);
+// SoftAP torn down outside CaptivePortal. Portal clears apUp and retries.
+// kind: 1 = HTTP wedge (long backoff), 2 = yield for STA SPA TX (short).
+void lanNoteApForcedDown();
+void lanNoteApYieldForStaTx();
+uint8_t lanTakeApForcedDown();
+// Drop a live BLE host before softAP() so SoftAP+STA does not wedge HTTP.
+// Returns true when a host was dropped (caller should brief-delay then continue).
+bool lanYieldBleForSoftAp();
 // Quiet LanKeep's WiFi.reconnect() while WiFi.begin() is associating.
 void lanNoteStaJoin(uint32_t quietMs = 20000);
 bool lanStaJoinQuiet();

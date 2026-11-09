@@ -7,6 +7,7 @@
 #include "DebugLog.h"
 #include "System/Diag.h"
 #include "MultiMidi/MultiMidi.h"
+#include "CaptivePortal/CaptivePortal.h"
 
 // UART-safe restart: the Showbox base wedges when the module reboots
 // mid-transaction (blind watchdog reboots soft-bricked it repeatedly on
@@ -44,6 +45,8 @@ extern "C" {
 #include "lwip/priv/tcp_priv.h"
 #include "lwip/tcpip.h"
 }
+
+static void lanDropSoftApForSta(uint8_t kind);
 
 volatile bool gMdnsUp = false;
 volatile bool gSetupDone = false;
@@ -506,6 +509,15 @@ void lanNoteBigHttp(bool on) {
     if (on) {
         __atomic_add_fetch(&bigHttpBodies, 1, __ATOMIC_RELAXED);
         lanNoteHttpBody(true);
+        // SoftAP beacons steal STA TX under SoftAP+STA (+BLE). Loopback
+        // HTTP probes still pass, so the wedge path never drops SoftAP —
+        // home-LAN SPA / Range resumes stall at bytes=0. Yield SoftAP when
+        // nobody is joined to the hotspot; CaptivePortal brings it back.
+        if (WiFi.softAPIP()[0] != 0 && WiFi.softAPgetStationNum() == 0) {
+            diagEventForce("http", "big body: SoftAP yield (0 stations)");
+            debugLog("big http: SoftAP yield for STA TX");
+            lanDropSoftApForSta(2);
+        }
         return;
     }
     int n = __atomic_add_fetch(&bigHttpBodies, -1, __ATOMIC_RELAXED);
@@ -982,6 +994,7 @@ static volatile int sGwZombieRejoins = 0;
 // zombie mode is coex starvation, and with the pedal gone the gateway
 // answers again without any re-association.
 static MultiMidi* sMultiMidi = nullptr;
+static CaptivePortal* sPortal = nullptr;
 static int assocFails = 0;
 static uint32_t lastAssocTryMs = 0;
 static bool bleYieldForWifi = false;
@@ -989,6 +1002,29 @@ static uint32_t bleYieldHealthyMs = 0;
 
 void lanSetMultiMidi(MultiMidi* mm) {
     sMultiMidi = mm;
+}
+
+void lanSetCaptivePortal(CaptivePortal* portal) {
+    sPortal = portal;
+}
+
+// SoftAP teardown belongs to CaptivePortal (clears apUp latch + DNS).
+static void lanDropSoftApForSta(uint8_t kind) {
+    if (sPortal != nullptr) {
+        sPortal->dropApForSta(kind);
+        return;
+    }
+    if (WiFi.softAPIP()[0] == 0) {
+        return;
+    }
+    WiFi.softAPdisconnect(false);
+    WiFi.mode(WIFI_STA);
+    lanNoteApActive(false);
+    if (kind == 2) {
+        lanNoteApYieldForStaTx();
+    } else {
+        lanNoteApForcedDown();
+    }
 }
 
 static void lanYieldBleForAssoc(const char* why, int failCount) {
@@ -1072,6 +1108,47 @@ void lanNoteApActive(bool on) {
         }
         debugLog("ap stopped: BLE host released");
     }
+}
+
+bool lanYieldBleForSoftAp() {
+    lanPreferWifiAirtime();
+    if (sMultiMidi == nullptr || !sMultiMidi->hostConnected()) {
+        return false;
+    }
+    // dropHostLink() can leave hostConnected() true for a few hundred ms.
+    // Yield once, then let softAP proceed — otherwise SoftAP is deferred
+    // forever after SoftAP reclaim under a sticky hostConnected().
+    static uint32_t lastYieldMs = 0;
+    if (lastYieldMs != 0 && (int32_t)(millis() - lastYieldMs) < 8000) {
+        return false;
+    }
+    lastYieldMs = millis();
+    apYieldForAp = true;
+    apYieldSinceMs = millis();
+    sMultiMidi->dropHostLink();
+    sMultiMidi->allowOutgoing(false);
+    diagEventForce("wifi", "SoftAP bring-up: BLE host yielded first");
+    debugLog("ap: yield BLE host before softAP");
+    return true;
+}
+
+static uint8_t sApForcedDown = 0;
+
+void lanNoteApForcedDown() {
+    sApForcedDown = 1;
+}
+
+void lanNoteApYieldForStaTx() {
+    // Prefer yield over wedge if both race; short SoftAP retry is fine.
+    if (sApForcedDown != 1) {
+        sApForcedDown = 2;
+    }
+}
+
+uint8_t lanTakeApForcedDown() {
+    uint8_t kind = sApForcedDown;
+    sApForcedDown = 0;
+    return kind;
 }
 
 static void lanBleApTick() {
@@ -1206,9 +1283,15 @@ void lanGwPingTick() {
             return;
         }
         // ~8 s of gateway silence: coex starvation is real and only gets
-        // worse. Yield now — no WiFi churn, no rejoin, no restart.
+        // worse. SoftAP beacons often starve STA TX too — drop SoftAP first
+        // (0-station hotspot), then yield BLE. No WiFi rejoin/restart.
         sGwMisses = 0;
         zombieSinceMs = 0;
+        if (WiFi.softAPIP()[0] != 0) {
+            diagEventForce("wifi", "gateway zombie with SoftAP — drop SoftAP");
+            debugLog("wifi zombie SoftAP drop");
+            lanDropSoftApForSta(1);
+        }
         lanYieldBleForAssoc("gateway zombie", 1);
         return;
     }
@@ -1357,6 +1440,19 @@ void lanTickHttpHealth() {
         return;
     }
     sHttpProbeFails++;
+    // SoftAP+STA (+BLE) is the usual way showbox.local dies: loopback probe
+    // fails or remote bodies stall while SoftAP is up. Drop SoftAP first so
+    // STA TX recovers; CaptivePortal will retry SoftAP on its backoff.
+    if (sHttpProbeFails >= 2 && WiFi.softAPIP()[0] != 0) {
+        diagEventForce("http", "wedge with SoftAP up — drop SoftAP to restore STA HTTP");
+        debugLog("http probe fail=%d with SoftAP — CaptivePortal drop", sHttpProbeFails);
+        // CaptivePortal::dropApForSta clears apUp so ensureAp can softAP() again.
+        lanDropSoftApForSta(1);
+        sHttpProbeFails = 0;
+        sHttpRebound = false;
+        sHttpProbeMs = millis();
+        return;
+    }
     if (lanWsClients() > 0) {
         // Loopback GET can miss under BLE coex while /ws is still live.
         // webServer.end() would leak that client (~3 KB internal).

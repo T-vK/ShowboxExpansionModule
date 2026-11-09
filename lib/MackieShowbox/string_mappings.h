@@ -4,9 +4,10 @@
 
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <Arduino.h>
 #include "constants.h"
-#include "MackieShowbox/MackieShowbox.h"
+// Do not include MackieShowbox.h here — that header includes this file (cycle).
 
 extern std::unordered_map<packet_type, std::string> packet_type_to_string;
 extern std::unordered_map<entity_data_type, std::string> entity_data_type_to_string;

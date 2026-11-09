@@ -18,6 +18,10 @@
 #include "RestApiRouter/RestApiRouter.h"
 #include "Connections/Connections.h"
 #include "MultiMidi/MultiMidi.h"
+#include "MultiMidi/MidiInbound.h"
+#include "MultiMidi/LanCoex.h"
+#include "MultiMidi/AppHooks.h"
+#include "MackieShowbox/ShowboxLog.h"
 #include <BleRadio.h>
 #include "XtouchCompactAdapter/XtouchCompactAdapter.h"
 #include "FrontPanel/FrontPanel.h"
@@ -67,6 +71,24 @@ CaptivePortal captivePortal;
 bool btRadioOn = true;
 bool wifiRadioOn = true;
 constexpr const char* kBleName = "ShowboxMod";
+
+// App-side coexistence adapter — MultiMidi/BleMidi must not include LanKeep.
+static const LanCoex kLanCoex = {
+    lanNoteBleLive,
+    lanPreferWifiWithBle,
+    lanWsLive,
+    lanHoldMidi,
+    lanHttpQuietMs,
+    httpsHoldOutgoing,
+    lanKickArp,
+    lanRecoverUnicast,
+    lanRestoreBleSleepIfIdle,
+};
+
+static const MidiAppHooks kMidiAppHooks = {
+    lanHasIp,
+    diagNoteMidiOut,
+};
 
 void applyDebugSettings(bool history, bool packets) {
     ubfw.setWifiLogHistory(history);
@@ -177,6 +199,8 @@ void setup() {
     usbStartSelected();
 
     Debug->println("[ INFO ] Initializing Showbox...");
+    showboxSetLog(debugLog);
+    showboxSetDiag(diagEvent, diagEventForce);
     showbox.setDebugSerial(Debug);
     showbox.begin();
     Debug->println("[  OK  ] Showbox UART is forwarding.");
@@ -187,11 +211,14 @@ void setup() {
     restApiRouter.setConnections(&connections);
     restApiRouter.setActions(&actionRules);
     restApiRouter.setLiveSocket(&liveSocket);
+    restApiRouter.setBleRadio(&bleRadio);
     restApiRouter.setCaptivePortal(&captivePortal);
     restApiRouter.setup();
     liveSocket.setConnections(&connections);
     liveSocket.begin(&webServer, &showbox);
+    actionRules.setLiveSocket(&liveSocket);
     captivePortal.begin(&webServer, &ubfw);
+    lanSetCaptivePortal(&captivePortal);
     lanKeepMdns();
     debugLog("routes heap=%u largest=%u mdns=%d",
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -203,6 +230,9 @@ void setup() {
     bleRadio.setName(kBleName);
     multiMidi.setDebugSerial(Debug);
     multiMidi.setRadio(&bleRadio);
+    multiMidi.setCoex(&kLanCoex);
+    multiMidi.setAppHooks(&kMidiAppHooks);
+    midiInboundSetRules(actionRulesOnMidi);
     multiMidi.setEthernetPins(W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_nSS, W5500_nRESET);
     lanSetMultiMidi(&multiMidi);
     connections.attach(&multiMidi, &bleRadio, &hid);

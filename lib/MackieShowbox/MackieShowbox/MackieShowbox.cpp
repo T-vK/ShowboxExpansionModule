@@ -1,8 +1,7 @@
 #define SHOWBOX_DEBUG
 
 #include "MackieShowbox.h"
-#include "DebugLog.h"
-#include "System/Diag.h"
+#include "ShowboxLog.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_heap_caps.h>
@@ -146,7 +145,7 @@ void MackieShowbox::begin() {
         parseQ = static_cast<ParseItem*>(calloc(kParseQ, sizeof(ParseItem)));
     }
     if (parseQ == nullptr) {
-        debugLog("uart parse queue alloc failed");
+        showboxLog("uart parse queue alloc failed");
     }
     loadAnalogHold();
     uint8_t startSig[] = {0xBE, 0xEF};
@@ -203,7 +202,7 @@ void MackieShowbox::begin() {
                 }
             } else if (t == DATA_REQUEST && fromMixer) {
                 reqMix = reqMix + 1;
-                debugLog("uart DATA_REQUEST from mixer len=%u %02X %02X %02X %02X %02X %02X",
+                showboxLog("uart DATA_REQUEST from mixer len=%u %02X %02X %02X %02X %02X %02X",
                     (unsigned)length,
                     length > 0 ? packet[0] : 0, length > 1 ? packet[1] : 0,
                     length > 2 ? packet[2] : 0, length > 3 ? packet[3] : 0,
@@ -217,7 +216,7 @@ void MackieShowbox::begin() {
     // 255 payload + 7 header/trailer. 256 used to drop the longest dumps.
     interceptor.begin(baseRx, baseTx, mixerRx, mixerTx, 115200, 115200, 288, 288);
     uartStarted = true;
-    debugLog("uart begin heap=%u largest=%u pend=%u ring=%u hold=%u fifo1=%u fifo2=%u int1=%08x int2=%08x",
+    showboxLog("uart begin heap=%u largest=%u pend=%u ring=%u hold=%u fifo1=%u fifo2=%u int1=%08x int2=%08x",
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)interceptor.pendingCap(),
@@ -230,13 +229,13 @@ void MackieShowbox::begin() {
     if (xTaskCreatePinnedToCore(MackieShowbox::uartTask, "showbox-uart", 8192, this, 20, &uartTaskHandle, 1) != pdPASS) {
         uartTaskRunning = false;
         uartTaskHandle = nullptr;
-        debugLog("uartTask create FAILED heap=%u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        showboxLog("uartTask create FAILED heap=%u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         if (Debug != nullptr) {
             Debug->println("Showbox UART task failed; pass-through stays on the main loop");
         }
     } else {
         uartTaskRunning = true;
-        debugLog("uartTask ok handle=%p", (void*)uartTaskHandle);
+        showboxLog("uartTask ok handle=%p", (void*)uartTaskHandle);
         if (Debug != nullptr) {
             Debug->println("Showbox UART pass-through is on core 1");
         }
@@ -831,9 +830,9 @@ void MackieShowbox::wireUnplug(uint32_t ms) {
     if (!uartStarted) {
         return;
     }
-    diagEventForce("uart", "wire unplug %u ms (baseAge=%u hbAge=%u)",
+    showboxDiagForce("uart", "wire unplug %u ms (baseAge=%u hbAge=%u)",
         (unsigned)ms, (unsigned)baseAgeMs(), (unsigned)heartbeatAgeMs());
-    debugLog("uart wire unplug %ums baseAge=%u", (unsigned)ms, (unsigned)baseAgeMs());
+    showboxLog("uart wire unplug %ums baseAge=%u", (unsigned)ms, (unsigned)baseAgeMs());
     interceptor.wireUnplug(ms);
 }
 
@@ -921,7 +920,7 @@ void MackieShowbox::restoreMixerEntities() {
     }
     if (n > 0) {
         restoreCount = restoreCount + 1;
-        debugLog("CRITICAL uart restored %u mixer entities after base ALL_ENTITIES", (unsigned)n);
+        showboxLog("CRITICAL uart restored %u mixer entities after base ALL_ENTITIES", (unsigned)n);
     }
 }
 
@@ -1025,7 +1024,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
         }
         // Track which side confirms SD packets: BE EF 01 01 00 1E EF BE.
         if (raw_packet[5] == SD_CARD_EVENT && Debug != nullptr) {
-            debugLog("uart SD-ACK[%s]", direction == TO_MIXER ? "to-mixer" : "to-base");
+            showboxLog("uart SD-ACK[%s]", direction == TO_MIXER ? "to-mixer" : "to-base");
         }
     } else if (packetType == BATTERY_LEVEL) {
         // Value form is BE EF 08 16 .. <float at offset 9> EF BE. The short form has no float.
@@ -1075,7 +1074,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             }
         }
         if (Debug != nullptr) {
-            debugLog("uart SD[%s] len=%u %02X %02X %02X %02X %02X %02X %02X %02X -> st=%u",
+            showboxLog("uart SD[%s] len=%u %02X %02X %02X %02X %02X %02X %02X %02X -> st=%u",
                 direction == TO_MIXER ? "to-mixer" : "to-base",
                 (unsigned)length,
                 length > 0 ? raw_packet[0] : 0, length > 1 ? raw_packet[1] : 0,
@@ -1190,7 +1189,7 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
             for (size_t i = 0; i < length && hexN + 3 < sizeof(hex); i++) {
                 hexN += static_cast<size_t>(snprintf(hex + hexN, sizeof(hex) - hexN, "%s%02X", i ? " " : "", raw_packet[i]));
             }
-            diagEventForce("uart", "%s packet: %s",
+            showboxDiagForce("uart", "%s packet: %s",
                 direction == TO_MIXER ? "BASE->MIXER" : "MIXER->BASE", hex);
         }
     }
@@ -1341,7 +1340,7 @@ void MackieShowbox::tick() {
         lastDumpReqMs = 0;
         dumpLinkLost = false;
         dumpUnplugDone = false;
-        debugLog("uart dump retry after link restore initM=%u initB=%u dumpSeq=%u",
+        showboxLog("uart dump retry after link restore initM=%u initB=%u dumpSeq=%u",
             (unsigned)initMix, (unsigned)initBase, (unsigned)dumpGen);
     }
     dumpLinkLive = live;
@@ -1359,11 +1358,11 @@ void MackieShowbox::tick() {
             // and the full entity dump follows. Do this once.
             if (dumpGen == 0 && dumpTries >= 6 && !dumpUnplugDone) {
                 dumpUnplugDone = true;
-                debugLog("uart dump never arrived after %u tries, mixer re-init via wire unplug", (unsigned)dumpTries);
+                showboxLog("uart dump never arrived after %u tries, mixer re-init via wire unplug", (unsigned)dumpTries);
                 interceptor.wireUnplug(3000);
             }
             requestMixerDump();
-            debugLog("uart request mixer dump try=%u initM=%u initB=%u dumpSeq=%u batt=%u",
+            showboxLog("uart request mixer dump try=%u initM=%u initB=%u dumpSeq=%u batt=%u",
                 (unsigned)dumpTries, (unsigned)initMix, (unsigned)initBase,
                 (unsigned)dumpGen, batteryHeard ? 1u : 0u);
         }
@@ -1382,14 +1381,14 @@ void MackieShowbox::tick() {
     static uint32_t lastFrmM = 0;
     static uint32_t lastInitM = 0;
     if (initMix != lastInitM && lastInitM != 0) {
-        debugLog("CRITICAL uart mixer re-init initM=%u->%u initB=%u hbM=%u hbB=%u",
+        showboxLog("CRITICAL uart mixer re-init initM=%u->%u initB=%u hbM=%u hbB=%u",
             (unsigned)lastInitM, (unsigned)initMix, (unsigned)initBase,
             (unsigned)hbMix, (unsigned)hbBase);
     }
     lastInitM = initMix;
     if (dropB != lastDropB || dropM != lastDropM || ovfB != lastOvfB || ovfM != lastOvfM
         || frmB != lastFrmB || frmM != lastFrmM) {
-        debugLog("CRITICAL uart dropB=%u->%u dropM=%u->%u ovfB=%u->%u ovfM=%u->%u frmB=%u->%u frmM=%u->%u ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u cap=%u",
+        showboxLog("CRITICAL uart dropB=%u->%u dropM=%u->%u ovfB=%u->%u ovfM=%u->%u frmB=%u->%u frmM=%u->%u ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u cap=%u",
             (unsigned)lastDropB, (unsigned)dropB,
             (unsigned)lastDropM, (unsigned)dropM,
             (unsigned)lastOvfB, (unsigned)ovfB,
@@ -1430,13 +1429,13 @@ void MackieShowbox::tick() {
             if (gracePassed && baseSilent && wedgeUnplugs < 3) {
                 wedgeSinceMs = now;
                 wedgeStage = 1;
-                diagEvent("uart", "wedge suspected, base silent %u ms",
+                showboxDiag("uart", "wedge suspected, base silent %u ms",
                     baseAgeMs() == 0xFFFFFFFFu ? 0u : (unsigned)baseAgeMs());
             }
         } else if (baseAgeMs() < 2000) {
             wedgeStage = 0;
             wedgeUnplugs = 0;
-            diagEventForce("uart", "wedge cleared after stage %u", (unsigned)wedgeStage);
+            showboxDiagForce("uart", "wedge cleared after stage %u", (unsigned)wedgeStage);
         } else {
             const uint32_t held = now - wedgeSinceMs;
             if (wedgeStage == 1 && held >= 6000) {
@@ -1445,7 +1444,7 @@ void MackieShowbox::tick() {
                 interceptor.sendPacket(hb, sizeof(hb), TO_BASE);
                 uint8_t req[] = { 0xBE, 0xEF, 0x00, DATA_REQUEST, ALL_ENTITIES, 0xEF, 0xBE };
                 interceptor.sendPacket(req, sizeof(req), TO_BASE);
-                diagEvent("uart", "wedge nudge packets sent (base silent %u ms)", (unsigned)held);
+                showboxDiag("uart", "wedge nudge packets sent (base silent %u ms)", (unsigned)held);
             }
             if (wedgeStage == 2 && held >= 14000
                 && (wedgeLastAtMs == 0 || (int32_t)(now - wedgeLastAtMs) > 25000)) {
@@ -1463,8 +1462,8 @@ void MackieShowbox::tick() {
                     // 5 min backoff never stuck and HTTP/listen died in a
                     // loop. Sit idle with the UART attached; a stable idle
                     // line is what eventually lets the base parser resync.
-                    diagEvent("uart", "wire unplug failed %u times, holding idle", (unsigned)wedgeUnplugs);
-                    debugLog("uart wedge: idle hold after %u unplug rounds (no module restart)", (unsigned)wedgeUnplugs);
+                    showboxDiag("uart", "wire unplug failed %u times, holding idle", (unsigned)wedgeUnplugs);
+                    showboxLog("uart wedge: idle hold after %u unplug rounds (no module restart)", (unsigned)wedgeUnplugs);
                     wedgeStage = 0;
                     wedgeUnplugs = 4;
                 } else {
@@ -1479,7 +1478,7 @@ void MackieShowbox::tick() {
     }
     if (lastLog == 0 || (int32_t)(now - lastLog) >= 5000) {
         lastLog = now;
-        debugLog("uart rxB=%u rxM=%u cutB=%u cutM=%u fifo1=%u fifo2=%u int1=%08x int2=%08x raw1=%08x raw2=%08x ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u dropB=%u dropM=%u ovfB=%u ovfM=%u frmB=%u frmM=%u initM=%u initB=%u hbM=%u hbB=%u heap=%u largest=%u",
+        showboxLog("uart rxB=%u rxM=%u cutB=%u cutM=%u fifo1=%u fifo2=%u int1=%08x int2=%08x raw1=%08x raw2=%08x ringB=%u ringM=%u holdB=%u holdM=%u pendB=%u pendM=%u dropB=%u dropM=%u ovfB=%u ovfM=%u frmB=%u frmM=%u initM=%u initB=%u hbM=%u hbB=%u heap=%u largest=%u",
             (unsigned)interceptor.rxFrom1(),
             (unsigned)interceptor.rxFrom2(),
             (unsigned)interceptor.cutThroughFrom1(),

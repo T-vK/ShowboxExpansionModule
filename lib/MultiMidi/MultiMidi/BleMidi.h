@@ -8,6 +8,7 @@
 #include "MidiAction.h"
 #include "MultiMidi/BleMidiDecode.h"
 #include "MultiMidi/BleMidiHostPolicy.h"
+#include "MultiMidi/LanCoex.h"
 
 class BleRadio;
 class BLERemoteCharacteristic;
@@ -49,6 +50,7 @@ public:
 
     void setPolicy(BleMidiHostPolicy* connectPolicy);
     void setRadio(class BleRadio* bleRadio);
+    void setCoex(const LanCoex* hooks);
     void setAdvertising(bool enabled);
     void setCentral(bool enabled);
     void setAutoConnect(bool enabled);
@@ -117,6 +119,7 @@ private:
     Print* Debug = &Serial;
     BleMidiHostPolicy* policy = nullptr;
     BleRadio* radio = nullptr;
+    const LanCoex* coex = nullptr;
     struct OutgoingLink {
         BLEClient* client = nullptr;
         BLERemoteCharacteristic* characteristic = nullptr;

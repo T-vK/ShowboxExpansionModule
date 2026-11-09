@@ -9,11 +9,16 @@ class MackieShowbox;
 class Connections;
 class Hid;
 class FrontPanel;
+class LiveSocket;
 
 class ActionRules {
 public:
     void begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections* connectionsIn, Hid* hidIn = nullptr);
+    void setLiveSocket(LiveSocket* socket);
     void setFrontPanel(FrontPanel* panelIn);
+    // Showbox UART listeners are free functions; they forward WS pushes here.
+    void notifyLiveEntity(const char* name, const char* value);
+    void notifyLiveLink(bool flushMixer = false);
     void setVariable(const char* name, float value);
     void setDebugSerial(Print* serial);
     void tick();
@@ -126,6 +131,7 @@ private:
     Connections* connections = nullptr;
     Hid* hid = nullptr;
     FrontPanel* panel = nullptr;
+    LiveSocket* live = nullptr;
     Print* debug = nullptr;
     StoredVar globals[24] = {};
     uint8_t globalCount = 0;

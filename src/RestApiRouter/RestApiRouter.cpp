@@ -21,7 +21,6 @@
 
 extern volatile bool gMdnsUp;
 extern volatile bool gSetupDone;
-extern BleRadio bleRadio;
 
 static const AsyncWebParameter* findParam(AsyncWebServerRequest* request, const char* name) {
     if (request->hasParam(name)) {
@@ -516,6 +515,10 @@ void RestApiRouter::setActions(ActionRules* actions) {
 
 void RestApiRouter::setLiveSocket(LiveSocket* socket) {
     _live = socket;
+}
+
+void RestApiRouter::setBleRadio(BleRadio* radio) {
+    _bleRadio = radio;
 }
 
 void RestApiRouter::setCaptivePortal(CaptivePortal* portal) {
@@ -1231,12 +1234,20 @@ void RestApiRouter::setup() {
         sendJsonChunked(request, body, static_cast<size_t>(n));
     });
 
-    _server->on("/api/v1/debug/iso", HTTP_GET, [](AsyncWebServerRequest* request) {
+    _server->on("/api/v1/debug/iso", HTTP_GET, [this](AsyncWebServerRequest* request) {
         char body[96];
+        int links = 0;
+        unsigned itvl = 0;
+        bool adv = false;
+        unsigned advItvl = 0;
+        if (_bleRadio != nullptr) {
+            links = _bleRadio->gapLinkCount();
+            itvl = (unsigned)_bleRadio->minConnInterval();
+            adv = _bleRadio->advertising();
+            advItvl = (unsigned)_bleRadio->advInterval();
+        }
         snprintf(body, sizeof(body), "{\"iso\":%d,\"n\":%d,\"itvl\":%u,\"adv\":%s,\"advItvl\":%u}",
-            gIso, bleRadio.gapLinkCount(), (unsigned)bleRadio.minConnInterval(),
-            bleRadio.advertising() ? "true" : "false",
-            (unsigned)bleRadio.advInterval());
+            gIso, links, itvl, adv ? "true" : "false", advItvl);
         request->send(200, "application/json", body);
     });
 
@@ -1550,6 +1561,8 @@ void RestApiRouter::setup() {
                 continue;
             }
             any = true;
+            // Queue only — setOption/NVS/waitQuiet must run on loop task
+            // (AsyncTCP callbacks deadlock or time out on Preferences).
             _connections->queueOption(name, enabled);
         }
         if (!any) {

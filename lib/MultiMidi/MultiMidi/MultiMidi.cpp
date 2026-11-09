@@ -1,10 +1,10 @@
 #include "MultiMidi.h"
-#include "../System/Diag.h"
 #include "UsbMidiHost.h"
 #include "MultiMidi/BleMidiDecode.h"
 #include "MultiMidi/FullMidiParser.h"
-#include "Actions/ActionRules.h"
-#include "DebugLog.h"
+#include "MultiMidi/AppHooks.h"
+// debugLog provided by app (DebugLog.cpp)
+void debugLog(const char* fmt, ...);
 #include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -13,7 +13,6 @@
 #include <ETH.h>
 #include <ESPmDNS.h>
 #include <AsyncUDP.h>
-#include "WiredNet/WiredNet.h"
 #include <esp_heap_caps.h>
 
 namespace {
@@ -40,6 +39,7 @@ FullMidiParser appleParser;
 volatile bool appleParsing = false;
 volatile uint8_t appleInData = 0;
 const char* inboundSourceName = "ext";
+MidiRulesFn inboundRulesFn = nullptr;
 
 void enqueueApplePkt(AsyncUDPPacket& packet, uint8_t isData) {
     if (appleQ == nullptr) {
@@ -129,16 +129,35 @@ bool listenAppleMidi(uint16_t port, midi::MidiAction* midiAction) {
     appleQHead = 0;
     appleQTail = 0;
     appleParser.begin(midiAction, -1);
-    if (!appleControl.listen(port)) {
-        return false;
+    // Prefer STA bind when associated. INADDR_ANY + ethernet up left control
+    // invites to the STA IP unanswered (same dual-netif hole as mDNS :5353),
+    // while eth still answered — often with NO once peer slots leaked full.
+    IPAddress bindIp = WiFi.localIP();
+    if (bindIp[0] == 0 && ETH.hasIP()) {
+        bindIp = ETH.localIP();
     }
-    if (!appleData.listen(static_cast<uint16_t>(port + 1))) {
+    bool ok = false;
+    if (bindIp[0] != 0) {
+        ok = appleControl.listen(bindIp, port) && appleData.listen(bindIp, static_cast<uint16_t>(port + 1));
+    }
+    if (!ok) {
         appleControl.close();
+        appleData.close();
+        ok = appleControl.listen(port) && appleData.listen(static_cast<uint16_t>(port + 1));
+    }
+    if (!ok) {
+        appleControl.close();
+        appleData.close();
         return false;
     }
     appleControl.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 0); });
     appleData.onPacket([](AsyncUDPPacket& packet) { enqueueApplePkt(packet, 1); });
     applemidi_init(reinterpret_cast<void*>(appleMidiReceived), reinterpret_cast<void*>(appleMidiSend));
+    // Drop leaked sessions from prior suite runs that never sent BYE.
+    for (uint8_t i = 1; i < APPLEMIDI_MAX_PEERS; i++) {
+        applemidi_terminate_session(i);
+    }
+    debugLog("applemidi listen ip=%s port=%u", bindIp.toString().c_str(), (unsigned)port);
     return true;
 }
 
@@ -186,6 +205,10 @@ const char* midiInboundSource() {
 
 void midiInboundSetSource(const char* name) {
     inboundSourceName = (name != nullptr && name[0] != '\0') ? name : "ext";
+}
+
+void midiInboundSetRules(MidiRulesFn fn) {
+    inboundRulesFn = fn;
 }
 
 const char* midiKindFromStatus(uint8_t status) {    if (status >= 0xF0) {
@@ -241,7 +264,9 @@ void midiInboundDispatch(midi::MidiAction* action, uint8_t status, uint8_t p1, u
             return;
         }
     }
-    actionRulesOnMidi(midiKindFromStatus(status), channel, p1, p2);
+    if (inboundRulesFn != nullptr) {
+        inboundRulesFn(midiKindFromStatus(status), channel, p1, p2);
+    }
 }
 
 void MultiMidi::testDispatch(uint8_t status, uint8_t p1, uint8_t p2) {
@@ -422,6 +447,14 @@ void MultiMidi::setHostPolicy(BleMidiHostPolicy* policy) {
 
 void MultiMidi::setRadio(BleRadio* radio) {
     bleMidi.setRadio(radio);
+}
+
+void MultiMidi::setCoex(const LanCoex* hooks) {
+    bleMidi.setCoex(hooks);
+}
+
+void MultiMidi::setAppHooks(const MidiAppHooks* hooks) {
+    appHooks = hooks;
 }
 
 void MultiMidi::setEthernetPins(uint8_t sclk, uint8_t miso, uint8_t mosi, uint8_t cs, uint8_t reset) {
@@ -615,7 +648,7 @@ void MultiMidi::tryStartAppleMidi() {
     if (!appleMidiEnabled || appleMidiStarted) {
         return;
     }
-    if (!lanHasIp()) {
+    if (!midiAppHasIp(appHooks)) {
         return;
     }
     appleMidiStarted = listenAppleMidi(appleMidiPort, &action);
@@ -734,7 +767,7 @@ void MultiMidi::writeData(MidiMessage *msg, int len, uint16_t ports){
     if (msg == nullptr || len <= 0) {
         return;
     }
-    diagNoteMidiOut((size_t)len + 1);
+    midiAppNoteMidiOut(appHooks, (size_t)len + 1);
     if (midiPortWanted(ports, kMidiPortDin) && dinEnabled && serialStreamOut) {
         serialStreamOut->write(msg, len);
     }

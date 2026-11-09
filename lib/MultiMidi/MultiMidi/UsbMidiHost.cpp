@@ -1,15 +1,23 @@
 #include "UsbMidiHost.h"
 
+// debugLog provided by app (DebugLog.cpp)
+void debugLog(const char* fmt, ...);
 #include "MidiAction.h"
 #include "MidiCommon.h"
 #include "MultiMidi/FullMidiParser.h"
+#include <Arduino.h>
 #include <usb/usb_host.h>
+#include <usb/usb_types_stack.h>
+#include "esp_private/usb_phy.h"
 #include <cstring>
 
 namespace {
 bool started = false;
 bool deviceReady = false;
-char statusText[64] = "USB MIDI host is on. No MIDI device yet.";
+char statusText[160] = "USB MIDI host on — plug keyboard into module USB-C (powered hub if it needs 5V)";
+char deviceNameText[48] = "";
+uint32_t midiRxCount = 0;
+uint32_t midiLastRxMs = 0;
 usb_host_client_handle_t client = nullptr;
 usb_device_handle_t device = nullptr;
 usb_transfer_t* inTransfer = nullptr;
@@ -29,6 +37,53 @@ portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;
 FullMidiParser parser;
 bool parserReady = false;
 
+void utf16leToAscii(const usb_str_desc_t* str, char* out, size_t cap) {
+    if (out == nullptr || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (str == nullptr) {
+        return;
+    }
+    const uint8_t* raw = reinterpret_cast<const uint8_t*>(str);
+    const uint8_t length = raw[0];
+    if (length < 4) {
+        return;
+    }
+    const size_t chars = (length - 2) / 2;
+    size_t n = 0;
+    for (size_t i = 0; i < chars && n + 1 < cap; i++) {
+        uint16_t c = static_cast<uint16_t>(raw[2 + i * 2]) | (static_cast<uint16_t>(raw[3 + i * 2]) << 8);
+        if (c == 0) {
+            break;
+        }
+        out[n++] = (c >= 32 && c < 127) ? static_cast<char>(c) : '?';
+    }
+    out[n] = '\0';
+}
+
+void rememberDeviceName(usb_device_handle_t handle) {
+    deviceNameText[0] = '\0';
+    usb_device_info_t info = {};
+    if (usb_host_device_info(handle, &info) == ESP_OK) {
+        utf16leToAscii(info.str_desc_product, deviceNameText, sizeof(deviceNameText));
+        if (deviceNameText[0] == '\0') {
+            utf16leToAscii(info.str_desc_manufacturer, deviceNameText, sizeof(deviceNameText));
+        }
+    }
+    if (deviceNameText[0] != '\0') {
+        return;
+    }
+    const usb_device_desc_t* desc = nullptr;
+    if (usb_host_get_device_descriptor(handle, &desc) == ESP_OK && desc != nullptr) {
+        snprintf(deviceNameText, sizeof(deviceNameText), "USB MIDI %04X:%04X",
+            desc->idVendor, desc->idProduct);
+    } else {
+        strncpy(deviceNameText, "USB MIDI device", sizeof(deviceNameText) - 1);
+        deviceNameText[sizeof(deviceNameText) - 1] = '\0';
+    }
+}
+
 void pushMidi(const uint8_t* data, int len) {
     portENTER_CRITICAL(&queueMux);
     for (int i = 0; i < len; i++) {
@@ -40,6 +95,10 @@ void pushMidi(const uint8_t* data, int len) {
         queueHead = next;
     }
     portEXIT_CRITICAL(&queueMux);
+    if (len > 0) {
+        midiRxCount += static_cast<uint32_t>(len);
+        midiLastRxMs = millis();
+    }
 }
 
 int cinLength(uint8_t cin) {
@@ -167,15 +226,39 @@ bool findMidi(const usb_config_desc_t* config) {
 }
 
 void openDevice(uint8_t address) {
+    if (deviceReady || device != nullptr) {
+        debugLog("usb host: ignore addr %u (already have a device)", (unsigned)address);
+        return;
+    }
+    debugLog("usb host: open addr %u", (unsigned)address);
     if (usb_host_device_open(client, address, &device) != ESP_OK) {
         strncpy(statusText, "USB device did not open", sizeof(statusText) - 1);
+        device = nullptr;
         return;
+    }
+    rememberDeviceName(device);
+    const usb_device_desc_t* devDesc = nullptr;
+    if (usb_host_get_device_descriptor(device, &devDesc) == ESP_OK && devDesc != nullptr) {
+        debugLog("usb host: %04X:%04X class=%u %s",
+            devDesc->idVendor, devDesc->idProduct,
+            (unsigned)devDesc->bDeviceClass, deviceNameText);
     }
     const usb_config_desc_t* config = nullptr;
     if (usb_host_get_active_config_descriptor(device, &config) != ESP_OK || config == nullptr || !findMidi(config)) {
+        if (deviceNameText[0] != '\0') {
+            snprintf(statusText, sizeof(statusText),
+                "Saw %s — no USB-MIDI interface (need class-compliant MIDI; power via hub if unpowered)",
+                deviceNameText);
+        } else {
+            strncpy(statusText,
+                "USB device attached but has no MIDI interface (power via hub if unpowered)",
+                sizeof(statusText) - 1);
+        }
+        statusText[sizeof(statusText) - 1] = '\0';
         usb_host_device_close(client, device);
         device = nullptr;
-        strncpy(statusText, "USB device has no MIDI interface", sizeof(statusText) - 1);
+        deviceNameText[0] = '\0';
+        debugLog("usb host: %s", statusText);
         return;
     }
     const usb_intf_desc_t* intf = nullptr;
@@ -208,9 +291,15 @@ void openDevice(uint8_t address) {
     outTransfer->device_handle = device;
     outTransfer->callback = onOut;
     outTransfer->context = nullptr;
+    rememberDeviceName(device);
     deviceReady = true;
     usb_host_transfer_submit(inTransfer);
-    strncpy(statusText, "USB MIDI device connected", sizeof(statusText) - 1);
+    if (deviceNameText[0] != '\0') {
+        snprintf(statusText, sizeof(statusText), "Connected: %s", deviceNameText);
+    } else {
+        strncpy(statusText, "USB MIDI device connected", sizeof(statusText) - 1);
+        statusText[sizeof(statusText) - 1] = '\0';
+    }
 }
 
 void onClient(const usb_host_client_event_msg_t* event, void* /*arg*/) {
@@ -218,10 +307,39 @@ void onClient(const usb_host_client_event_msg_t* event, void* /*arg*/) {
         openDevice(event->new_dev.address);
     } else if (event->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
         deviceReady = false;
+        if (inTransfer != nullptr) {
+            usb_host_transfer_free(inTransfer);
+            inTransfer = nullptr;
+        }
+        if (outTransfer != nullptr) {
+            usb_host_transfer_free(outTransfer);
+            outTransfer = nullptr;
+        }
         device = nullptr;
         inAddress = 0;
         outAddress = 0;
-        strncpy(statusText, "USB MIDI host is on. No MIDI device yet.", sizeof(statusText) - 1);
+        outBusy = false;
+        outCount = 0;
+        deviceNameText[0] = '\0';
+        strncpy(statusText,
+            "USB MIDI host on — plug keyboard into module USB-C (powered hub if it needs 5V)",
+            sizeof(statusText) - 1);
+        statusText[sizeof(statusText) - 1] = '\0';
+        debugLog("usb host: device gone");
+    }
+}
+
+void scanAttached() {
+    uint8_t addrs[8] = {};
+    int count = 0;
+    if (usb_host_device_addr_list_fill((int)sizeof(addrs), addrs, &count) != ESP_OK || count <= 0) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        openDevice(addrs[i]);
+        if (deviceReady) {
+            break;
+        }
     }
 }
 
@@ -238,10 +356,28 @@ bool UsbMidiHost::start() {
     if (started) {
         return true;
     }
+    // Board defaults to USB-Serial/JTAG (ARDUINO_USB_MODE=1). Host needs the
+    // internal PHY in OTG host mode; otherwise usb_host_install fails, prefs
+    // get cleared, and we bounce back to JTAG forever.
+    static usb_phy_handle_t phyHandle = nullptr;
+    if (phyHandle == nullptr) {
+        usb_phy_config_t phyConfig = {};
+        phyConfig.controller = USB_PHY_CTRL_OTG;
+        phyConfig.target = USB_PHY_TARGET_INT;
+        phyConfig.otg_mode = USB_OTG_MODE_HOST;
+        phyConfig.otg_speed = USB_PHY_SPEED_UNDEFINED;
+        esp_err_t phyErr = usb_new_phy(&phyConfig, &phyHandle);
+        if (phyErr != ESP_OK) {
+            snprintf(statusText, sizeof(statusText), "USB host PHY failed (%d)", (int)phyErr);
+            return false;
+        }
+    }
     usb_host_config_t host = {};
-    host.skip_phy_setup = false;
+    host.skip_phy_setup = true;
     host.intr_flags = ESP_INTR_FLAG_LEVEL1;
-    if (usb_host_install(&host) != ESP_OK) {
+    esp_err_t hostErr = usb_host_install(&host);
+    if (hostErr != ESP_OK) {
+        snprintf(statusText, sizeof(statusText), "USB host stack failed (%d)", (int)hostErr);
         return false;
     }
     usb_host_client_config_t config = {};
@@ -255,6 +391,9 @@ bool UsbMidiHost::start() {
     outLock = xSemaphoreCreateMutex();
     xTaskCreate(hostTask, "usb-midi-host", 8192, nullptr, 4, nullptr);
     started = true;
+    // Devices already plugged before the client registered may not emit NEW_DEV.
+    scanAttached();
+    debugLog("usb host: started");
     return true;
 }
 
@@ -268,6 +407,18 @@ bool UsbMidiHost::connected() {
 
 const char* UsbMidiHost::status() {
     return statusText;
+}
+
+const char* UsbMidiHost::deviceName() {
+    return deviceNameText;
+}
+
+uint32_t UsbMidiHost::rxCount() {
+    return midiRxCount;
+}
+
+uint32_t UsbMidiHost::lastRxMs() {
+    return midiLastRxMs;
 }
 
 void UsbMidiHost::tick(midi::MidiAction* action) {
