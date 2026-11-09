@@ -374,11 +374,35 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         if _state_is(got, want):
             s.check(label, True, f"LOOPER_STATE={got}")
             return
+        # Extra CC103 while LOOPER is in tap (3/4) is another play↔overdub
+        # toggle (L1 FAIL: want 2 got 3 after 4→3). Extra CC104 from STOP
+        # starts wrap. Wait out firmware first; only re-press when needed,
+        # then give the same long window as the first stop/clear wait.
+        if cc_num == 103 and _is_tap(got):
+            s.info(f"{label}: still tap {got} after firmware window, waiting more")
+            end = time.monotonic() + 12.0
+            while time.monotonic() < end:
+                cur = s.looper_now()
+                if cur is not None:
+                    got = cur
+                if _state_is(got, want):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
+                if not _is_tap(got):
+                    break
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                s.ws.got_entity.wait(timeout=min(0.4, remaining))
+                s.ws.got_entity.clear()
+                s.peek_console()
+            got = s.looper_now() if s.looper_now() is not None else got
+            if _state_is(got, want):
+                s.check(label, True, f"LOOPER_STATE={got}")
+                return
         s.info(f"{label}: want {want} got {got}, one more {cc_num} after firmware retries")
         s.send_cc(cc_num)
-        # Extra CC104 from STOP starts wrap (tap → PLAY then LONG). A 2s
-        # window fails at 3. Wait for wrap the same way as the first 104.
-        extra = 16.0 if cc_num == 104 else 2.0
+        extra = 16.0 if cc_num == 104 else 12.0
         end = time.monotonic() + extra
         while time.monotonic() < end:
             cur = s.looper_now()
@@ -387,7 +411,7 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
             if _state_is(got, want):
                 s.check(label, True, f"LOOPER_STATE={got}")
                 return
-            if cc_num == 104 and _is_tap(got):
+            if _is_tap(got):
                 s.info(f"{label}: {cc_num} tapped to {got}, waiting for wrap")
             remaining = end - time.monotonic()
             if remaining <= 0:
