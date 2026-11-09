@@ -787,6 +787,27 @@ void Connections::saveUsbMode(bool device, bool host, bool hidPort) {
     usbHostEnabled = host;
     usbHidEnabled = hidPort;
     usbDirty = true;
+    // USB mode only applies after reboot. Persist immediately — waiting for
+    // !uartHot left usbdev unset and the next boot stayed HID-only / JTAG.
+    if (showbox != nullptr) {
+        showbox->waitQuiet(30);
+    }
+    Preferences prefs;
+    if (prefs.begin("midi", false)) {
+        prefs.putBool("usbdev", usbDeviceEnabled);
+        prefs.putBool("usbhost", usbHostEnabled);
+        prefs.putBool("usbhid", usbHidEnabled);
+        prefs.putInt("usbhidmix", usbHidMix.storedBits());
+        prefs.putBool("usbtest", (usbDeviceEnabled || usbHostEnabled || usbHidEnabled) && usbSafeTest);
+        if (usbDeviceEnabled || usbHostEnabled || usbHidEnabled) {
+            prefs.putInt("usbfail", 0);
+        }
+        prefs.end();
+        usbDirty = false;
+        if (multiMidi != nullptr) {
+            multiMidi->rememberUsbDevice(usbDeviceEnabled);
+        }
+    }
 }
 
 void Connections::setUsbPortMode(UsbPortMode mode) {
@@ -1830,20 +1851,37 @@ bool Connections::setOption(const String& name, bool enabled, String& error) {
         return multiMidi->setMidiOption("ethernet", enabled, error);
     }
     if (name == "usbMidiPeripheral" || name == "usbDevice" || name == "usbMidiHost" || name == "usbHost" || name == "usbHid") {
-        bool device = false;
-        bool host = false;
-        bool hidPort = false;
-        if (enabled && (name == "usbMidiPeripheral" || name == "usbDevice")) {
-            device = true;
-        } else if (enabled && (name == "usbMidiHost" || name == "usbHost")) {
-            host = true;
-        } else if (enabled && name == "usbHid") {
-            hidPort = true;
+        // Merge with current prefs so MIDI+HID composite can be enabled in one
+        // POST (?usbMidiPeripheral=1&usbHid=1). Host mode stays exclusive.
+        bool device = usbDeviceEnabled;
+        bool host = usbHostEnabled;
+        bool hidPort = usbHidEnabled;
+        if (name == "usbMidiPeripheral" || name == "usbDevice") {
+            device = enabled;
+            if (enabled) {
+                host = false;
+            }
+        } else if (name == "usbMidiHost" || name == "usbHost") {
+            host = enabled;
+            if (enabled) {
+                device = false;
+                hidPort = false;
+            }
+        } else if (name == "usbHid") {
+            hidPort = enabled;
+            if (enabled) {
+                host = false;
+            }
         }
+        const bool nowJtag = !device && !host && !hidPort;
         saveUsbMode(device, host, hidPort);
-        scheduleReboot(enabled
-            ? "The USB port switches after reboot. USB serial/JTAG turns off. OTA and the UART connector can still flash."
-            : "Rebooting so the USB serial/JTAG port comes back.");
+        if (nowJtag) {
+            scheduleReboot("Rebooting so the USB serial/JTAG port comes back.");
+        } else {
+            scheduleReboot(host
+                ? "USB MIDI host starts after reboot. USB serial/JTAG turns off. OTA and the UART connector can still flash."
+                : "USB MIDI/HID peripheral starts after reboot. USB serial/JTAG turns off. Native serial/JTAG is off; the UART USB-serial adapter can still flash.");
+        }
         return true;
     }
     String midiName = name;

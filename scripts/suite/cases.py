@@ -1009,6 +1009,14 @@ def case_http_pwa(s: Suite) -> None:
 
 
 def case_telnet_ota(s: Suite) -> None:
+    # Native USB MIDI+HID gadget takes over the USB console path; RemoteDebug
+    # stops accepting :23 until JTAG is restored (L3 after L2 usb-midi-hid).
+    midi = s.midi_status()
+    if midi.get("usbJtag") is False and (
+        _transport(midi, "usbMidiPeripheral").get("enabled")
+        or _transport(midi, "usbHid").get("enabled")
+    ):
+        raise CaseSkip("telnet/RemoteDebug down while USB MIDI+HID gadget is active")
     ok, detail = cf.telnet_messages(s.ip, want=1, timeout=4.0)
     if not ok:
         time.sleep(1.5)
@@ -3244,6 +3252,8 @@ def case_usb_midi_hid(s: Suite) -> None:
     s.check("usb MIDI peripheral enabled", bool(peri.get("enabled")), f"{peri}")
     s.check("usb HID enabled", bool(hid.get("enabled")), f"{hid}")
     s.check("usb JTAG off while gadget on", midi.get("usbJtag") is False, f"usbJtag={midi.get('usbJtag')}")
+    host = _transport(midi, "usbMidiHost")
+    s.check("usb MIDI host stays off", not host.get("enabled"), f"{host}")
     # Host must see composite (QinHeng UART adapter can remain as ttyACM*)
     end = time.monotonic() + 20.0
     while time.monotonic() < end and not (_usb_showbox_present() and _usb_hid_nodes() and _usb_midi_listed()):
@@ -3450,8 +3460,15 @@ def _probe_softap_services(s: Suite, ap_ip: str) -> None:
     except Exception as exc:
         s.info(f"SoftAP mDNS probe skipped: {exc}")
 
-    ok, detail = cf.telnet_messages(ap_ip, want=1, timeout=5.0)
-    s.check("SoftAP telnet RemoteDebug", ok, detail)
+    midi = s.midi_status()
+    if midi.get("usbJtag") is False and (
+        _transport(midi, "usbMidiPeripheral").get("enabled")
+        or _transport(midi, "usbHid").get("enabled")
+    ):
+        s.info("SoftAP telnet skipped — USB MIDI+HID gadget holds RemoteDebug down")
+    else:
+        ok, detail = cf.telnet_messages(ap_ip, want=1, timeout=5.0)
+        s.check("SoftAP telnet RemoteDebug", ok, detail)
 
     ws = LiveWs(ap_ip)
     ws.start()
@@ -3643,6 +3660,7 @@ LEVEL1: list[tuple[str, CaseFn]] = [
     ("looper-no-autoboost", case_looper_no_autoboost),
     ("looper-autoboost", case_looper_autoboost),
     ("manual-boost", case_manual_boost),
+    ("usb-jtag", case_usb_jtag),  # --usb; Serial/JTAG mode (not gadget, not host)
     ("ble-midi", case_ble_midi),
     ("http-pwa", case_http_pwa),
 ]
@@ -3669,6 +3687,8 @@ LEVEL2: list[tuple[str, CaseFn]] = [
     ("hotspot-sta-coex", case_hotspot_sta_coex),
     ("softap-services", case_softap_services),
     ("softap-street", case_softap_street),
+    # Gadget = ShowboxMod as USB device to the laptop (MIDI+HID). Never usbMidiHost.
+    ("usb-midi-hid", case_usb_midi_hid),  # --usb; peri+HID composite, host forced off
     ("fresh-pair", case_fresh_pair),
     ("boost-reboot", case_boost_reboot),
 ]
@@ -3680,6 +3700,7 @@ LEVEL3: list[tuple[str, CaseFn]] = [
     ("names-gzip", case_names_gzip),
     ("https-repeat", case_https_repeat),
     ("heap-soak", case_heap_soak),
+    ("usb-gadget-held", case_usb_gadget_held),  # --usb; after L2 gadget
     ("host-peri-load", case_host_peri_load),
 ]
 
