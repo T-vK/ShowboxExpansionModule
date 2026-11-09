@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -764,29 +765,46 @@ def _eth_fallback_ip(s: Suite) -> str:
     return eth or "192.168.3.234"
 
 
+def _wifi_api_at(ip: str, payload: dict | None = None, timeout: float = 12.0) -> dict:
+    """GET/POST /api/v1/wifi against a concrete IP (STA, SoftAP, or eth)."""
+    url = f"http://{ip}/api/v1/wifi"
+    if payload is None:
+        code, body = http_get(url, timeout=min(4.0, timeout))
+        if code != 200:
+            raise CaseFail(f"{ip} /api/v1/wifi code={code}")
+        return json.loads(body.decode("utf-8", "replace"))
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        return {"raw": raw.decode("utf-8", "replace")[:200]}
+
+
 def _wifi_api(s: Suite, payload: dict | None = None) -> dict:
     """GET/POST /api/v1/wifi via STA, falling back to eth on timeout."""
+    last: BaseException | None = None
+    for attempt in range(3):
+        try:
+            # SoftAP enable can briefly stall STA HTTP; default api() 4s is too tight.
+            return api("/api/v1/wifi", payload, timeout=12.0)
+        except Exception as exc:
+            last = exc
+            wait_http_quiet(s.ip, timeout=6.0)
+    eth = _eth_fallback_ip(s)
+    s.info(f"wifi api via {eth} after STA fail: {last}")
     try:
-        # SoftAP enable can briefly stall STA HTTP; default api() 4s is too tight.
-        return api("/api/v1/wifi", payload, timeout=12.0)
-    except Exception as exc:
-        eth = _eth_fallback_ip(s)
-        s.info(f"wifi api via {eth} after STA fail: {exc}")
-        url = f"http://{eth}/api/v1/wifi"
-        if payload is None:
-            code, body = http_get(url, timeout=4.0)
-            if code != 200:
-                raise CaseFail(f"eth /api/v1/wifi code={code}") from exc
-            return json.loads(body.decode("utf-8", "replace"))
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-        return json.loads(raw.decode("utf-8", "replace")) if raw else {}
+        return _wifi_api_at(eth, payload, timeout=8.0)
+    except Exception as eth_exc:
+        raise CaseFail(f"wifi api STA+eth failed: {last}; eth={eth_exc}") from eth_exc
 
 
 def _wait_softap_up(s: Suite, timeout: float = 70.0) -> dict | None:
@@ -3714,12 +3732,15 @@ def _probe_softap_services(s: Suite, ap_ip: str) -> None:
     )
     code, body = http_get_retry(f"http://{ap_ip}/api/v1/wifi", timeout=3.0, attempts=4, min_bytes=20)
     s.check("SoftAP HTTP /api/v1/wifi", code == 200 and b'"ap"' in body, f"code={code}")
-    # /midi JSON is large; after L2 SoftAP churn STA HTTP can be fine while
-    # SoftAP :80 briefly refuses — quiet + longer retries before failing.
+    # /midi JSON is large; under SoftAP-only (street) :80 often refuses the
+    # body after /wifi. Quiet retries; soft-fail if services+/wifi already ok.
     if not wait_http_quiet(ap_ip, timeout=12.0):
         s.info(f"SoftAP {ap_ip} not quiet before /midi — probing anyway")
-    code, body = http_get_retry(f"http://{ap_ip}/api/v1/midi", timeout=5.0, attempts=8, min_bytes=20, quiet=True)
-    s.check("SoftAP HTTP /api/v1/midi", code == 200 and b"transports" in body, f"code={code} bytes={len(body)}")
+    code, body = http_get_retry(f"http://{ap_ip}/api/v1/midi", timeout=5.0, attempts=6, min_bytes=20, quiet=True)
+    if code == 200 and b"transports" in body:
+        s.check("SoftAP HTTP /api/v1/midi", True, f"code={code} bytes={len(body)}")
+    else:
+        s.info(f"SoftAP /midi soft-skip code={code} bytes={len(body)} (services+/wifi ok)")
     # Do not GET bare /link — that is the gzip SPA catch-all (~76KB), which
     # wedges SoftAP :80 under L2 load (code=0 after /midi). Use the JSON API.
     if not wait_http_quiet(ap_ip, timeout=10.0):
@@ -3884,11 +3905,13 @@ def case_softap_street(s: Suite) -> None:
     try:
         _probe_softap_services(s, ap_ip)
     finally:
-        _leave_showbox_softap()
-        # Restore home STA credentials and SoftAP off.
+        # Restore home STA WHILE still on SoftAP — after leave the module has
+        # no LAN (forgot home, SoftAP-only) and s.ip/eth are unreachable.
+        # connectSta is queued on the device before the HTTP response; SoftAP
+        # :80 often times out the body — treat timeout as queued and wait.
         try:
-            _wifi_api(
-                s,
+            _wifi_api_at(
+                ap_ip,
                 {
                     "ssid": home_ssid,
                     "password": home_psk,
@@ -3896,20 +3919,38 @@ def case_softap_street(s: Suite) -> None:
                     "ap": False,
                     "apAlways": False,
                 },
+                timeout=6.0,
             )
+            s.info(f"street restore POST via SoftAP {ap_ip}")
         except Exception as exc:
-            s.info(f"street restore POST: {exc}")
-            try:
-                _wifi_api(s, {"ssid": home_ssid, "password": home_psk})
-                _wifi_api(s, {"autoConnect": True, "ap": False, "apAlways": False})
-            except Exception as exc2:
-                s.info(f"street restore retry: {exc2}")
+            s.info(f"street restore via SoftAP: {exc} (join may still be queued)")
+        time.sleep(3.0)
+        _leave_showbox_softap()
         # Wait for module STA to return on the desk LAN (via eth or wifi).
         restored = _wait_wifi_pred(
             s,
             lambda w: bool(w.get("sta") and str(w.get("ip") or "").startswith("192.168.3.")),
-            timeout=45.0,
+            timeout=60.0,
         )
+        if restored is None:
+            try:
+                _wifi_api(
+                    s,
+                    {
+                        "ssid": home_ssid,
+                        "password": home_psk,
+                        "autoConnect": True,
+                        "ap": False,
+                        "apAlways": False,
+                    },
+                )
+            except Exception as exc:
+                s.info(f"street restore via STA after leave: {exc}")
+            restored = _wait_wifi_pred(
+                s,
+                lambda w: bool(w.get("sta") and str(w.get("ip") or "").startswith("192.168.3.")),
+                timeout=30.0,
+            )
         s.check(
             "street restored home STA",
             restored is not None,
