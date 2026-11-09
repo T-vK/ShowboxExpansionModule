@@ -1017,14 +1017,18 @@ def case_telnet_ota(s: Suite) -> None:
         or _transport(midi, "usbHid").get("enabled")
     ):
         raise CaseSkip("telnet/RemoteDebug down while USB MIDI+HID gadget is active")
-    ok, detail = cf.telnet_messages(s.ip, want=1, timeout=4.0)
-    if not ok:
-        time.sleep(1.5)
-        ok, detail = cf.telnet_messages(s.ip, want=1, timeout=6.0)
-    if not ok:
-        wait_http(s.ip, timeout=3.0)
-        time.sleep(2.0)
-        ok, detail = cf.telnet_messages(s.ip, want=1, timeout=6.0)
+    # Back-to-back L1→L2 can hit Connection reset on :23 while HTTP is fine
+    # (RemoteDebug peer PCB leftover). Quiet wait + extra attempts before fail.
+    ok, detail = False, "telnet not tried"
+    for attempt in range(5):
+        ok, detail = cf.telnet_messages(s.ip, want=1, timeout=5.0 if attempt else 4.0)
+        if ok:
+            break
+        s.info(f"telnet attempt {attempt + 1}: {detail}")
+        if attempt == 1:
+            telnet_reset(s.ip)
+        wait_http_quiet(s.ip, timeout=6.0)
+        time.sleep(1.0 + attempt)
     s.check("telnet RemoteDebug", ok, detail)
     s.check("OTA UDP 3232", cf.udp_open(s.ip, 3232), "port 3232")
 
