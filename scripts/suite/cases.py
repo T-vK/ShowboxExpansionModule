@@ -1767,6 +1767,41 @@ def _recover_http_after_ws(s: Suite, label: str) -> bool:
     return wait_http_quiet(s.ip, timeout=8.0)
 
 
+def _ensure_ws_budget(s: Suite, label: str) -> None:
+    """10-client fanout needs ~9k+ largest. After looper/uart, reboot if tight."""
+    heap = 0
+    try:
+        w = _wifi_api(s)
+        heap = int(w.get("heapLargest") or 0)
+    except Exception as exc:
+        s.info(f"{label}: wifi before WS: {exc}")
+    if heap >= 9000 and wait_http_quiet(s.ip, timeout=8.0):
+        return
+    s.info(f"{label}: heapLargest={heap} or HTTP tight — soft reboot before WS")
+    try:
+        s.ws.close()
+    except Exception:
+        pass
+    try:
+        cf.http_post(f"{s.session.base}/api/v1/console", {"cmd": "reboot"}, timeout=3.0)
+    except Exception as exc:
+        s.info(f"{label}: reboot POST: {exc}")
+        telnet_reset(s.ip)
+    time.sleep(12.0)
+    end = time.monotonic() + 50.0
+    while time.monotonic() < end:
+        if wait_http_quiet(s.ip, timeout=2.0):
+            try:
+                heap = int((_wifi_api(s) or {}).get("heapLargest") or 0)
+            except Exception:
+                heap = 0
+            if heap >= 9000:
+                s.info(f"{label}: ready after reboot heapLargest={heap}")
+                return
+        time.sleep(1.0)
+    s.info(f"{label}: post-reboot heap still {heap}")
+
+
 def case_ws_multiclient(s: Suite) -> None:
     """10 concurrent WS clients must each receive the same entity deltas.
 
@@ -1776,6 +1811,7 @@ def case_ws_multiclient(s: Suite) -> None:
     n = 10
     # Free the suite socket so all N slots are for this probe.
     s.ws.close()
+    _ensure_ws_budget(s, "ws-multiclient")
     result: dict[str, Any] = {}
     last_exc: Optional[BaseException] = None
     try:
