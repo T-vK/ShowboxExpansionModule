@@ -129,22 +129,14 @@ bool listenAppleMidi(uint16_t port, midi::MidiAction* midiAction) {
     appleQHead = 0;
     appleQTail = 0;
     appleParser.begin(midiAction, -1);
-    // Prefer STA bind when associated. INADDR_ANY + ethernet up left control
-    // invites to the STA IP unanswered (same dual-netif hole as mDNS :5353),
-    // while eth still answered — often with NO once peer slots leaked full.
-    IPAddress bindIp = WiFi.localIP();
-    if (bindIp[0] == 0 && ETH.hasIP()) {
-        bindIp = ETH.localIP();
-    }
-    bool ok = false;
-    if (bindIp[0] != 0) {
-        ok = appleControl.listen(bindIp, port) && appleData.listen(bindIp, static_cast<uint16_t>(port + 1));
-    }
-    if (!ok) {
-        appleControl.close();
-        appleData.close();
-        ok = appleControl.listen(port) && appleData.listen(static_cast<uint16_t>(port + 1));
-    }
+    // SoftAP clients invite 192.168.4.1; SoftAP often rises after begin().
+    // Bind INADDR_ANY so STA + SoftAP (and eth when linked) accept invites.
+    // Prior STA-only bind made SoftAP RTP fail; prior ANY+eth dual-netif
+    // flakes are covered by suite ensure_rtp / eth fallback, not SoftAP.
+    IPAddress bindIp = IPAddress(0, 0, 0, 0);
+    appleControl.close();
+    appleData.close();
+    bool ok = appleControl.listen(port) && appleData.listen(static_cast<uint16_t>(port + 1));
     if (!ok) {
         appleControl.close();
         appleData.close();
@@ -157,7 +149,7 @@ bool listenAppleMidi(uint16_t port, midi::MidiAction* midiAction) {
     for (uint8_t i = 1; i < APPLEMIDI_MAX_PEERS; i++) {
         applemidi_terminate_session(i);
     }
-    debugLog("applemidi listen ip=%s port=%u", bindIp.toString().c_str(), (unsigned)port);
+    debugLog("applemidi listen ip=0.0.0.0 port=%u how=any", (unsigned)port);
     return true;
 }
 

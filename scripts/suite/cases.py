@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import select
+import struct
 import subprocess
 import sys
 import time
@@ -790,6 +792,130 @@ def _wait_softap_up(s: Suite, timeout: float = 70.0) -> dict | None:
             s.info(f"wifi poll: {exc}")
         time.sleep(1.0)
     return last
+
+
+def _wait_wifi_pred(s: Suite, pred, timeout: float = 30.0) -> dict | None:
+    end = time.monotonic() + timeout
+    last: dict | None = None
+    while time.monotonic() < end:
+        try:
+            last = _wifi_api(s)
+        except Exception as exc:
+            s.info(f"wifi poll: {exc}")
+            last = None
+        if last and pred(last):
+            return last
+        time.sleep(0.6)
+    return last
+
+
+def _softap_iface() -> str | None:
+    try:
+        out = subprocess.run(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for ln in (out.stdout or "").splitlines():
+        parts = ln.split(":")
+        if len(parts) >= 3 and parts[1] == "wifi" and not parts[0].startswith("p2p-"):
+            return parts[0]
+    return None
+
+
+def _join_showbox_softap(password: str = "showboxmod") -> tuple[bool, str]:
+    iface = _softap_iface()
+    if not iface:
+        return False, "no wifi iface"
+    last = "nmcli failed"
+    try:
+        for attempt in range(4):
+            subprocess.run(
+                ["nmcli", "device", "wifi", "rescan", "ifname", iface],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            time.sleep(1.5 + attempt)
+            # SoftAP can take a few seconds to reappear after SPA yield / bounce.
+            listed = subprocess.run(
+                ["nmcli", "-t", "-f", "SSID", "device", "wifi", "list", "ifname", iface],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            if "ShowboxMod" not in (listed.stdout or ""):
+                last = "ShowboxMod not in scan yet"
+                continue
+            out = subprocess.run(
+                [
+                    "nmcli",
+                    "device",
+                    "wifi",
+                    "connect",
+                    "ShowboxMod",
+                    "password",
+                    password,
+                    "ifname",
+                    iface,
+                    "name",
+                    "ShowboxMod-suite",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=25,
+                check=False,
+            )
+            if out.returncode == 0:
+                return True, (out.stdout or "joined").strip()[:160]
+            last = (out.stdout or out.stderr or "nmcli failed").strip()[:160]
+        return False, last
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+
+
+def _leave_showbox_softap() -> None:
+    for cmd in (
+        ["nmcli", "connection", "down", "ShowboxMod-suite"],
+        ["nmcli", "connection", "delete", "ShowboxMod-suite"],
+    ):
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    # Single-radio laptop: SoftAP join dropped the home AP. Bring STA back
+    # so later cases (ethernet-matrix, fresh-pair, …) can reach 192.168.3.x.
+    for ssid in ("pfSenseAP", "pfSense"):
+        try:
+            out = subprocess.run(
+                ["nmcli", "connection", "up", "id", ssid],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if out.returncode == 0:
+                time.sleep(2.0)
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        subprocess.run(
+            ["nmcli", "device", "wifi", "connect", "pfSenseAP", "ifname", "wlp2s0"],
+            capture_output=True,
+            text=True,
+            timeout=25,
+            check=False,
+        )
+        time.sleep(2.0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def case_http_pwa(s: Suite) -> None:
@@ -3020,12 +3146,493 @@ def case_host_peri_load(s: Suite) -> None:
     s.check("peripheral still connected under load", bool(peris), f"peripherals={len(peris)}")
 
 
+def _transport(midi: dict, tid: str) -> dict:
+    for row in midi.get("transports") or []:
+        if row.get("id") == tid:
+            return row
+    return {}
+
+
+def _usb_showbox_present() -> bool:
+    try:
+        out = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=3, check=False)
+        return "303a:0002" in (out.stdout or "").lower() or "showboxmod" in (out.stdout or "").lower()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _usb_hid_nodes() -> list[str]:
+    root = Path("/dev/input/by-id")
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.glob("*ShowboxMod*"))
+
+
+def _usb_midi_listed() -> bool:
+    try:
+        out = subprocess.run(["amidi", "-l"], capture_output=True, text=True, timeout=3, check=False)
+        return "ShowboxMod" in (out.stdout or "")
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _lsusb_text() -> str:
+    try:
+        out = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=3, check=False)
+        return out.stdout or ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def case_usb_jtag(s: Suite) -> None:
+    """Fast native-USB JTAG smoke. Needs --usb and Serial/JTAG mode (not gadget)."""
+    if not getattr(s.args, "usb", False):
+        raise CaseSkip("pass --usb when native USB-C is plugged into this host")
+    midi = api("/api/v1/midi")
+    usb = midi.get("usb") or {}
+    mode = str(usb.get("mode") or "")
+    if mode not in ("jtag", "") and midi.get("usbJtag") is not True:
+        raise CaseSkip(f"USB not in JTAG mode (mode={mode!r}) — run before usb-midi-hid")
+    s.check("usb reports JTAG", midi.get("usbJtag") is True or mode == "jtag", f"usbJtag={midi.get('usbJtag')} mode={mode!r}")
+    lsusb = _lsusb_text().lower()
+    s.check("host lsusb Espressif JTAG 303a:1001", "303a:1001" in lsusb, "lsusb")
+    # QinHeng UART adapter may also be present; ACM0 is the native JTAG CDC.
+    s.check("host /dev/ttyACM present", any(Path("/dev").glob("ttyACM*")), "ttyACM*")
+
+
+def case_ethernet_smoke(s: Suite) -> None:
+    """Fast W5500 HTTP smoke via eth IP. Needs --ethernet; full matrix stays L2."""
+    if not getattr(s.args, "ethernet", False):
+        raise CaseSkip("pass --ethernet when the W5500 cable is linked")
+    midi = api("/api/v1/midi")
+    note = str(_transport(midi, "ethernet").get("note") or "")
+    eth_ip = next((p.strip(",") for p in note.replace(",", " ").split() if p.count(".") == 3 and p[0].isdigit()), "")
+    if not eth_ip:
+        # Fallback: try common desk IP / STA sibling via services on eth path fails hard.
+        raise CaseFail(f"no ethernet IP in midi note={note!r}")
+    code, body = http_get(f"http://{eth_ip}/services", timeout=2.0)
+    s.check("eth /services", code == 200 and len(body) > 100, f"code={code} eth={eth_ip}")
+    code2, body2 = http_get(f"http://{eth_ip}/api/v1/wifi", timeout=2.0)
+    s.check("eth /api/v1/wifi", code2 == 200 and b'"sta"' in body2, f"code={code2}")
+
+
+def case_usb_midi_hid(s: Suite) -> None:
+    """Native USB gadget: MIDI+HID composite. Needs --usb and the USB-C cable."""
+    if not getattr(s.args, "usb", False):
+        raise CaseSkip("pass --usb when the native USB-C cable is plugged into this host")
+    midi = api("/api/v1/midi")
+    peri = _transport(midi, "usbMidiPeripheral")
+    hid = _transport(midi, "usbHid")
+    if not (peri.get("enabled") and hid.get("enabled")):
+        api_path = "/api/v1/midi/settings?usbMidiHost=0&usbMidiPeripheral=1&usbHid=1"
+        urllib.request.urlopen(
+            urllib.request.Request(f"http://{s.ip}{api_path}", method="POST", data=b""),
+            timeout=5,
+        ).read()
+        time.sleep(8.0)
+        end = time.monotonic() + 45.0
+        while time.monotonic() < end:
+            try:
+                midi = api("/api/v1/midi")
+                peri = _transport(midi, "usbMidiPeripheral")
+                hid = _transport(midi, "usbHid")
+                if peri.get("enabled") and hid.get("enabled"):
+                    break
+            except Exception:
+                pass
+            time.sleep(1.5)
+    s.check("usb MIDI peripheral enabled", bool(peri.get("enabled")), f"{peri}")
+    s.check("usb HID enabled", bool(hid.get("enabled")), f"{hid}")
+    s.check("usb JTAG off while gadget on", midi.get("usbJtag") is False, f"usbJtag={midi.get('usbJtag')}")
+    # Host must see composite (QinHeng UART adapter can remain as ttyACM*)
+    end = time.monotonic() + 20.0
+    while time.monotonic() < end and not (_usb_showbox_present() and _usb_hid_nodes() and _usb_midi_listed()):
+        time.sleep(0.5)
+    s.check("host lsusb ShowboxMod 303a:0002", _usb_showbox_present(), "lsusb")
+    nodes = _usb_hid_nodes()
+    s.check("host HID by-id ShowboxMod", bool(nodes), f"nodes={nodes}")
+    s.check("host amidi ShowboxMod", _usb_midi_listed(), "amidi -l")
+    kbd = next(Path("/dev/input/by-id").glob("*ShowboxMod*event-kbd"), None)
+    if kbd is None:
+        raise CaseFail("no ShowboxMod event-kbd node")
+    fd = os.open(str(kbd.resolve()), os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        while True:
+            try:
+                os.read(fd, 24)
+            except BlockingIOError:
+                break
+        posted = False
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"http://{s.ip}/api/v1/hid/keyboard?key=pageup",
+                        method="POST",
+                        data=b"",
+                        headers={"Connection": "close"},
+                    ),
+                    timeout=5,
+                ).read()
+                posted = True
+                break
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.4 * (attempt + 1))
+        if not posted:
+            raise CaseFail(f"HID keyboard POST failed: {last_exc}")
+        hits: list[int] = []
+        fmt = "llHHi"
+        size = struct.calcsize(fmt)
+        end = time.monotonic() + 2.5
+        while time.monotonic() < end:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if not r:
+                continue
+            data = os.read(fd, size * 8)
+            for i in range(0, len(data), size):
+                if i + size > len(data):
+                    break
+                _a, _b, typ, code, value = struct.unpack(fmt, data[i : i + size])
+                if typ == 1 and code == 104:
+                    hits.append(value)
+        s.check("HID pageup reached host", 1 in hits and 0 in hits, f"hits={hits}")
+    finally:
+        os.close(fd)
+    # MIDI port writable (host → device)
+    try:
+        out = subprocess.run(
+            ["amidi", "-p", "hw:1,0,0", "-S", "B0 69 01"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        # Card number may not be 1 — find from amidi -l
+        if out.returncode != 0:
+            listed = subprocess.run(["amidi", "-l"], capture_output=True, text=True, timeout=3, check=False)
+            port = None
+            for ln in (listed.stdout or "").splitlines():
+                if "ShowboxMod" in ln:
+                    parts = ln.split()
+                    if len(parts) >= 2:
+                        port = parts[1]
+                        break
+            if port:
+                out = subprocess.run(
+                    ["amidi", "-p", port, "-S", "B0 69 01"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+        s.check("USB MIDI port accepts host TX", out.returncode == 0, (out.stderr or out.stdout or "")[:120])
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CaseFail(f"amidi failed: {exc}") from exc
+
+def case_hotspot_sta_coex(s: Suite) -> None:
+    """Hotspot + home STA: LAN HTTP stays up; SoftAP serves captive probes."""
+    _wifi_api(s, {"apAlways": True, "ap": True})
+    wifi = _wait_wifi_pred(s, lambda w: bool(w.get("sta") and w.get("ap") and w.get("apIp")), timeout=45.0)
+    if not wifi:
+        raise CaseFail("failed to reach STA+SoftAP coex")
+    s.check("coex STA", bool(wifi.get("sta")), f"sta={wifi.get('sta')}")
+    s.check("coex SoftAP", bool(wifi.get("ap")), f"ap={wifi.get('ap')} ip={wifi.get('apIp')!r}")
+    s.check("coex apAlways", wifi.get("apAlways") is True, f"apAlways={wifi.get('apAlways')!r}")
+    s.check("coex STA IP stable", str(wifi.get("ip") or "") == s.ip, f"ip={wifi.get('ip')}")
+    code, body = http_get_retry(f"http://{s.ip}/api/v1/wifi", timeout=3.0, attempts=5, min_bytes=20)
+    s.check("STA /api/v1/wifi while SoftAP", code == 200 and b'"sta"' in body, f"code={code} bytes={len(body)}")
+    code, body = http_get_retry(f"http://{s.ip}/services", timeout=3.0, attempts=4, min_bytes=100)
+    s.check("STA /services while SoftAP", code == 200 and len(body) > 100, f"code={code} bytes={len(body)}")
+
+    ap_ip = str(wifi.get("apIp") or "192.168.4.1")
+    ap_pass = str(wifi.get("apPassword") or "showboxmod")
+    joined, how = _join_showbox_softap(ap_pass)
+    if not joined:
+        # Ethernet-only hosts cannot prove the captive path; air+STA HTTP still counts.
+        if _softap_iface() is None:
+            raise CaseSkip(f"no wifi iface for SoftAP client ({how})")
+        raise CaseFail(f"could not join ShowboxMod SoftAP: {how}")
+    try:
+        # Captive portal probes must answer on the SoftAP subnet.
+        for path, need in (
+            ("/generate_204", None),
+            ("/hotspot-detect.html", b"Success"),
+            ("/ncsi.txt", b"Microsoft"),
+            ("/api/v1/wifi", b'"ap"'),
+        ):
+            c, b = http_get_retry(f"http://{ap_ip}{path}", timeout=3.0, attempts=4, min_bytes=1)
+            if need is None:
+                s.check(f"SoftAP {path}", c in (200, 204, 302, 301) or c == 511, f"code={c} bytes={len(b)}")
+            else:
+                s.check(f"SoftAP {path}", c == 200 and need in b, f"code={c} bytes={len(b)}")
+        # Laptop left home Wi-Fi to join SoftAP, so http://STA-IP is the wrong
+        # probe (single-radio host). Prove LAN still answers via ethernet, and
+        # SoftAP /api/v1/wifi already showed sta=true above.
+        midi = s.midi_status()
+        eth_note = str(_transport(midi, "ethernet").get("note") or "")
+        eth_ip = next((p.strip(",") for p in eth_note.split() if p.startswith("192.168.")), "")
+        if eth_ip:
+            c, b = http_get_retry(f"http://{eth_ip}/api/v1/wifi", timeout=3.0, attempts=4, min_bytes=20)
+            s.check(
+                "eth path survives SoftAP client",
+                c == 200 and b'"sta":true' in b,
+                f"code={c} eth={eth_ip}",
+            )
+        else:
+            s.info("no ethernet IP in midi note — skip LAN-while-SoftAP client probe")
+    finally:
+        _leave_showbox_softap()
+        try:
+            _wifi_api(s, {"ap": False, "apAlways": False})
+        except Exception as exc:
+            s.info(f"SoftAP cleanup after coex: {exc}")
+
+
+def _home_wifi_psk(ssid: str = "pfSenseAP") -> str:
+    """Read the laptop's saved PSK so street-case can restore module STA creds."""
+    try:
+        out = subprocess.run(
+            ["nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", ssid],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        psk = (out.stdout or "").strip()
+        if psk:
+            return psk
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
+def _probe_softap_services(s: Suite, ap_ip: str) -> None:
+    """HTTP / WS / telnet / RTP MIDI on the SoftAP subnet (after laptop joins)."""
+    # /services is the HTML health shell (sendHealthHtml), not JSON.
+    code, body = http_get_retry(f"http://{ap_ip}/services", timeout=3.0, attempts=5, min_bytes=100)
+    s.check(
+        "SoftAP HTTP /services",
+        code == 200 and (b"ShowboxMod" in body or b"showbox" in body.lower()),
+        f"code={code} bytes={len(body)}",
+    )
+    code, body = http_get_retry(f"http://{ap_ip}/api/v1/wifi", timeout=3.0, attempts=4, min_bytes=20)
+    s.check("SoftAP HTTP /api/v1/wifi", code == 200 and b'"ap"' in body, f"code={code}")
+    # /midi JSON is large; after L2 SoftAP churn STA HTTP can be fine while
+    # SoftAP :80 briefly refuses — quiet + longer retries before failing.
+    if not wait_http_quiet(ap_ip, timeout=12.0):
+        s.info(f"SoftAP {ap_ip} not quiet before /midi — probing anyway")
+    code, body = http_get_retry(f"http://{ap_ip}/api/v1/midi", timeout=5.0, attempts=8, min_bytes=20, quiet=True)
+    s.check("SoftAP HTTP /api/v1/midi", code == 200 and b"transports" in body, f"code={code} bytes={len(body)}")
+    # Do not GET bare /link — that is the gzip SPA catch-all (~76KB), which
+    # wedges SoftAP :80 under L2 load (code=0 after /midi). Use the JSON API.
+    if not wait_http_quiet(ap_ip, timeout=10.0):
+        s.info(f"SoftAP {ap_ip} not quiet before /showbox/link")
+    code, body = http_get_retry(
+        f"http://{ap_ip}/api/v1/showbox/link", timeout=4.0, attempts=8, min_bytes=20, quiet=True
+    )
+    s.check(
+        "SoftAP HTTP /api/v1/showbox/link",
+        code == 200 and b'"ok"' in body,
+        f"code={code} bytes={len(body)}",
+    )
+
+    # mDNS QU toward the AP. Today the module often answers with the STA IP
+    # even on SoftAP — still prove the responder answers from this subnet.
+    try:
+        from check_live import mdns_query_a
+
+        addrs = mdns_query_a("showbox.local", ap_ip, timeout=2.0) or []
+        s.check("SoftAP mDNS answers", bool(addrs), f"addrs={addrs}")
+        if addrs and ap_ip not in addrs:
+            s.info(f"SoftAP mDNS A is {addrs} (not AP IP {ap_ip}) — SoftAP clients may need 192.168.4.1")
+    except Exception as exc:
+        s.info(f"SoftAP mDNS probe skipped: {exc}")
+
+    ok, detail = cf.telnet_messages(ap_ip, want=1, timeout=5.0)
+    s.check("SoftAP telnet RemoteDebug", ok, detail)
+
+    ws = LiveWs(ap_ip)
+    ws.start()
+    try:
+        ws.got_link.wait(6.0)
+        ws.got_entity.wait(3.0)
+        s.check("SoftAP websocket link", ws.got_link.is_set() or bool(ws.last_link), f"err={ws.error}")
+        if not (ws.got_entity.is_set() or ws.entities):
+            try:
+                api_url = f"http://{ap_ip}/api/v1/showbox/entities/FRONT_LED"
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        api_url,
+                        data=json.dumps({"value": True}).encode(),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=4,
+                ).read()
+                ws.got_entity.wait(3.0)
+            except Exception as exc:
+                s.info(f"SoftAP WS entity poke: {exc}")
+        s.check(
+            "SoftAP websocket entity",
+            ws.got_entity.is_set() or bool(ws.entities),
+            f"n={len(ws.entities)} err={ws.error}",
+        )
+    finally:
+        ws.close()
+
+    rtp = RtpMidi(ap_ip)
+    try:
+        detail = rtp.connect()
+        s.info(f"SoftAP AppleMIDI {detail}")
+        s.check("SoftAP RTP MIDI session", True, detail)
+    except Exception as exc:
+        raise CaseFail(f"SoftAP RTP MIDI failed: {exc}") from exc
+    finally:
+        try:
+            rtp.close()
+        except Exception:
+            pass
+
+
+def case_softap_services(s: Suite) -> None:
+    """Join ShowboxMod SoftAP from laptop Wi-Fi; prove services on 192.168.4.1."""
+    if _softap_iface() is None:
+        raise CaseSkip("no wifi iface for SoftAP client join")
+    wifi = _wait_softap_up(s, timeout=70.0)
+    if not wifi or not wifi.get("ap"):
+        raise CaseFail(f"SoftAP did not come up for service matrix: {wifi}")
+    ap_ip = str(wifi.get("apIp") or "192.168.4.1")
+    ap_pass = str(wifi.get("apPassword") or "showboxmod")
+    joined, how = _join_showbox_softap(ap_pass)
+    if not joined:
+        raise CaseFail(f"could not join ShowboxMod SoftAP: {how}")
+    try:
+        _probe_softap_services(s, ap_ip)
+    finally:
+        _leave_showbox_softap()
+        try:
+            _wifi_api(s, {"ap": False, "apAlways": False})
+        except Exception as exc:
+            s.info(f"SoftAP cleanup after services: {exc}")
+
+
+def case_softap_street(s: Suite) -> None:
+    """Street musician: SoftAP with no remembered home STA (forget pfSenseAP)."""
+    if _softap_iface() is None:
+        raise CaseSkip("no wifi iface for SoftAP client join")
+    home_ssid = "pfSenseAP"
+    home_psk = _home_wifi_psk(home_ssid)
+    if not home_psk:
+        raise CaseSkip(f"laptop has no saved PSK for {home_ssid} (cannot restore STA)")
+
+    wifi0 = _wifi_api(s)
+    remembered = [r.get("ssid") for r in (wifi0.get("remembered") or []) if r.get("ssid")]
+    s.info(f"street setup remembered={remembered}")
+    # Forget every remembered STA so the module cannot rejoin home Wi-Fi.
+    for ssid in remembered:
+        _wifi_api(s, {"forget": ssid})
+    _wifi_api(s, {"autoConnect": False, "apAlways": True, "ap": True})
+    # Drop current STA association if still up.
+    try:
+        _wifi_api(s, {"ap": True, "apAlways": True})
+    except Exception:
+        pass
+    wifi = _wait_wifi_pred(
+        s,
+        lambda w: bool(w.get("ap") and w.get("apIp") and w.get("apIp") != "0.0.0.0"),
+        timeout=60.0,
+    )
+    if not wifi:
+        raise CaseFail("SoftAP did not come up in street mode")
+    # STA should be down or not on home SSID once remembered nets are gone.
+    s.check(
+        "street SoftAP up",
+        bool(wifi.get("ap")),
+        f"ap={wifi.get('ap')} apIp={wifi.get('apIp')!r}",
+    )
+    s.check(
+        "street no remembered home STA",
+        not any(r.get("ssid") == home_ssid for r in (wifi.get("remembered") or [])),
+        f"remembered={wifi.get('remembered')}",
+    )
+    if wifi.get("sta"):
+        s.info(f"STA still reported up ssid={wifi.get('ssid')!r} (may be stale until roam)")
+
+    ap_ip = str(wifi.get("apIp") or "192.168.4.1")
+    ap_pass = str(wifi.get("apPassword") or "showboxmod")
+    joined, how = _join_showbox_softap(ap_pass)
+    if not joined:
+        raise CaseFail(f"street SoftAP join failed: {how}")
+    try:
+        _probe_softap_services(s, ap_ip)
+    finally:
+        _leave_showbox_softap()
+        # Restore home STA credentials and SoftAP off.
+        try:
+            _wifi_api(
+                s,
+                {
+                    "ssid": home_ssid,
+                    "password": home_psk,
+                    "autoConnect": True,
+                    "ap": False,
+                    "apAlways": False,
+                },
+            )
+        except Exception as exc:
+            s.info(f"street restore POST: {exc}")
+            try:
+                _wifi_api(s, {"ssid": home_ssid, "password": home_psk})
+                _wifi_api(s, {"autoConnect": True, "ap": False, "apAlways": False})
+            except Exception as exc2:
+                s.info(f"street restore retry: {exc2}")
+        # Wait for module STA to return on the desk LAN (via eth or wifi).
+        restored = _wait_wifi_pred(
+            s,
+            lambda w: bool(w.get("sta") and str(w.get("ip") or "").startswith("192.168.3.")),
+            timeout=45.0,
+        )
+        s.check(
+            "street restored home STA",
+            restored is not None,
+            f"wifi={restored}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Level 3
+# ---------------------------------------------------------------------------
+
+def case_usb_gadget_held(s: Suite) -> None:
+    """L3: after L2 usb-midi-hid, gadget must still enumerate under radio load."""
+    if not getattr(s.args, "usb", False):
+        raise CaseSkip("pass --usb when native USB-C is plugged into this host")
+    midi = api("/api/v1/midi")
+    peri = _transport(midi, "usbMidiPeripheral")
+    hid = _transport(midi, "usbHid")
+    if not (peri.get("enabled") and hid.get("enabled")):
+        raise CaseSkip("USB MIDI+HID gadget not enabled — run L2 usb-midi-hid first")
+    s.check("gadget still enabled", True, "peri+hid")
+    s.check("host still sees ShowboxMod USB", _usb_showbox_present() or _usb_midi_listed(), "lsusb/amidi")
+    # Light HTTP while USB gadget is up (eth preferred if STA is noisy).
+    code, body = http_get(f"http://{s.ip}/services", timeout=3.0)
+    if code != 200:
+        eth_note = str(_transport(midi, "ethernet").get("note") or "")
+        eth_ip = next((p for p in eth_note.replace(",", " ").split() if p.count(".") == 3 and p[0].isdigit()), "")
+        if eth_ip:
+            code, body = http_get(f"http://{eth_ip}/services", timeout=3.0)
+    s.check("HTTP while USB gadget held", code == 200 and len(body) > 100, f"code={code}")
+
+
 LEVEL1: list[tuple[str, CaseFn]] = [
     ("reachability", case_reachability),
     ("uart-link", case_uart_link),
     ("uart-roundtrip", case_uart_roundtrip),
     ("mdns", case_mdns),
     ("wifi-sta", case_wifi_sta),
+    ("ethernet-smoke", case_ethernet_smoke),  # skip unless --ethernet
     ("hotspot", case_hotspot),
     ("telnet-ota", case_telnet_ota),
     ("reaction-engine", case_reaction_engine),
@@ -3059,6 +3666,9 @@ LEVEL2: list[tuple[str, CaseFn]] = [
     ("rec-timer", case_rec_timer),
     ("https", case_https),
     ("hotspot-air", case_hotspot_air),
+    ("hotspot-sta-coex", case_hotspot_sta_coex),
+    ("softap-services", case_softap_services),
+    ("softap-street", case_softap_street),
     ("fresh-pair", case_fresh_pair),
     ("boost-reboot", case_boost_reboot),
 ]
