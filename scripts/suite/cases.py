@@ -3961,6 +3961,23 @@ def case_softap_street(s: Suite) -> None:
             restored is not None,
             f"wifi={restored}",
         )
+        # SoftAP-only street leaves largest≈7.6k; next L2 cases then wedge :80.
+        try:
+            heap = int((_wifi_api(s) or {}).get("heapLargest") or 0)
+        except Exception:
+            heap = 0
+        if heap and heap < 9000:
+            s.info(f"street heapLargest={heap} — soft reboot before next case")
+            try:
+                cf.http_post(f"{s.session.base}/api/v1/console", {"cmd": "reboot"}, timeout=3.0)
+            except Exception as exc:
+                s.info(f"street reboot POST: {exc}")
+            time.sleep(12.0)
+            end = time.monotonic() + 45.0
+            while time.monotonic() < end:
+                if wait_http_quiet(s.ip, timeout=2.0):
+                    break
+                time.sleep(1.0)
 
 
 # ---------------------------------------------------------------------------
