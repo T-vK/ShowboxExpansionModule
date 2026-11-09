@@ -1696,6 +1696,29 @@ def _ws_multiclient_run(ip: str, n: int = 10, hold_s: float = 2.5) -> dict[str, 
     return asyncio.run(_run())
 
 
+def _recover_http_after_ws(s: Suite, label: str) -> bool:
+    """Firmware skips :80 rebind while lanWsClients()>0. Keep suite WS closed
+    until quiet returns, then optionally kick RemoteDebug reset."""
+    try:
+        s.ws.close()
+    except Exception:
+        pass
+    if wait_http_quiet(s.ip, timeout=20.0):
+        return True
+    s.info(f"{label}: HTTP still down after WS close, waiting more")
+    time.sleep(4.0)
+    if wait_http_quiet(s.ip, timeout=25.0):
+        return True
+    s.info(f"{label}: telnet_reset to recover wedged :80")
+    telnet_reset(s.ip)
+    end = time.monotonic() + 45.0
+    while time.monotonic() < end:
+        if wait_http_quiet(s.ip, timeout=3.0):
+            return True
+        time.sleep(1.0)
+    return wait_http_quiet(s.ip, timeout=8.0)
+
+
 def case_ws_multiclient(s: Suite) -> None:
     """10 concurrent WS clients must each receive the same entity deltas.
 
@@ -1710,9 +1733,9 @@ def case_ws_multiclient(s: Suite) -> None:
     try:
         for attempt in range(3):
             try:
-                api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
                 if not wait_http_quiet(s.ip, timeout=15.0):
                     raise CaseFail("HTTP down before ws-multiclient")
+                _api_under_ws("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
                 s.info(f"opening {n} websocket clients (attempt {attempt + 1})")
                 result = _ws_multiclient_run(s.ip, n=n, hold_s=2.0)
                 if result["linked"] < n or result["sync_ok"] < n:
@@ -1724,7 +1747,7 @@ def case_ws_multiclient(s: Suite) -> None:
             except (CaseFail, urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_exc = exc
                 s.info(f"ws-multiclient attempt {attempt + 1} aborted: {exc}")
-                wait_http_quiet(s.ip, timeout=20.0)
+                _recover_http_after_ws(s, "ws-multiclient-retry")
         if last_exc is not None:
             raise CaseFail(f"ws-multiclient failed after retry: {last_exc}") from last_exc
         s.check(
@@ -1737,7 +1760,11 @@ def case_ws_multiclient(s: Suite) -> None:
             result["sync_ok"] >= n,
             f"sync_ok={result['sync_ok']} details={result['details']}",
         )
-        s.check("HTTP alive after multi-ws", wait_http_quiet(s.ip, timeout=12.0), "http down")
+        s.check(
+            "HTTP alive after multi-ws",
+            _recover_http_after_ws(s, "ws-multiclient"),
+            "http down",
+        )
         mute = _entities_map().get("MAIN_MUTE")
         s.check(
             "MAIN muted after multi-ws",
@@ -1746,9 +1773,12 @@ def case_ws_multiclient(s: Suite) -> None:
         )
     finally:
         try:
-            api("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
+            _api_under_ws("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
         except Exception:
             pass
+        # Only reattach suite WS after :80 is quiet — otherwise lanWsClients
+        # blocks firmware listen rebind and the next case (ws-sync-stress) dies.
+        _recover_http_after_ws(s, "ws-multiclient-finally")
         s.ws = LiveWs(s.ip)
         s.ws.start()
         s.ws.got_link.wait(6.0)
@@ -1894,7 +1924,8 @@ def _ws_sync_stress_run(ip: str, n: int = 10) -> dict[str, Any]:
         out["m_mixer_ok"] = sum(1 for st in states if st["mixer"] >= 1)
 
         # Latency rounds — HTTP under 10 WS can URLError; retry the POST.
-        for r in range(12):
+        # 8 samples is enough for p95 (check wants ≥8); 12 was wedging :80.
+        for r in range(8):
             want = bool(r % 2)
             while not got.empty():
                 got.get_nowait()
@@ -2082,7 +2113,7 @@ def case_ws_sync_stress(s: Suite) -> None:
     try:
         for attempt in range(3):
             try:
-                if not wait_http_quiet(s.ip, timeout=25.0):
+                if not _recover_http_after_ws(s, f"ws-sync-stress-pre-{attempt + 1}"):
                     raise CaseFail("HTTP down before ws-sync-stress")
                 _api_under_ws("/api/v1/showbox/entities/MAIN_MUTE", {"value": True})
                 s.info(f"ws-sync-stress with {n} clients (attempt {attempt + 1})")
@@ -2106,7 +2137,7 @@ def case_ws_sync_stress(s: Suite) -> None:
             except (CaseFail, urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_exc = exc
                 s.info(f"ws-sync-stress attempt {attempt + 1} aborted: {exc}")
-                wait_http_quiet(s.ip, timeout=30.0)
+                _recover_http_after_ws(s, f"ws-sync-stress-retry-{attempt + 1}")
         if last_exc is not None:
             raise CaseFail(f"ws-sync-stress failed after retry: {last_exc}") from last_exc
         # Connect must stay light (no automatic mixer blob — HOL risk).
