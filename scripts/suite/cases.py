@@ -2621,12 +2621,29 @@ def case_nvs_burst(s: Suite) -> None:
     original: dict[str, Any] = {}
     # http-pwa just pulled the SPA; wait_http's 250 ms SYN flood wedges the
     # rebound listener (L3 att2: SPA heap largest=7668, restore ECONNREFUSED).
+    # After full L1 (ble-midi+SPA) vars GET can time out for ~12s while /link
+    # still answers — close suite WS and escalate to heap reboot like fresh-pair.
+    try:
+        s.ws.close()
+    except Exception:
+        pass
     if not wait_http_quiet(s.ip, timeout=12.0):
         raise CaseFail("HTTP down before nvs-burst")
-    try:
-        original = {name: var(name) for name in required}
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise CaseFail(f"nvs-burst read: {exc}") from exc
+    last_read: Optional[BaseException] = None
+    for attempt in range(3):
+        try:
+            original = {name: var(name) for name in required}
+            last_read = None
+            break
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_read = exc
+            s.info(f"nvs-burst read attempt {attempt + 1}: {exc}")
+            if attempt == 0:
+                wait_http_quiet(s.ip, timeout=10.0)
+            else:
+                _ensure_ws_budget(s, "nvs-burst")
+    if last_read is not None:
+        raise CaseFail(f"nvs-burst read: {last_read}") from last_read
     try:
         set_var("BOOST_AMOUNT", 3)
         s.check("BOOST_AMOUNT write", abs(float(var("BOOST_AMOUNT", -1)) - 3) < 0.05)
