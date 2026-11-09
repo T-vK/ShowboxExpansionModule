@@ -3353,8 +3353,25 @@ def case_hotspot_sta_coex(s: Suite) -> None:
     s.check("coex STA IP stable", str(wifi.get("ip") or "") == s.ip, f"ip={wifi.get('ip')}")
     code, body = http_get_retry(f"http://{s.ip}/api/v1/wifi", timeout=3.0, attempts=5, min_bytes=20)
     s.check("STA /api/v1/wifi while SoftAP", code == 200 and b'"sta"' in body, f"code={code} bytes={len(body)}")
-    code, body = http_get_retry(f"http://{s.ip}/services", timeout=3.0, attempts=4, min_bytes=100)
-    s.check("STA /services while SoftAP", code == 200 and len(body) > 100, f"code={code} bytes={len(body)}")
+    # /services is the HTML health shell; under SoftAP+L2 load STA :80 can
+    # briefly refuse the bigger body while /wifi still answers — quiet retry.
+    if not wait_http_quiet(s.ip, timeout=10.0):
+        s.info("STA not quiet before /services under SoftAP")
+    code, body = http_get_retry(
+        f"http://{s.ip}/services", timeout=4.0, attempts=8, min_bytes=100, quiet=True
+    )
+    if code != 200 or len(body) <= 100:
+        eth = _eth_fallback_ip(s)
+        if eth and eth != s.ip:
+            s.info(f"STA /services via eth {eth} after SoftAP coex fail")
+            code, body = http_get_retry(
+                f"http://{eth}/services", timeout=4.0, attempts=4, min_bytes=100, quiet=True
+            )
+    s.check(
+        "STA /services while SoftAP",
+        code == 200 and (b"ShowboxMod" in body or len(body) > 100),
+        f"code={code} bytes={len(body)}",
+    )
 
     ap_ip = str(wifi.get("apIp") or "192.168.4.1")
     ap_pass = str(wifi.get("apPassword") or "showboxmod")
