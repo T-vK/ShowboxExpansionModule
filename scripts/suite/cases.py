@@ -3163,7 +3163,13 @@ def case_https_repeat(s: Suite) -> None:
 
 
 def case_heap_soak(s: Suite) -> None:
-    code, dbg = http_get(f"http://{s.ip}/api/v1/debug", timeout=3.0)
+    # names-gzip / SPA just before this can leave :80 wedged (L3 USB gadget:
+    # URLError timeout on first /debug). Quiet + retry; never raise raw URLError.
+    if not wait_http_quiet(s.ip, timeout=12.0):
+        s.info("HTTP not quiet before heap-soak")
+    code, dbg = http_get_retry(
+        f"http://{s.ip}/api/v1/debug", timeout=3.0, attempts=5, min_bytes=20, quiet=True
+    )
     _h0, largest0 = cf.parse_heap(dbg.decode("utf-8", "replace") if dbg else "")
     fail = 0
     n = 0
@@ -3171,17 +3177,24 @@ def case_heap_soak(s: Suite) -> None:
     while time.monotonic() < deadline:
         n += 1
         ping = ping_ok(s.ip)
-        code, body = http_get(f"http://{s.ip}/services", timeout=3.0)
-        live, why = cf.uart_ok(s.link(), 2000)
+        code, body = http_get_retry(
+            f"http://{s.ip}/services", timeout=2.0, attempts=3, min_bytes=100, quiet=True
+        )
+        try:
+            live, why = cf.uart_ok(s.link(), 2000)
+        except Exception as exc:
+            live, why = False, str(exc)
         # ICMP next to AIRSTEP PTA can miss a 1s echo while TCP and UART
         # stay up. Heap-soak is the HTTP/UART/heap oracle, not ping.
-        # A single http=0 with uart live is the same coex stall (L3 streak9
-        # att1: soak 17 ping=False http=0 uart=ok → 1/79 fail). Retry once.
         if code != 200 and live:
+            wait_http_quiet(s.ip, timeout=4.0)
             code, body = http_get_retry(
-                f"http://{s.ip}/services", timeout=2.0, attempts=3, min_bytes=100
+                f"http://{s.ip}/services", timeout=2.0, attempts=3, min_bytes=100, quiet=True
             )
-            live, why = cf.uart_ok(s.link(), 2000)
+            try:
+                live, why = cf.uart_ok(s.link(), 2000)
+            except Exception as exc:
+                live, why = False, str(exc)
             if code == 200 and live:
                 s.info(f"soak {n} http recovered after retry ping={ping}")
         if code != 200 or not live:
@@ -3194,7 +3207,9 @@ def case_heap_soak(s: Suite) -> None:
             break
         s.ws.got_link.wait(timeout=min(0.4, remaining))
         s.ws.got_link.clear()
-    code, dbg = http_get(f"http://{s.ip}/api/v1/debug", timeout=3.0)
+    code, dbg = http_get_retry(
+        f"http://{s.ip}/api/v1/debug", timeout=3.0, attempts=4, min_bytes=20, quiet=True
+    )
     _h1, largest1 = cf.parse_heap(dbg.decode("utf-8", "replace") if dbg else "")
     s.check("heap soak ticks", fail == 0, f"{fail}/{n}")
     if largest0 is not None and largest1 is not None and largest1 + 8192 < largest0 and largest1 < 8192:
