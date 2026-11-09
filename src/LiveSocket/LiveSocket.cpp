@@ -126,6 +126,11 @@ void LiveSocket::begin(AsyncWebServer* server, MackieShowbox* showboxIn) {
             return;
         }
         if (data[0] == 'm') {
+            // On-demand full mixer sync. Connect deliberately skips sendMixer
+            // (a 12 KB blob on connect HOL-blocked link/pong); clients that
+            // want WS state without HTTP GET ask with a single "m".
+            lanNoteWsRx();
+            sendMixer(client);
             return;
         }
         if (data[0] == 'l') {
@@ -260,6 +265,18 @@ void LiveSocket::noteSnapshotDone(const char* action, uint8_t slot) {
     if (n > 0) {
         sendAllReady(body, static_cast<size_t>(n));
     }
+    // RECALL only: pace a full mixer blob to each client (one per tick).
+    // Sending 12 KB × 10 at once aborted sockets (suite: no close frame).
+    if (action != nullptr && strcmp(action, "RECALL") == 0) {
+        uint8_t n = 0;
+        for (AsyncWebSocketClient& c : socket.getClients()) {
+            if (c.status() == WS_CONNECTED) {
+                n = static_cast<uint8_t>(n + 1);
+            }
+        }
+        mixerFanRemaining = n;
+        mixerBroadcastAt = millis() + 50;
+    }
     flushMixer();
     flushLink();
 }
@@ -323,10 +340,15 @@ void LiveSocket::sendMixer(AsyncWebSocketClient* client) {
     if (showbox == nullptr) {
         return;
     }
+    // Reuse one SPIRAM blob — 10× malloc/free of 12 KB during "m" storms
+    // fragmented heap and later aborted WS clients mid-SAVE.
     const size_t cap = 12288;
-    char* json = static_cast<char*>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    static char* json = nullptr;
     if (json == nullptr) {
-        json = static_cast<char*>(heap_caps_malloc(cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        json = static_cast<char*>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (json == nullptr) {
+            json = static_cast<char*>(heap_caps_malloc(cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
     }
     if (json == nullptr) {
         return;
@@ -381,7 +403,6 @@ void LiveSocket::sendMixer(AsyncWebSocketClient* client) {
     } else {
         sendAllReady(json, n);
     }
-    heap_caps_free(json);
 }
 
 void LiveSocket::sendNames(AsyncWebSocketClient* client) {
@@ -397,18 +418,19 @@ void LiveSocket::sendNames(AsyncWebSocketClient* client) {
 }
 
 void LiveSocket::dropClients() {
-    AsyncClient* stale[8] {};
+    static constexpr uint16_t kWsClientCap = 12;
+    AsyncClient* stale[kWsClientCap] {};
     int nStale = 0;
     for (AsyncWebSocketClient& client : socket.getClients()) {
-        if (client.client() != nullptr && nStale < 8) {
+        if (client.client() != nullptr && nStale < (int)kWsClientCap) {
             stale[nStale++] = client.client();
         }
     }
     for (int i = 0; i < nStale; i++) {
         stale[i]->abort();
     }
-    for (int i = 0; i < 8; i++) {
-        socket.cleanupClients(8);
+    for (int i = 0; i < (int)kWsClientCap; i++) {
+        socket.cleanupClients(kWsClientCap);
     }
     lanSetWsRemotes(nullptr, 0);
     lanNoteWsClients(0);
@@ -422,24 +444,26 @@ void LiveSocket::tick() {
     // nulls _client and the next cleanup can erase it.
     // cleanupClients(max) also closes the oldest CONNECTED client when
     // count()>max — passing 1 was killing the live suite socket on every
-    // reconnect (clients 2↔3, 1005, ~3 KB/pass).
-    AsyncClient* stale[8] {};
+    // reconnect (clients 2↔3, 1005, ~3 KB/pass). Cap is 12 so a phone
+    // wall of mixer tabs (suite ws-multiclient uses 10) stays connected.
+    static constexpr uint16_t kWsClientCap = 12;
+    AsyncClient* stale[kWsClientCap] {};
     int nStale = 0;
     for (AsyncWebSocketClient& client : socket.getClients()) {
-        if (client.status() != WS_CONNECTED && client.client() != nullptr && nStale < 8) {
+        if (client.status() != WS_CONNECTED && client.client() != nullptr && nStale < (int)kWsClientCap) {
             stale[nStale++] = client.client();
         }
     }
     for (int i = 0; i < nStale; i++) {
         stale[i]->abort();
     }
-    // Suite WS + a browser tab. cleanupClients(1) 1005'd the suite
-    // socket whenever a second client existed, leaving LOOPER_STATE stale.
-    socket.cleanupClients(3);
-    uint16_t ports[8] {};
+    // Was cleanupClients(3): suite+browser only. Raised for multi-tab /
+    // ws-multiclient (10) while still pruning runaway reconnect leaks.
+    socket.cleanupClients(kWsClientCap);
+    uint16_t ports[kWsClientCap] {};
     int n = 0;
     for (AsyncWebSocketClient& client : socket.getClients()) {
-        if (client.status() == WS_CONNECTED && n < 8) {
+        if (client.status() == WS_CONNECTED && n < (int)kWsClientCap) {
             ports[n++] = client.remotePort();
         }
     }
@@ -459,6 +483,37 @@ void LiveSocket::tick() {
         uint8_t slot = 0;
         if (showbox->takeSnapshotDone(action, slot)) {
             noteSnapshotDone(action == 2 ? "SAVE" : "RECALL", slot);
+        }
+    }
+    // Pace post-RECALL mixer: one connected client per ~40 ms.
+    if (mixerFanRemaining > 0 && mixerBroadcastAt != 0
+        && (int32_t)(millis() - mixerBroadcastAt) >= 0) {
+        uint8_t connected = 0;
+        for (AsyncWebSocketClient& c : socket.getClients()) {
+            if (c.status() == WS_CONNECTED) {
+                connected = static_cast<uint8_t>(connected + 1);
+            }
+        }
+        if (connected == 0) {
+            mixerFanRemaining = 0;
+            mixerBroadcastAt = 0;
+        } else {
+            const uint8_t target = connected >= mixerFanRemaining
+                ? static_cast<uint8_t>(connected - mixerFanRemaining)
+                : 0;
+            uint8_t i = 0;
+            for (AsyncWebSocketClient& client : socket.getClients()) {
+                if (client.status() != WS_CONNECTED) {
+                    continue;
+                }
+                if (i == target) {
+                    sendMixer(&client);
+                    break;
+                }
+                i = static_cast<uint8_t>(i + 1);
+            }
+            mixerFanRemaining = static_cast<uint8_t>(mixerFanRemaining - 1);
+            mixerBroadcastAt = mixerFanRemaining > 0 ? (millis() + 40) : 0;
         }
     }
     if (socket.count() == 0) {

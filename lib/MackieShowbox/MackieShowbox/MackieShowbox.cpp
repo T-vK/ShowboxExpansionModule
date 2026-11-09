@@ -147,6 +147,7 @@ void MackieShowbox::begin() {
     if (parseQ == nullptr) {
         showboxLog("uart parse queue alloc failed");
     }
+    ensureSnapshotMirror();
     loadAnalogHold();
     uint8_t startSig[] = {0xBE, 0xEF};
     uint8_t endSig[] = {0xEF, 0xBE};
@@ -497,11 +498,77 @@ void MackieShowbox::sendSnapshot(snapshot_action action, snapshot_slot slot) {
     uint8_t packet[] = { 0xBE, 0xEF, 0x01, SNAPSHOT, static_cast<uint8_t>(action), static_cast<uint8_t>(slot), 0xEF, 0xBE };
     interceptor.sendPacket(packet, sizeof(packet), TO_MIXER);
     interceptor.sendPacket(packet, sizeof(packet), TO_BASE);
+    // Capture before the busy window: these are the values the mixer is saving.
+    if (action == snapshot_action::SAVE) {
+        captureSnapshotMirror(static_cast<uint8_t>(slot));
+    }
     armSnapshotDone(static_cast<uint8_t>(action), static_cast<uint8_t>(slot));
     // Measured on the wire: a save followed by another command within ~2s
     // captured the wrong state. Saves take longer than recalls.
     snapshotBusyUntil = millis()
         + (action == snapshot_action::SAVE ? 5000u : 3500u);
+}
+
+void MackieShowbox::ensureSnapshotMirror() {
+    if (snapshotMirror != nullptr) {
+        return;
+    }
+    const size_t n = static_cast<size_t>(kSnapshotMirrorSlots) * (static_cast<size_t>(FX_BYPASS) + 1u);
+    snapshotMirror = static_cast<EntityValue*>(
+        heap_caps_calloc(n, sizeof(EntityValue), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (snapshotMirror == nullptr) {
+        snapshotMirror = static_cast<EntityValue*>(calloc(n, sizeof(EntityValue)));
+    }
+    if (snapshotMirror == nullptr) {
+        showboxLog("snapshot mirror alloc failed");
+    }
+}
+
+void MackieShowbox::captureSnapshotMirror(uint8_t slot) {
+    ensureSnapshotMirror();
+    if (snapshotMirror == nullptr || slot >= kSnapshotMirrorSlots) {
+        return;
+    }
+    EntityValue* row = snapshotMirror + static_cast<size_t>(slot) * (static_cast<size_t>(FX_BYPASS) + 1u);
+    for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+        row[i] = entityValues[static_cast<entity_id>(i)];
+    }
+    snapshotMirrorValid[slot] = true;
+}
+
+void MackieShowbox::applySnapshotMirror(uint8_t slot) {
+    if (snapshotMirror == nullptr || slot >= kSnapshotMirrorSlots || !snapshotMirrorValid[slot]) {
+        return;
+    }
+    // Do not fan entityListener here: 80× pushEntityJson with 10 WS clients
+    // stalls queues (retry cap 8) and takes hundreds of ms. LiveSocket sends
+    // one type:mixer blob from noteSnapshotDone after takeSnapshotDone.
+    EntityValue* row = snapshotMirror + static_cast<size_t>(slot) * (static_cast<size_t>(FX_BYPASS) + 1u);
+    uint32_t n = 0;
+    for (uint8_t i = 0; i <= FX_BYPASS; i++) {
+        entity_id id = static_cast<entity_id>(i);
+        if (id == LOOPER_STATE) {
+            continue; // transport, not a mixer snapshot field
+        }
+        auto it = entity_type_mapping.find(id);
+        if (it == entity_type_mapping.end()) {
+            continue;
+        }
+        const EntityValue& src = row[i];
+        if (!src.heard) {
+            continue;
+        }
+        mixerTouched[i] = false;
+        if (it->second == BOOL) {
+            setEntityValue(id, src.boolValue, false);
+        } else if (it->second == UINT8) {
+            setEntityValue(id, src.uint8Value, false);
+        } else {
+            setEntityValue(id, src.floatValue, false);
+        }
+        n = n + 1;
+    }
+    showboxLog("snapshot mirror applied slot=%u entities=%u", (unsigned)slot, (unsigned)n);
 }
 
 bool MackieShowbox::snapshotBusy() const {
@@ -532,21 +599,23 @@ bool MackieShowbox::takeSnapshotDone(uint8_t& action, uint8_t& slot) {
     action = snapshotPendingAction;
     slot = snapshotPendingSlot;
     snapshotBusyUntil = 0;
-    // The mixer restores its state on recall but does NOT re-send entity
-    // values (verified 2026-10-19: gain stayed stale until a DATA_REQUEST
-    // forced the dump). Two problems:
-    // 1. The module's cache needs a fresh dump — re-request it.
-    // 2. The mixerTouched flags (set when the user wrote entities via the
-    //    webui) suppress the module from accepting the dump's values —
-    //    every entity the user ever touched via the webui is gated off.
-    //    Clear them ALL so the dump updates everything.
+    // During SAVE the mixer often streams the *previous* slot contents onto
+    // the UART before the new take lands (suite: after SAVE saw gain 40 from
+    // an older slot-1 payload). Re-apply the mirror we captured at send so
+    // the HTTP/WS cache matches what we asked to save.
+    // RECALL: mixer restores DSP but mid-session dumps often never arrive.
+    // Clear mixerTouched, apply mirror, best-effort dump request.
     for (uint8_t i = 0; i <= FX_BYPASS; i++) {
         mixerTouched[i] = false;
     }
-    lastDumpReqMs = 0;
-    dumpTries = 0;
-    uint8_t req[] = { 0xBE, 0xEF, 0x00, DATA_REQUEST, ALL_ENTITIES, 0xEF, 0xBE };
-    interceptor.sendPacket(req, sizeof(req), TO_MIXER);
+    applySnapshotMirror(slot);
+    if (action == static_cast<uint8_t>(snapshot_action::RECALL)) {
+        lastDumpReqMs = 0;
+        dumpTries = 0;
+        uint8_t req[] = { 0xBE, 0xEF, 0x00, DATA_REQUEST, ALL_ENTITIES, 0xEF, 0xBE };
+        interceptor.sendPacket(req, sizeof(req), TO_MIXER);
+        interceptor.sendPacket(req, sizeof(req), TO_BASE);
+    }
     return true;
 }
 
