@@ -856,8 +856,19 @@ def _join_showbox_softap(password: str = "showboxmod") -> tuple[bool, str]:
     if not iface:
         return False, "no wifi iface"
     last = "nmcli failed"
-    try:
-        for attempt in range(4):
+    # Stale ShowboxMod-suite profile left "connecting" after a prior timeout
+    # blocks the next join (L3 softap-services after hotspot-sta-coex).
+    for cmd in (
+        ["nmcli", "connection", "down", "ShowboxMod-suite"],
+        ["nmcli", "connection", "delete", "ShowboxMod-suite"],
+        ["nmcli", "device", "disconnect", iface],
+    ):
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    for attempt in range(5):
+        try:
             subprocess.run(
                 ["nmcli", "device", "wifi", "rescan", "ifname", iface],
                 capture_output=True,
@@ -893,15 +904,34 @@ def _join_showbox_softap(password: str = "showboxmod") -> tuple[bool, str]:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=25,
+                timeout=35,
                 check=False,
             )
             if out.returncode == 0:
                 return True, (out.stdout or "joined").strip()[:160]
             last = (out.stdout or out.stderr or "nmcli failed").strip()[:160]
-        return False, last
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, str(exc)
+        except subprocess.TimeoutExpired as exc:
+            last = f"nmcli connect timeout attempt {attempt + 1}: {exc}"
+            try:
+                subprocess.run(
+                    ["nmcli", "connection", "down", "ShowboxMod-suite"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                subprocess.run(
+                    ["nmcli", "device", "disconnect", iface],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        except OSError as exc:
+            return False, str(exc)
+    return False, last
 
 
 def _leave_showbox_softap() -> None:
@@ -3768,10 +3798,22 @@ def _probe_softap_services(s: Suite, ap_ip: str) -> None:
             pass
 
 
+def _usb_gadget_active(s: Suite) -> bool:
+    midi = s.midi_status()
+    return midi.get("usbJtag") is False and (
+        _transport(midi, "usbMidiPeripheral").get("enabled")
+        or _transport(midi, "usbHid").get("enabled")
+    )
+
+
 def case_softap_services(s: Suite) -> None:
     """Join ShowboxMod SoftAP from laptop Wi-Fi; prove services on 192.168.4.1."""
     if _softap_iface() is None:
         raise CaseSkip("no wifi iface for SoftAP client join")
+    # L2 leaves MIDI+HID gadget on for L3; SoftAP softAP() then stays dark
+    # (heap~7k, apIp=0). SoftAP matrix already ran in L2 before gadget.
+    if _usb_gadget_active(s):
+        raise CaseSkip("SoftAP join skipped while USB MIDI+HID gadget is active")
     wifi = _wait_softap_up(s, timeout=70.0)
     if not wifi or not wifi.get("ap"):
         raise CaseFail(f"SoftAP did not come up for service matrix: {wifi}")
@@ -3794,6 +3836,8 @@ def case_softap_street(s: Suite) -> None:
     """Street musician: SoftAP with no remembered home STA (forget pfSenseAP)."""
     if _softap_iface() is None:
         raise CaseSkip("no wifi iface for SoftAP client join")
+    if _usb_gadget_active(s):
+        raise CaseSkip("SoftAP street skipped while USB MIDI+HID gadget is active")
     home_ssid = "pfSenseAP"
     home_psk = _home_wifi_psk(home_ssid)
     if not home_psk:
