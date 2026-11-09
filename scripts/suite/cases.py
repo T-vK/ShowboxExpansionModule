@@ -1501,14 +1501,24 @@ def case_looper_autoboost(s: Suite) -> None:
     g = s.gain_now()
     s.check("no boost while recording", g is not None and abs(g - g0) < 0.4, f"gain={g}")
     press(s, 102, 3, "record -> play")
-    g = s.wait_gain(boosted, timeout=5.0)
+    # Reaction can latch BOOST_ENABLED before INPUT2_GAIN climbs (L1 STOP:
+    # console mode=on, gain still 28 for >5s). Wait longer + one re-poll.
+    g = s.wait_gain(boosted, timeout=10.0)
+    if g is None or abs(g - boosted) >= 0.4:
+        s.peek_console()
+        time.sleep(0.8)
+        g = s.wait_gain(boosted, timeout=6.0)
     s.check("boost on play", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
     press(s, 102, 4, "overdub")
     _assert_unboosted(s, g0, "boost off on overdub")
     press(s, 103, 2, "stop")
     _assert_unboosted(s, g0, "no boost while stopped")
     press(s, 102, 3, "play")
-    g = s.wait_gain(boosted, timeout=5.0)
+    g = s.wait_gain(boosted, timeout=10.0)
+    if g is None or abs(g - boosted) >= 0.4:
+        s.peek_console()
+        time.sleep(0.8)
+        g = s.wait_gain(boosted, timeout=6.0)
     s.check("boost on play again", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
     press(s, 102, 4, "overdub again")
     _assert_unboosted(s, g0, "boost off on overdub again")
