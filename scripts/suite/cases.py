@@ -2942,6 +2942,8 @@ def _wait_ads(s: Suite, timeout: float = 40.0) -> dict[str, Any]:
     end = time.monotonic() + timeout
     midi: dict[str, Any] = {}
     last_post = 0.0
+    reset_done = False
+    empty_since = time.monotonic()
     while time.monotonic() < end:
         if last_post == 0.0 or (time.monotonic() - last_post) >= 8.0:
             try:
@@ -2952,8 +2954,17 @@ def _wait_ads(s: Suite, timeout: float = 40.0) -> dict[str, Any]:
         midi = s.midi_status()
         if midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000:
             return midi
-        if not midi:
+        if midi:
+            empty_since = time.monotonic()
+        else:
             wait_http_quiet(s.ip, timeout=min(5.0, max(0.5, end - time.monotonic())))
+            # After USB gadget + SPA, :80 can return quiet then empty /midi.
+            if not reset_done and (time.monotonic() - empty_since) >= 12.0:
+                s.info("ads wait: empty /midi — telnet_reset")
+                telnet_reset(s.ip)
+                reset_done = True
+                empty_since = time.monotonic()
+                time.sleep(8.0)
         remaining = end - time.monotonic()
         if remaining <= 0:
             break
@@ -2965,9 +2976,11 @@ def case_fresh_pair(s: Suite) -> None:
     if s.ble is not None:
         s.ble.close()
         s.ble = None
-    if not wait_http_quiet(s.ip, timeout=16.0):
+    # After L2/L3 usb-midi-hid, heap~7.6k leaves /midi empty (ads=None).
+    _ensure_ws_budget(s, "fresh-pair")
+    if not _recover_http_after_ws(s, "fresh-pair"):
         raise CaseFail("HTTP down before fresh-pair")
-    midi = _wait_ads(s, timeout=45.0)
+    midi = _wait_ads(s, timeout=60.0)
     if not (midi.get("advertising") and int(midi.get("pairingMs") or 0) > 1000):
         raise CaseFail(
             f"ads off before unpair advertising={midi.get('advertising')} "
