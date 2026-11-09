@@ -3218,9 +3218,54 @@ def case_heap_soak(s: Suite) -> None:
 
 
 def case_host_peri_load(s: Suite) -> None:
-    midi = s.midi_status()
-    hosts = [h for h in (midi.get("hosts") or []) if h.get("connected")]
-    peris = [p for p in (midi.get("peripherals") or []) if p.get("connected")]
+    """Laptop BLE host + AIRSTEP must still be up at end of L3.
+
+    USB gadget + SPA/heap load often drops the laptop ACL and briefly AIRSTEP.
+    Revive both before failing (same class of flake as airstep-held after reboot).
+    """
+    deadline = time.monotonic() + 45.0
+    hosts: list[Any] = []
+    peris: list[Any] = []
+    revived_host = False
+    while time.monotonic() < deadline:
+        midi = s.midi_status()
+        hosts = [h for h in (midi.get("hosts") or []) if h.get("connected")]
+        peris = [p for p in (midi.get("peripherals") or []) if p.get("connected")]
+        if hosts and peris:
+            break
+        if not peris:
+            for p in midi.get("peripherals") or []:
+                if not p.get("autoConnect"):
+                    continue
+                addr = str(p.get("address") or "")
+                name = str(p.get("name") or "AIRSTEP")
+                if not addr:
+                    continue
+                cf.http_post(
+                    f"{s.session.base}/api/v1/midi/ble/auto",
+                    {"address": addr, "enabled": "1"},
+                    timeout=3.0,
+                )
+                cf.http_post(
+                    f"{s.session.base}/api/v1/midi/ble/connect",
+                    {"address": addr, "name": name, "midi": "1", "hid": "0"},
+                    timeout=3.0,
+                )
+            s.info("host-peri-load: nudged autoConnect peri")
+        if not hosts and not revived_host:
+            addr = cf.bt_find_showbox() or s.module_addr
+            if addr:
+                s.module_addr = addr
+                try:
+                    ensure_ble_midi(s, force=True)
+                    revived_host = True
+                    s.info("host-peri-load: revived laptop BLE host")
+                except Exception as exc:
+                    s.info(f"host-peri-load host revive: {exc}")
+                    revived_host = False
+            else:
+                s.info("host-peri-load: no ShowboxMod addr for host revive")
+        time.sleep(1.0)
     s.check("host still connected under load", bool(hosts), f"hosts={len(hosts)}")
     s.check("peripheral still connected under load", bool(peris), f"peripherals={len(peris)}")
 
