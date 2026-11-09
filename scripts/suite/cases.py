@@ -3118,16 +3118,32 @@ def case_looper_under_load(s: Suite) -> None:
 
 
 def case_names_gzip(s: Suite) -> None:
+    # Late L3 under USB gadget + looper-under-load can leave :80 refusing the
+    # 266KB SPA (code=0) while small JSON still answers — quiet before SPA.
+    if not wait_http_quiet(s.ip, timeout=12.0):
+        s.info("HTTP not quiet before names-gzip")
     names = api("/api/v1/showbox/names")
     api("/api/v1/showbox/names", {"id": "ch1", "name": names.get("channels", {}).get("ch1") or "Ch 1"})
+    if not wait_http_quiet(s.ip, timeout=10.0):
+        s.info("HTTP not quiet after names POST")
     code, body, raw = 0, b"", b""
-    for _attempt in range(3):
+    for attempt in range(5):
         code, body = http_get_resumable(
-            f"http://{s.ip}/", timeout=2.5, ua="Mozilla/5.0", attempts=4, min_bytes=500, deadline=8.0
+            f"http://{s.ip}/", timeout=3.0, ua="Mozilla/5.0", attempts=5, min_bytes=500, deadline=12.0
         )
         raw = gunzip_if(body)
-        if raw[:2] != b"\x1f\x8b" and len(raw) > 500:
+        if code == 200 and raw[:2] != b"\x1f\x8b" and len(raw) > 500:
             break
+        s.info(f"names-gzip SPA attempt {attempt + 1}: code={code} bytes={len(raw)}")
+        wait_http_quiet(s.ip, timeout=8.0)
+    if code != 200 or len(raw) <= 500:
+        eth = _eth_fallback_ip(s)
+        if eth and eth != s.ip:
+            s.info(f"names-gzip SPA via eth {eth}")
+            code, body = http_get_resumable(
+                f"http://{eth}/", timeout=3.0, ua="Mozilla/5.0", attempts=4, min_bytes=500, deadline=12.0
+            )
+            raw = gunzip_if(body)
     s.check("names POST + mixer gzip", code == 200 and len(raw) > 500, f"code={code} bytes={len(raw)}")
     live, why = cf.uart_ok(s.link(), 2000)
     s.check("UART after names+gzip", live, why)
