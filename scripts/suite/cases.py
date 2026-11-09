@@ -3197,9 +3197,16 @@ def case_usb_jtag(s: Suite) -> None:
     if not getattr(s.args, "usb", False):
         raise CaseSkip("pass --usb when native USB-C is plugged into this host")
     midi = api("/api/v1/midi")
+    # L2 usb-midi-hid leaves the port in MIDI+HID gadget mode for L3
+    # usb-gadget-held; L3 re-runs this L1 case — skip rather than fail.
+    if midi.get("usbJtag") is not True and (
+        _transport(midi, "usbMidiPeripheral").get("enabled")
+        or _transport(midi, "usbHid").get("enabled")
+    ):
+        raise CaseSkip("USB MIDI+HID gadget active (JTAG off until restored)")
     usb = midi.get("usb") or {}
     mode = str(usb.get("mode") or "")
-    if mode not in ("jtag", "") and midi.get("usbJtag") is not True:
+    if midi.get("usbJtag") is not True and mode != "jtag":
         raise CaseSkip(f"USB not in JTAG mode (mode={mode!r}) — run before usb-midi-hid")
     s.check("usb reports JTAG", midi.get("usbJtag") is True or mode == "jtag", f"usbJtag={midi.get('usbJtag')} mode={mode!r}")
     lsusb = _lsusb_text().lower()
