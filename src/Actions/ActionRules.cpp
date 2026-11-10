@@ -2862,18 +2862,46 @@ void ActionRules::applyGainBoost(Job& job, JsonObjectConst step) {
         if (on != active) {
             changed = true;
             if (on) {
-                // Refuse re-arm during stop/delete synthetic PLAY, and while
-                // a recent own unboost/boost write is still settling (gate
-                // edge ≈ boostIgnoreMs caused L3 pass10 REMEMBERED=4).
+                // Refuse *auto* re-arm during stop/delete synthetic PLAY.
+                // Manual midiBoostToggle must still work after a stuck delete
+                // watch (L1 FAIL: Reaction 7 toggled but refuse during delete
+                // left gain at 28 after looper-autoboost clear).
                 if (looperTapWatch != 0
                         && (strcmp(looperTapOp, "stop") == 0
                             || strcmp(looperTapOp, "delete") == 0)) {
-                    if (debug != nullptr) {
-                        debug->printf("[gb %lu] refuse boost during %s\n",
-                            (unsigned long)millis(), looperTapOp);
+                    bool autoOn = false;
+                    const int slot = indexOf(job.id);
+                    if (slot >= 0) {
+                        JsonDocument doc;
+                        if (!deserializeJson(doc, rules[slot].json)) {
+                            autoOn = jsonText(doc["builtin"]) == "boosterAutoOn";
+                        }
                     }
-                    inAction = false;
-                    return;
+                    if (autoOn) {
+                        if (debug != nullptr) {
+                            debug->printf("[gb %lu] refuse boost during %s\n",
+                                (unsigned long)millis(), looperTapOp);
+                        }
+                        inAction = false;
+                        return;
+                    }
+                    // Stale delete/stop watch after LOOPER already idle —
+                    // clear so later auto-boost is not wedged either.
+                    if (showbox != nullptr) {
+                        const uint8_t st = showbox->getUint8EntityValue(entity_id::LOOPER_STATE);
+                        const bool idleDelete = strcmp(looperTapOp, "delete") == 0
+                            && st == looper_state::DELETE;
+                        const bool idleStop = strcmp(looperTapOp, "stop") == 0
+                            && st == looper_state::STOP_PLAYING;
+                        if (idleDelete || idleStop) {
+                            looperTapWatch = 0;
+                            looperTapPhase = 0;
+                            if (debug != nullptr) {
+                                debug->printf("[gb %lu] clear stale %s watch (state %u)\n",
+                                    (unsigned long)millis(), looperTapOp, (unsigned)st);
+                            }
+                        }
+                    }
                 }
                 if (lastOwnGainWriteMs != 0
                         && (int32_t)(millis() - lastOwnGainWriteMs) < (int32_t)boostIgnoreMs) {

@@ -1709,7 +1709,17 @@ def case_looper_autoboost(s: Suite) -> None:
     _assert_unboosted(s, g0, "boost off on overdub")
     press(s, 103, 2, "stop")
     _assert_unboosted(s, g0, "no boost while stopped")
-    press(s, 102, 3, "play")
+    try:
+        press(s, 102, 3, "play")
+    except CaseFail as exc:
+        # After a hard stop retry, one more CC102 can be ignored (AB+MB run2:
+        # want 3 got 2.0). Revive MIDI and retry once.
+        s.info(f"play after stop: {exc}; revive MIDI")
+        try:
+            _ensure_midi(s, prefer_ble=True)
+        except Exception as midi_exc:
+            s.info(f"MIDI revive: {midi_exc}")
+        press(s, 102, 3, "play")
     g = _wait_boost_on_play(s, boosted, "stop->play")
     s.check("boost on play again", g is not None and abs(g - boosted) < 0.4, f"gain={g} want={boosted}")
     press(s, 102, 4, "overdub again")
@@ -1722,18 +1732,26 @@ def case_looper_autoboost(s: Suite) -> None:
 
 def case_manual_boost(s: Suite) -> None:
     g0, boosted = setup_gain(s, auto=0)
+    # looper-autoboost clear can leave firmware looperTapWatch=delete, which
+    # used to refuse ALL gainBoost (L1: Reaction 7 + refuse during delete).
+    looper_clear(s)
     s.ensure_rtp()
     g = None
-    for attempt in range(3):
+    for attempt in range(5):
         s.send_cc(105)
         g = s.wait_gain(boosted, timeout=2.5)
-        s.peek_console()
+        text = s.peek_console()
         if g is not None and abs(g - boosted) < 0.4:
             break
-        s.info(f"CC105 on attempt {attempt + 1} gain={g}")
+        if text and "refuse boost during" in text:
+            s.info(f"CC105 on attempt {attempt + 1} refused mid-delete; waiting")
+            time.sleep(1.5)
+            looper_clear(s)
+        else:
+            s.info(f"CC105 on attempt {attempt + 1} gain={g}")
     s.check("manual boost on", g is not None and abs(g - boosted) < 0.4, f"gain={g}")
     g = None
-    for attempt in range(3):
+    for attempt in range(5):
         s.send_cc(105)
         g = s.wait_gain(g0, timeout=2.5)
         s.peek_console()
