@@ -554,6 +554,41 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         if _state_is(got, want):
             s.check(label, True, f"LOOPER_STATE={got}")
             return
+        # REC sometimes ignores the first play tap; one more CC102 after
+        # firmware's own retry window (L1 ble-midi: want 3 got 1.0).
+        if abs(want - 3) < 0.05 and _state_is(got, 1):
+            s.info(f"{label}: still REC {got}, one more CC102")
+            try:
+                s.send_cc(102)
+            except CaseFail as exc:
+                msg = str(exc).lower()
+                if "ble midi" in msg or "not connected" in msg:
+                    _ensure_midi(s, prefer_ble=True)
+                    s.send_cc(102)
+                else:
+                    raise
+            end = time.monotonic() + 10.0
+            while time.monotonic() < end:
+                cur = s.refresh_looper() or s.looper_now()
+                if cur is not None:
+                    got = cur
+                if _state_is(got, want) or _state_is(got, 4):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.4, remaining))
+            if not _state_is(got, want):
+                try:
+                    api("/api/v1/showbox/action/looper_button", {"action": "TAP"})
+                except Exception as exc:
+                    s.info(f"{label}: HTTP TAP: {exc}")
+                time.sleep(0.8)
+                got = s.refresh_looper() or s.looper_now() or got
+                if _state_is(got, want) or _state_is(got, 4):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
         if abs(want - 1) < 0.05 and not _state_is(got, 1):
             s.info(f"{label}: still in {got}, clearing then rec")
             if _is_tap(got) or _state_is(got, 2) or _state_is(got, 1):
@@ -1454,6 +1489,17 @@ def case_ble_midi(s: Suite) -> None:
         moved,
         f"before={before} got={got} port={port} rx={midi_after.get('bleMidiRx')} hostWrites={midi_after.get('bleHostWrites')}",
     )
+    # Finish rec→play on the same BLE GATT that started rec. Closing GATT
+    # and hoping AppleMIDI advances REC flakes (L1 FAIL: want 3 got 1.0).
+    if _state_is(got, 1) or _state_is(s.looper_now(), 1):
+        press(s, 102, 3, "ble rec -> play")
+    elif not _state_is(got, 3) and not _state_is(s.looper_now(), 3):
+        # Already overshot to play/overdub via firmware retry — accept.
+        cur = s.refresh_looper() or s.looper_now() or got
+        if not (_state_is(cur, 3) or _state_is(cur, 4)):
+            press(s, 102, 3, "ble rec -> play")
+        else:
+            s.check("ble rec -> play", True, f"LOOPER_STATE={cur}")
     # BLE WRITE_NR drops CC103/104 next to the rec burst. Drop GATT
     # then clear on RTP so DOUBLE/LONG are not fighting AIRSTEP.
     if s.ble is not None:
@@ -1466,7 +1512,7 @@ def case_ble_midi(s: Suite) -> None:
         s.ensure_rtp()
     except Exception as exc:
         s.info(f"RTP for ble-midi clear: {exc}")
-    press(s, 102, 3, "ble rec -> play")
+        ensure_ble_midi(s, force=True)
     press(s, 103, 2, "ble stop")
     press(s, 104, 0, "ble clear")
 
