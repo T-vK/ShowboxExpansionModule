@@ -739,8 +739,21 @@ def _entity_raw(s: Suite, name: str) -> Optional[str]:
 
 
 def case_uart_roundtrip(s: Suite) -> None:
-    raw = _entity_raw(s, "INPUT1_MUTE")
-    before = _parse_bool(raw)
+    # After USB gadget↔JTAG re-enum, link can be fresh while dumpSeq is still
+    # 0 (L1 FAIL right after JTAG restore: INPUT1_MUTE value=None).
+    raw = None
+    before = None
+    end = time.monotonic() + 35.0
+    while time.monotonic() < end:
+        raw = _entity_raw(s, "INPUT1_MUTE")
+        before = _parse_bool(raw)
+        if before is not None:
+            break
+        link = s.link()
+        s.info(
+            f"waiting entity dump INPUT1_MUTE={raw!r} dumpSeq={link.get('dumpSeq')} tries={link.get('dumpTries')}"
+        )
+        time.sleep(0.6)
     s.check("INPUT1_MUTE readable", before is not None, f"value={raw}")
     want = not before
     after = s.ws.gen("INPUT1_MUTE")
