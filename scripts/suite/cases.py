@@ -1962,6 +1962,37 @@ def _ensure_ws_budget(s: Suite, label: str) -> None:
     s.info(f"{label}: post-reboot heap still {heap}")
 
 
+def _ensure_live_ws(s: Suite, label: str, timeout: float = 6.0) -> None:
+    """webui / _recover_http_after_ws close LiveWs permanently (_stop set).
+    Recreate so later cases that read last_link / got_link still work
+    (L2 FAIL: rec-timer status=RECORDING recSec=0 after webui)."""
+    alive = (
+        s.ws is not None
+        and getattr(s.ws, "_thread", None) is not None
+        and s.ws._thread.is_alive()
+        and not s.ws._stop.is_set()
+    )
+    if not alive:
+        s.info(f"{label}: suite WS dead — reconnecting")
+        try:
+            s.ws.close()
+        except Exception:
+            pass
+        s.ws = LiveWs(s.ip)
+        s.ws.start()
+    s.ws.got_link.clear()
+    if not s.ws.got_link.wait(timeout):
+        # Thread up but silent — force a fresh socket.
+        s.info(f"{label}: no link yet, recreating WS")
+        try:
+            s.ws.close()
+        except Exception:
+            pass
+        s.ws = LiveWs(s.ip)
+        s.ws.start()
+        s.ws.got_link.wait(timeout)
+
+
 def case_ws_multiclient(s: Suite) -> None:
     """10 concurrent WS clients must each receive the same entity deltas.
 
@@ -3267,9 +3298,15 @@ def case_webui(s: Suite) -> None:
             break
         s.info(f"webui snapshot e2e attempt {attempt + 1} exit={r2.returncode}")
     s.check("webui snapshot e2e", r2 is not None and r2.returncode == 0, f"exit={None if r2 is None else r2.returncode}")
+    # Chromium held the only live sockets; suite LiveWs was closed up front.
+    _ensure_live_ws(s, "webui-done")
 
 
 def case_rec_timer(s: Suite) -> None:
+    # webui closes suite WS; without a fresh link, recSec stays stuck at the
+    # stale cache (L2 FAIL after webui: status=RECORDING recSec=0).
+    _ensure_live_ws(s, "rec-timer")
+
     def sd_status() -> str:
         """HTTP /link omits sdCard; status/sdcard is the source of truth."""
         code, body = http_get(f"http://{s.ip}/api/v1/showbox/status/sdcard", timeout=3.0)
@@ -3287,6 +3324,9 @@ def case_rec_timer(s: Suite) -> None:
             s.ws.got_link.wait(timeout=0.4)
             s.ws.got_link.clear()
             sec = _num((s.ws.last_link or {}).get("recSec"))
+            if sec < 1 and (s.ws._thread is None or not s.ws._thread.is_alive()):
+                _ensure_live_ws(s, "rec-timer-mid")
+                sec = _num((s.ws.last_link or {}).get("recSec"))
         return status, sec
 
     def wait_status(want_recording: bool, timeout: float) -> tuple[str, int]:
