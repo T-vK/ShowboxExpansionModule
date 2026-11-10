@@ -26,14 +26,34 @@ from suite.cases import all_cases, cases_for_level
 from suite.context import CaseFail, CaseSkip, Suite
 from live_helpers import HOST, IP
 
+SOFTAP_IP = "192.168.4.1"
+NET_CHOICES = ("softap", "sta", "ethernet")
+
+
+def apply_net_defaults(args: argparse.Namespace) -> None:
+    """Resolve --ip/--host from --net when the CLI did not override them."""
+    if args.ip is None:
+        if args.net == "softap":
+            args.ip = os.environ.get("SHOWBOX_IP", SOFTAP_IP)
+        elif args.net == "ethernet":
+            args.ip = os.environ.get("SHOWBOX_ETH", os.environ.get("SHOWBOX_IP", IP))
+        else:
+            args.ip = os.environ.get("SHOWBOX_IP", IP)
+    if args.host is None:
+        args.host = os.environ.get("SHOWBOX_HOST", HOST)
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Showbox leveled live tests")
     p.add_argument("--level", type=int, default=1, choices=(1, 2, 3), help="1 smoke, 2 correctness, 3 load")
     p.add_argument("--case", action="append", default=[], help="run only these named cases (repeatable)")
     p.add_argument("--list", action="store_true", help="print case names and exit")
-    p.add_argument("--ip", default=os.environ.get("SHOWBOX_IP", IP))
-    p.add_argument("--host", default=os.environ.get("SHOWBOX_HOST", HOST))
+    net_default = os.environ.get("SHOWBOX_NET", "softap")
+    if net_default not in NET_CHOICES:
+        net_default = "softap"
+    p.add_argument("--net", choices=NET_CHOICES, default=net_default, help="suite network path (default softap)")
+    p.add_argument("--ip", default=None, help="module IPv4 (default depends on --net)")
+    p.add_argument("--host", default=None, help="mDNS / Host header (default SHOWBOX_HOST or showbox.local)")
     p.add_argument("--keep-host", dest="keep_host", action="store_true", default=True)
     p.add_argument("--no-keep-host", dest="keep_host", action="store_false")
     p.add_argument("--https", action="store_true", help="require HTTPS checks")
@@ -42,7 +62,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--ethernet", action="store_true")
     p.add_argument("--usb", action="store_true")
     p.add_argument("--tablet", action="store_true")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    apply_net_defaults(args)
+    return args
 
 
 def main_cases(*names: str, ip: str | None = None, host: str | None = None, extra: list[str] | None = None) -> int:
@@ -98,7 +120,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print_run_reminders()
     cases = selected_cases(args)
-    print(f"Showbox live suite  level={args.level if not args.case else 'pick'}  ip={args.ip}  cases={len(cases)}")
+    print(
+        f"Showbox live suite  net={args.net}  level={args.level if not args.case else 'pick'}  "
+        f"ip={args.ip}  cases={len(cases)}"
+    )
     print("MIDI path: real BLE / AppleMIDI RTP  (inject is not a test)")
     suite = Suite(args)
     started = time.monotonic()

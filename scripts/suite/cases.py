@@ -40,6 +40,7 @@ from suite.context import (
     wait_http_quiet,
 )
 from suite.rtp_midi import RtpMidi
+from suite.softap import _join_showbox_softap, _softap_iface
 
 HERE = Path(__file__).resolve().parent.parent
 DEBUG_FATAL = cf.DEBUG_FATAL
@@ -1024,107 +1025,6 @@ def _wait_wifi_pred(s: Suite, pred, timeout: float = 30.0) -> dict | None:
             return last
         time.sleep(0.6)
     return last
-
-
-def _softap_iface() -> str | None:
-    try:
-        out = subprocess.run(
-            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    for ln in (out.stdout or "").splitlines():
-        parts = ln.split(":")
-        if len(parts) >= 3 and parts[1] == "wifi" and not parts[0].startswith("p2p-"):
-            return parts[0]
-    return None
-
-
-def _join_showbox_softap(password: str = "showboxmod") -> tuple[bool, str]:
-    iface = _softap_iface()
-    if not iface:
-        return False, "no wifi iface"
-    last = "nmcli failed"
-    # Stale ShowboxMod-suite profile left "connecting" after a prior timeout
-    # blocks the next join (L3 softap-services after hotspot-sta-coex).
-    for cmd in (
-        ["nmcli", "connection", "down", "ShowboxMod-suite"],
-        ["nmcli", "connection", "delete", "ShowboxMod-suite"],
-        ["nmcli", "device", "disconnect", iface],
-    ):
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    for attempt in range(5):
-        try:
-            subprocess.run(
-                ["nmcli", "device", "wifi", "rescan", "ifname", iface],
-                capture_output=True,
-                text=True,
-                timeout=8,
-                check=False,
-            )
-            time.sleep(1.5 + attempt)
-            # SoftAP can take a few seconds to reappear after SPA yield / bounce.
-            listed = subprocess.run(
-                ["nmcli", "-t", "-f", "SSID", "device", "wifi", "list", "ifname", iface],
-                capture_output=True,
-                text=True,
-                timeout=8,
-                check=False,
-            )
-            if "ShowboxMod" not in (listed.stdout or ""):
-                last = "ShowboxMod not in scan yet"
-                continue
-            out = subprocess.run(
-                [
-                    "nmcli",
-                    "device",
-                    "wifi",
-                    "connect",
-                    "ShowboxMod",
-                    "password",
-                    password,
-                    "ifname",
-                    iface,
-                    "name",
-                    "ShowboxMod-suite",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=35,
-                check=False,
-            )
-            if out.returncode == 0:
-                return True, (out.stdout or "joined").strip()[:160]
-            last = (out.stdout or out.stderr or "nmcli failed").strip()[:160]
-        except subprocess.TimeoutExpired as exc:
-            last = f"nmcli connect timeout attempt {attempt + 1}: {exc}"
-            try:
-                subprocess.run(
-                    ["nmcli", "connection", "down", "ShowboxMod-suite"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                subprocess.run(
-                    ["nmcli", "device", "disconnect", iface],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        except OSError as exc:
-            return False, str(exc)
-    return False, last
 
 
 def _leave_showbox_softap() -> None:

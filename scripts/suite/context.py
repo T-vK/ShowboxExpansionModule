@@ -422,10 +422,61 @@ class Suite:
     def info(self, msg: str) -> None:
         print(f"[{self.stamp()}] {msg}")
 
+    def _best_effort_net_mode(self, sta_ip: str, mode: str) -> None:
+        url = f"http://{sta_ip}/api/v1/wifi"
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps({"netMode": mode}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
+                resp.read()
+            self.info(f"netMode={mode} POST ok via {sta_ip}")
+        except Exception as exc:
+            self.info(f"netMode={mode} via {sta_ip}: {exc}")
+
+    def _start_softap(self) -> None:
+        import os
+
+        from suite.softap import SOFTAP_IP, _join_showbox_softap, _softap_iface
+
+        sta_ips: list[str] = []
+        for cand in (
+            os.environ.get("SHOWBOX_STA_IP", "").strip(),
+            IP,
+            "192.168.3.55",
+        ):
+            if cand and cand not in sta_ips and cand != SOFTAP_IP:
+                sta_ips.append(cand)
+        for sta in sta_ips:
+            if not ping_ok(sta):
+                continue
+            code, body = http_get(f"http://{sta}/api/v1/showbox/link", timeout=2.5)
+            if code == 200 and body:
+                self._best_effort_net_mode(sta, "softap")
+                break
+
+        if _softap_iface() is None:
+            raise CaseFail("SoftAP suite: no laptop Wi-Fi iface (nmcli); use --net sta or join ShowboxMod manually")
+
+        joined, how = _join_showbox_softap()
+        if not joined:
+            raise CaseFail(f"SoftAP suite: join {SOFTAP_IP} / ShowboxMod failed: {how}")
+        self.info(f"SoftAP joined: {how}")
+
+        self.ip = self.args.ip or SOFTAP_IP
+        self.host = self.args.host or HOST
+
     def start(self) -> None:
         import check_features as cf
         import live_helpers as lh
         import test_mdns_fast as mdns_fast
+
+        net = getattr(self.args, "net", "sta")
+        if net == "softap":
+            self._start_softap()
 
         lh.IP = self.ip
         lh.HOST = self.host
