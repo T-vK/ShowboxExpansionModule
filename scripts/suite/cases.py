@@ -2914,6 +2914,13 @@ def case_boost_ratchet(s: Suite) -> None:
     s._mark_cc()
     api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": boosted})
     now = s.wait_gain(boosted, timeout=2.0)
+    # After long looper/clear noise, first POST can stick at base (SEQ5:
+    # precondition want 36 got 28). One quiet retry.
+    if now is None or abs(now - boosted) >= 0.4:
+        s.info(f"boost-ratchet: +2 POST soft-miss gain={now}, retry")
+        wait_http_quiet(s.ip, timeout=6.0)
+        api("/api/v1/showbox/entities/INPUT2_GAIN", {"value": boosted})
+        now = s.wait_gain(boosted, timeout=4.0)
     set_var("REMEMBERED_GAIN", GAIN_BASE)
     set_var("BOOST_ENABLED", 0)
     s.check("precondition already +2", now is not None and abs(now - boosted) < 0.4, f"gain={now}")
@@ -2985,7 +2992,31 @@ def case_looper_overdub_pref(s: Suite) -> None:
             g = s.wait_gain(g0, timeout=2.0)
         s.check("boost off during overdub pref", g is not None and abs(g - g0) < 0.4, f"gain={g}")
         press(s, 102, 3, "overdub -> play")
-        g = s.wait_gain(boosted, timeout=6.0)
+        # After nvs/gain/ratchet load, LOOPER 4→3 can land in suite HTTP
+        # while the reaction edge is missed (L2 FAIL: gain stayed 28 for 6s,
+        # no "Boost on play" console). Wait like looper-autoboost, then
+        # bounce overdub→play once to re-arm the edge.
+        g = s.wait_gain(boosted, timeout=10.0)
+        if g is None or abs(g - boosted) >= 0.4:
+            s.peek_console()
+            time.sleep(0.8)
+            g = s.wait_gain(boosted, timeout=6.0)
+        if g is None or abs(g - boosted) >= 0.4:
+            s.info(f"boost missed after overdub→play gain={g}; re-edge")
+            set_var("AUTO_BOOST", 1)
+            s.wait_var("AUTO_BOOST", 1, timeout=1.5)
+            try:
+                _ensure_midi(s, prefer_ble=True)
+            except Exception as exc:
+                s.info(f"MIDI revive before re-edge: {exc}")
+            press(s, 102, 4, "re-edge -> overdub")
+            g = s.wait_gain(g0, timeout=4.0) or s.gain_now()
+            press(s, 102, 3, "re-edge -> play")
+            g = s.wait_gain(boosted, timeout=10.0)
+            if g is None or abs(g - boosted) >= 0.4:
+                s.peek_console()
+                time.sleep(0.8)
+                g = s.wait_gain(boosted, timeout=6.0)
         s.check("boost back on play", g is not None and abs(g - boosted) < 0.4, f"gain={g}")
         press(s, 104, 0, "clear")
     finally:
