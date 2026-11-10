@@ -554,10 +554,20 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         if _state_is(got, want):
             s.check(label, True, f"LOOPER_STATE={got}")
             return
-        # REC sometimes ignores the first play tap; one more CC102 after
-        # firmware's own retry window (L1 ble-midi: want 3 got 1.0).
-        if abs(want - 3) < 0.05 and _state_is(got, 1):
-            s.info(f"{label}: still REC {got}, one more CC102")
+        # Play tap ignored after firmware's own retry window:
+        # - REC→play (L1 ble-midi: want 3 got 1.0)
+        # - STOP→play (L2 no-autoboost: want 3 got 2.0)
+        # - overdub→play (frontier: want 3 got 4.0 after 5× re-press)
+        if abs(want - 3) < 0.05 and (
+            _state_is(got, 1) or _state_is(got, 2) or _state_is(got, 4)
+        ):
+            from_rec = _state_is(got, 1)
+            stuck = "REC" if from_rec else ("STOP" if _state_is(got, 2) else "OVERDUB")
+            s.info(f"{label}: still {stuck} {got}, one more CC102")
+            try:
+                _ensure_midi(s, prefer_ble=True)
+            except Exception as exc:
+                s.info(f"{label}: MIDI revive: {exc}")
             try:
                 s.send_cc(102)
             except CaseFail as exc:
@@ -572,21 +582,23 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
                 cur = s.refresh_looper() or s.looper_now()
                 if cur is not None:
                     got = cur
-                if _state_is(got, want) or _state_is(got, 4):
+                # From REC, overshoot to OVERDUB is acceptable; from STOP/OVERDUB
+                # we must land on PLAY (4 means still stuck or bounced back).
+                if _state_is(got, want) or (from_rec and _state_is(got, 4)):
                     s.check(label, True, f"LOOPER_STATE={got}")
                     return
                 remaining = end - time.monotonic()
                 if remaining <= 0:
                     break
                 time.sleep(min(0.4, remaining))
-            if not _state_is(got, want):
+            if not (_state_is(got, want) or (from_rec and _state_is(got, 4))):
                 try:
                     api("/api/v1/showbox/action/looper_button", {"action": "TAP"})
                 except Exception as exc:
                     s.info(f"{label}: HTTP TAP: {exc}")
                 time.sleep(0.8)
                 got = s.refresh_looper() or s.looper_now() or got
-                if _state_is(got, want) or _state_is(got, 4):
+                if _state_is(got, want) or (from_rec and _state_is(got, 4)):
                     s.check(label, True, f"LOOPER_STATE={got}")
                     return
         if abs(want - 1) < 0.05 and not _state_is(got, 1):
