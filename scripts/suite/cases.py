@@ -676,17 +676,24 @@ def setup_gain(s: Suite, auto: float) -> tuple[float, float]:
     return gain, gain + BOOST_DB
 
 
-def looper_sequence(s: Suite) -> None:
-    """rec → play → overdub → play → stop → play → overdub → play → stop → clear."""
+def looper_sequence(s: Suite, *, full: bool = True) -> None:
+    """rec → play → … → clear.
+
+    full=False (L1 gig smoke): rec → play → stop → clear only. The overdub
+    dance doubles wall time when the mixer ignores taps and burns the
+    firmware retry window (~66s observed on L1).
+    """
     press(s, 102, 1, "rec")
     press(s, 102, 3, "record -> play")
-    press(s, 102, 4, "overdub")
-    press(s, 102, 3, "overdub -> play")
+    if full:
+        press(s, 102, 4, "overdub")
+        press(s, 102, 3, "overdub -> play")
     press(s, 103, 2, "stop")
-    press(s, 102, 3, "play")
-    press(s, 102, 4, "overdub again")
-    press(s, 102, 3, "overdub -> play again")
-    press(s, 103, 2, "stop again")
+    if full:
+        press(s, 102, 3, "play")
+        press(s, 102, 4, "overdub again")
+        press(s, 102, 3, "overdub -> play again")
+        press(s, 103, 2, "stop again")
     press(s, 104, 0, "clear")
 
 
@@ -1624,20 +1631,22 @@ def case_wifi_midi(s: Suite) -> None:
 
 def case_looper_no_autoboost(s: Suite) -> None:
     # http-pwa can leave :80 quiet for a beat; setup_gain needs vars/entities.
-    if not wait_http_quiet(s.ip, timeout=16.0):
+    if not wait_http_quiet(s.ip, timeout=8.0):
         raise CaseFail("HTTP quiet before looper-no-autoboost failed")
     setup_gain(s, auto=0)
-    quiet = time.monotonic() + 2.0
+    quiet = time.monotonic() + 0.4
     while time.monotonic() < quiet:
-        s.ws.got_entity.wait(timeout=0.2)
+        s.ws.got_entity.wait(timeout=0.15)
         s.ws.got_entity.clear()
     looper_clear(s)
     set_var("AUTO_BOOST", 0)
-    s.wait_var("AUTO_BOOST", 0, timeout=1.5)
+    s.wait_var("AUTO_BOOST", 0, timeout=1.0)
     g0 = s.gain_now()
     if g0 is None:
         g0 = entity("INPUT2_GAIN")
-    looper_sequence(s)
+    # L1 = gig smoke (rec/play/stop/clear). Full overdub dance stays on L2+.
+    full = int(getattr(s.args, "level", 1) or 1) >= 2
+    looper_sequence(s, full=full)
     g1 = s.gain_now()
     if g1 is None:
         g1 = entity("INPUT2_GAIN")
@@ -4565,6 +4574,9 @@ def case_usb_gadget_held(s: Suite) -> None:
     s.check("HTTP while USB gadget held", code == 200 and len(body) > 100, f"code={code}")
 
 
+# L1 order = busking gig priorities first (UART, mDNS, AIRSTEP, looper MIDI,
+# booster, WebUI shell). Slow BLE pair/midi + autoboost last — they were
+# eating ~110s of a 150s L1 before the SPA check even ran.
 LEVEL1: list[tuple[str, CaseFn]] = [
     ("reachability", case_reachability),
     ("uart-link", case_uart_link),
@@ -4576,23 +4588,27 @@ LEVEL1: list[tuple[str, CaseFn]] = [
     ("telnet-ota", case_telnet_ota),
     ("reaction-engine", case_reaction_engine),
     ("websocket", case_websocket),
-    ("ble-status", case_ble_status),
-    ("ble-pair", case_ble_pair),
-    ("wifi-midi", case_wifi_midi),
-    ("looper-no-autoboost", case_looper_no_autoboost),
-    ("looper-autoboost", case_looper_autoboost),
-    ("manual-boost", case_manual_boost),
+    ("ble-status", case_ble_status),  # AIRSTEP connected
+    ("wifi-midi", case_wifi_midi),  # looper CC via AppleMIDI
+    ("looper-no-autoboost", case_looper_no_autoboost),  # short dance on L1
+    ("manual-boost", case_manual_boost),  # booster CC105
+    ("http-pwa", case_http_pwa),  # WebUI shell / SPA
     ("usb-jtag", case_usb_jtag),  # --usb; Serial/JTAG mode (not gadget, not host)
+    # Slow / secondary for gig — keep coverage but do not block smoke signal.
+    ("ble-pair", case_ble_pair),
     ("ble-midi", case_ble_midi),
-    ("http-pwa", case_http_pwa),
 ]
 
 LEVEL2: list[tuple[str, CaseFn]] = [
+    ("looper-autoboost", case_looper_autoboost),  # demoted from L1 (not gig-critical)
     ("nvs-burst", case_nvs_burst),
     ("gain-tracker", case_gain_tracker),
     ("boost-ratchet", case_boost_ratchet),
     ("looper-overdub-pref", case_looper_overdub_pref),
     ("uart-soak", case_uart_soak),
+    # WebUI e2e before WS fanout / SoftAP — gig cares about the SPA working.
+    ("webui", case_webui),
+    ("airstep-held", case_airstep_held),
     # WS fanout before BLE scan/HID: after hid-smoke, 10-client open can
     # wedge :80 (L2 STOP linked=9; iso2 URLError under HID residual).
     ("ws-multiclient", case_ws_multiclient),
@@ -4601,8 +4617,6 @@ LEVEL2: list[tuple[str, CaseFn]] = [
     ("module-ble-scan", case_module_ble_scan),
     ("laptop-le-scan", case_laptop_le_scan),
     ("hid-smoke", case_hid_smoke),
-    ("airstep-held", case_airstep_held),
-    ("webui", case_webui),
     ("rec-timer", case_rec_timer),
     ("https", case_https),
     ("hotspot-air", case_hotspot_air),
