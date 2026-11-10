@@ -296,8 +296,14 @@ def looper_clear(s: Suite, timeout: float = 70.0) -> None:
             cur = cur_state()
             if cur is not None and abs(cur) >= 0.05:
                 press(s, 104, 0, "clear delete")
-        except CaseFail as exc:
+        except (CaseFail, RuntimeError, OSError) as exc:
+            # L1 FAIL: clear delete want0 got3 then BlueZ Not connected aborted
+            # as ERROR because only CaseFail was caught. Revive MIDI and continue.
             s.info(f"looper_clear retry after {exc}")
+            try:
+                _ensure_midi(s, prefer_ble=True)
+            except CaseFail as revive:
+                s.info(f"looper_clear MIDI revive: {revive}")
             quiet = time.monotonic() + 2.0
             while time.monotonic() < quiet:
                 if idle_settled():
@@ -347,7 +353,16 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
                 return
             s.ws.got_entity.wait(timeout=min(0.2, quiet - time.monotonic()))
             s.ws.got_entity.clear()
-    s.send_cc(cc_num)
+    try:
+        s.send_cc(cc_num)
+    except CaseFail as exc:
+        msg = str(exc).lower()
+        if "ble midi" in msg or "not connected" in msg:
+            s.info(f"{label}: MIDI write failed ({exc}); recycling")
+            _ensure_midi(s, prefer_ble=True)
+            s.send_cc(cc_num)
+        else:
+            raise
     got = s.wait_next_state(timeout=timeout)
     s.peek_console()
     if _state_is(got, want):
@@ -402,7 +417,16 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
                 s.check(label, True, f"LOOPER_STATE={got}")
                 return
         s.info(f"{label}: want {want} got {got}, one more {cc_num} after firmware retries")
-        s.send_cc(cc_num)
+        try:
+            s.send_cc(cc_num)
+        except CaseFail as exc:
+            msg = str(exc).lower()
+            if "ble midi" in msg or "not connected" in msg:
+                s.info(f"{label}: retry CC failed ({exc}); recycling")
+                _ensure_midi(s, prefer_ble=True)
+                s.send_cc(cc_num)
+            else:
+                raise
         extra = 16.0 if cc_num == 104 else 12.0
         end = time.monotonic() + extra
         while time.monotonic() < end:

@@ -599,7 +599,20 @@ class Suite:
             raise CaseFail("BLE MIDI is not connected")
         self._console_mark = self.console.since_mark()
         self._mark_cc()
-        self.ble.cc(number, value)
+        try:
+            self.ble.cc(number, value)
+        except Exception as exc:
+            msg = str(exc).lower()
+            # BlueZ zombie ACL: Connected:yes then AcquireWrite/write → Not connected.
+            # Demote to CaseFail and drop the handle so callers can recycle.
+            if "not connected" in msg or "acquirewrite" in msg:
+                try:
+                    self.ble.close()
+                except Exception:
+                    pass
+                self.ble = None
+                raise CaseFail(f"BLE MIDI write failed: {exc}") from exc
+            raise
 
     def rtp_cc(self, number: int, value: int = 127) -> None:
         if self.rtp is None:
