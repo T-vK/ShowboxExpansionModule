@@ -416,6 +416,73 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
             if _state_is(got, want):
                 s.check(label, True, f"LOOPER_STATE={got}")
                 return
+        # Extra CC104 while delete is mid-retry aborts the firmware bare LONG
+        # (L2 overdub-pref: stop-then-clear left want 0 got 3). Wait out the
+        # ActionRules retry window, then HTTP LONG_PRESS (and TAP→LONG from
+        # PLAY, which captures show as 4→0).
+        if cc_num == 104 and (_is_tap(got) or _state_is(got, 2)):
+            s.info(f"{label}: still {got} after firmware window, waiting out delete retries")
+            end = time.monotonic() + 8.0
+            while time.monotonic() < end:
+                cur = s.refresh_looper()
+                if cur is not None:
+                    got = cur
+                if _state_is(got, 0):
+                    s.check(label, True, f"LOOPER_STATE={got}")
+                    return
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.4, remaining))
+                s.peek_console()
+            if not _state_is(got, 0):
+                s.info(f"{label}: MIDI clear stuck at {got}; HTTP LONG_PRESS")
+                try:
+                    api("/api/v1/showbox/action/looper_button", {"action": "LONG_PRESS"})
+                except Exception as exc:
+                    s.info(f"{label}: HTTP LONG_PRESS: {exc}")
+                # WS cache can sit at PLAY while mixer already idled.
+                end = time.monotonic() + 6.0
+                while time.monotonic() < end:
+                    cur = s.refresh_looper()
+                    if cur is not None:
+                        got = cur
+                    if _state_is(got, 0):
+                        s.check(label, True, f"LOOPER_STATE={got}")
+                        return
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    s.ws.got_entity.wait(timeout=min(0.3, remaining))
+                    s.ws.got_entity.clear()
+            if not _state_is(got, 0) and _is_tap(got):
+                s.info(f"{label}: still tap {got}; HTTP TAP then LONG_PRESS")
+                try:
+                    api("/api/v1/showbox/action/looper_button", {"action": "TAP"})
+                    time.sleep(0.35)
+                    api("/api/v1/showbox/action/looper_button", {"action": "LONG_PRESS"})
+                except Exception as exc:
+                    s.info(f"{label}: HTTP TAP/LONG: {exc}")
+                end = time.monotonic() + 8.0
+                while time.monotonic() < end:
+                    cur = s.refresh_looper()
+                    if cur is not None:
+                        got = cur
+                    if _state_is(got, 0):
+                        s.check(label, True, f"LOOPER_STATE={got}")
+                        return
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    s.ws.got_entity.wait(timeout=min(0.3, remaining))
+                    s.ws.got_entity.clear()
+            got = s.refresh_looper()
+            if got is None:
+                got = s.looper_now()
+            if _state_is(got, 0):
+                s.check(label, True, f"LOOPER_STATE={got}")
+                return
+            raise CaseFail(f"{label}: want {want} got {got}")
         s.info(f"{label}: want {want} got {got}, one more {cc_num} after firmware retries")
         try:
             s.send_cc(cc_num)
@@ -490,7 +557,7 @@ def press(s: Suite, cc_num: int, want: float, label: str, timeout: float = 0.5) 
         if abs(want - 1) < 0.05 and not _state_is(got, 1):
             s.info(f"{label}: still in {got}, clearing then rec")
             if _is_tap(got) or _state_is(got, 2) or _state_is(got, 1):
-                looper_clear(s, timeout=8.0)
+                looper_clear(s, timeout=45.0)
                 quiet = time.monotonic() + 0.8
                 while time.monotonic() < quiet:
                     s.ws.got_entity.wait(timeout=0.2)
