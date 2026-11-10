@@ -3161,16 +3161,24 @@ def case_webui(s: Suite) -> None:
     cold = HERE / "webui_cold_load.mjs"
     snap = HERE / "webui_snapshot_e2e.mjs"
     url = f"http://{s.ip}/"
+    # Suite WS + USB gadget + AIRSTEP: cold-load can leave :80 accepting
+    # /link while Chromium page.goto never commits (L3 FAIL exit=None).
+    try:
+        s.ws.close()
+    except Exception:
+        pass
     r1 = None
     for attempt in range(2):
         if not wait_http_quiet(s.ip, timeout=12.0):
             s.info(f"webui cold-load: HTTP down before attempt {attempt + 1}")
+            _recover_http_after_ws(s, "webui-cold")
             continue
         try:
             r1 = subprocess.run(["node", str(cold), "--rounds", "1", "--url", url], cwd=str(HERE), timeout=90)
         except subprocess.TimeoutExpired:
             s.info(f"webui cold-load attempt {attempt + 1} hung 90s")
             r1 = None
+            _recover_http_after_ws(s, "webui-cold-hung")
             continue
         if r1.returncode == 0:
             break
@@ -3178,6 +3186,9 @@ def case_webui(s: Suite) -> None:
     s.check("webui cold-load", r1 is not None and r1.returncode == 0, f"exit={None if r1 is None else r1.returncode}")
     # Cold-load leaves SYN-ACK-no-body PCBs. Small /services still works;
     # Chromium page.goto does not. Range-resume SPA + wait clears slots.
+    # Under leftover gadget heap (~7k), soft-reboot before snapshot.
+    if _usb_gadget_active(s) or not wait_http_quiet(s.ip, timeout=8.0):
+        _ensure_ws_budget(s, "webui-before-snapshot")
     wait_http_quiet(s.ip, timeout=8.0)
     http_get_resumable(url, timeout=2.5, ua="Mozilla/5.0", attempts=4, min_bytes=500, deadline=8.0)
     wait_http_quiet(s.ip, timeout=8.0)
@@ -3185,6 +3196,10 @@ def case_webui(s: Suite) -> None:
     for attempt in range(3):
         if not wait_http_quiet(s.ip, timeout=12.0):
             s.info(f"webui snapshot: HTTP down before attempt {attempt + 1}")
+            if attempt == 0:
+                _recover_http_after_ws(s, "webui-snapshot")
+            else:
+                _ensure_ws_budget(s, "webui-snapshot")
             continue
         # Retries after a failed SAVE/RECALL race used to compound cache≠mixer
         # (L2 streak5 pass9: attempt1 stayed at 40, attempt3 drifted after save).
@@ -3200,6 +3215,7 @@ def case_webui(s: Suite) -> None:
         except subprocess.TimeoutExpired:
             s.info(f"webui snapshot e2e attempt {attempt + 1} hung 90s")
             r2 = None
+            _recover_http_after_ws(s, "webui-snapshot-hung")
             continue
         if r2.returncode == 0:
             break
