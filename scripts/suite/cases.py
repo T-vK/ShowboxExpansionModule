@@ -3224,49 +3224,66 @@ def case_webui(s: Suite) -> None:
 
 
 def case_rec_timer(s: Suite) -> None:
-    def rec_fields() -> tuple[int, int]:
+    def sd_status() -> str:
+        """HTTP /link omits sdCard; status/sdcard is the source of truth."""
+        code, body = http_get(f"http://{s.ip}/api/v1/showbox/status/sdcard", timeout=3.0)
+        if code != 200 or not body:
+            return "UNKNOWN"
+        return body.decode("utf-8", "replace").strip().upper()
+
+    def rec_fields() -> tuple[str, int]:
+        status = sd_status()
         msg = s.ws.last_link or {}
-        sd = _num(msg.get("sdCard"))
         sec = _num(msg.get("recSec"))
         # Recording with recSec still 0 used to short-circuit on the WS
-        # snapshot and never refresh via HTTP (L2 streak4: sdCard=2 recSec=0
-        # for the whole 4s wait while /link already had the tick).
-        if sd == 2 and sec < 1:
-            link = s.link()
-            return _num(link.get("sdCard")), _num(link.get("recSec"))
-        if sd or sec:
-            return sd, sec
-        link = s.link()
-        return _num(link.get("sdCard")), _num(link.get("recSec"))
+        # snapshot (L2 streak4: sdCard=2 recSec=0 while status already RECORDING).
+        if status == "RECORDING" and sec < 1:
+            s.ws.got_link.wait(timeout=0.4)
+            s.ws.got_link.clear()
+            sec = _num((s.ws.last_link or {}).get("recSec"))
+        return status, sec
 
-    def wait_sd(want: int, timeout: float) -> tuple[int, int]:
+    def wait_status(want_recording: bool, timeout: float) -> tuple[str, int]:
         end = time.monotonic() + timeout
-        sd, sec = rec_fields()
+        status, sec = rec_fields()
         while time.monotonic() < end:
-            if want == 2 and sd == 2:
-                return sd, sec
-            if want != 2 and sd != 2:
-                return sd, sec
+            if want_recording and status == "RECORDING":
+                return status, sec
+            if not want_recording and status != "RECORDING":
+                return status, sec
             remaining = end - time.monotonic()
             if remaining <= 0:
                 break
             s.ws.got_link.wait(timeout=min(0.4, remaining))
             s.ws.got_link.clear()
-            sd, sec = rec_fields()
-        return sd, sec
+            status, sec = rec_fields()
+        return status, sec
+
+    # Leftover recording from an earlier case (L2 FAIL: entered at recSec=89,
+    # stop toggle did not clear within 3s).
+    status, sec = rec_fields()
+    if status == "RECORDING":
+        s.info(f"rec-timer: leftover recording sec={sec}, stopping first")
+        for _ in range(3):
+            api("/api/v1/showbox/action/sdcard", {})
+            status, sec = wait_status(False, 6.0)
+            if status != "RECORDING":
+                break
+        if status == "RECORDING":
+            raise CaseFail(f"could not stop leftover recording status={status}")
 
     api("/api/v1/showbox/action/sdcard", {})
-    sd, sec = wait_sd(2, 2.0)
-    if sd != 2:
+    status, sec = wait_status(True, 2.0)
+    if status != "RECORDING":
         api("/api/v1/showbox/action/sdcard", {})
-        sd, sec = wait_sd(2, 2.0)
-    if sd != 2:
-        raise CaseSkip(f"SD record did not start (sdCard={sd})")
+        status, sec = wait_status(True, 2.0)
+    if status != "RECORDING":
+        raise CaseSkip(f"SD record did not start (status={status})")
     end = time.monotonic() + 10.0
     saw_tick = sec >= 1
     while time.monotonic() < end and not saw_tick:
-        sd, sec = rec_fields()
-        if sd == 2 and sec >= 1:
+        status, sec = rec_fields()
+        if status == "RECORDING" and sec >= 1:
             saw_tick = True
             break
         remaining = end - time.monotonic()
@@ -3274,10 +3291,14 @@ def case_rec_timer(s: Suite) -> None:
             break
         s.ws.got_link.wait(timeout=min(0.5, remaining))
         s.ws.got_link.clear()
-    s.check("recSec ticked", saw_tick, f"sdCard={sd} recSec={sec}")
-    api("/api/v1/showbox/action/sdcard", {})
-    sd, sec = wait_sd(1, 3.0)
-    s.check("recording stopped", sd != 2, f"sdCard={sd}")
+    s.check("recSec ticked", saw_tick, f"status={status} recSec={sec}")
+    for attempt in range(3):
+        api("/api/v1/showbox/action/sdcard", {})
+        status, sec = wait_status(False, 6.0)
+        if status != "RECORDING":
+            break
+        s.info(f"rec-timer stop attempt {attempt + 1} still {status}")
+    s.check("recording stopped", status != "RECORDING", f"status={status}")
 
 
 def case_boost_reboot(s: Suite) -> None:
