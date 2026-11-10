@@ -3342,8 +3342,8 @@ def case_https(s: Suite) -> None:
 def case_hotspot_air(s: Suite) -> None:
     if not getattr(s.args, "ap", False):
         raise CaseSkip("pass --ap to enable the hotspot and scan it")
-    # L2 leaves MIDI+HID gadget on for L3; SoftAP JSON can say apIp=4.1 while
-    # the beacon never shows in nmcli (heap~7.6k). Air scan already ran in L2.
+    # SoftAP air runs before usb-midi-hid; clear leftover gadget from a prior run.
+    _restore_usb_jtag(s, "hotspot-air")
     if _usb_gadget_active(s):
         raise CaseSkip("hotspot-air skipped while USB MIDI+HID gadget is active")
     # A single timed-out ap=true leaves apForceTry clear under SoftAP quiet.
@@ -3718,54 +3718,74 @@ def case_usb_midi_hid(s: Suite) -> None:
     nodes = _usb_hid_nodes()
     s.check("host HID by-id ShowboxMod", bool(nodes), f"nodes={nodes}")
     s.check("host amidi ShowboxMod", _usb_midi_listed(), "amidi -l")
-    kbd = next(Path("/dev/input/by-id").glob("*ShowboxMod*event-kbd"), None)
-    if kbd is None:
-        raise CaseFail("no ShowboxMod event-kbd node")
-    fd = os.open(str(kbd.resolve()), os.O_RDONLY | os.O_NONBLOCK)
-    try:
-        while True:
-            try:
-                os.read(fd, 24)
-            except BlockingIOError:
-                break
-        posted = False
-        last_exc: Exception | None = None
-        for attempt in range(4):
-            try:
-                urllib.request.urlopen(
-                    urllib.request.Request(
-                        f"http://{s.ip}/api/v1/hid/keyboard?key=pageup",
-                        method="POST",
-                        data=b"",
-                        headers={"Connection": "close"},
-                    ),
-                    timeout=5,
-                ).read()
-                posted = True
-                break
-            except Exception as exc:
-                last_exc = exc
-                time.sleep(0.4 * (attempt + 1))
-        if not posted:
-            raise CaseFail(f"HID keyboard POST failed: {last_exc}")
-        hits: list[int] = []
-        fmt = "llHHi"
-        size = struct.calcsize(fmt)
-        end = time.monotonic() + 2.5
-        while time.monotonic() < end:
-            r, _, _ = select.select([fd], [], [], 0.2)
-            if not r:
-                continue
-            data = os.read(fd, size * 8)
-            for i in range(0, len(data), size):
-                if i + size > len(data):
+    # by-id symlinks can go stale across gadget re-enum (L2 ERROR: os.open
+    # → Errno 19 No such device right after amidi listed ShowboxMod).
+    hits: list[int] = []
+    last_hid: Exception | None = None
+    for hid_try in range(4):
+        kbd = next(Path("/dev/input/by-id").glob("*ShowboxMod*event-kbd"), None)
+        if kbd is None:
+            last_hid = CaseFail("no ShowboxMod event-kbd node")
+            time.sleep(0.4)
+            continue
+        fd = -1
+        try:
+            fd = os.open(str(kbd.resolve()), os.O_RDONLY | os.O_NONBLOCK)
+            while True:
+                try:
+                    os.read(fd, 24)
+                except BlockingIOError:
                     break
-                _a, _b, typ, code, value = struct.unpack(fmt, data[i : i + size])
-                if typ == 1 and code == 104:
-                    hits.append(value)
-        s.check("HID pageup reached host", 1 in hits and 0 in hits, f"hits={hits}")
-    finally:
-        os.close(fd)
+            posted = False
+            last_exc: Exception | None = None
+            for attempt in range(4):
+                try:
+                    urllib.request.urlopen(
+                        urllib.request.Request(
+                            f"http://{s.ip}/api/v1/hid/keyboard?key=pageup",
+                            method="POST",
+                            data=b"",
+                            headers={"Connection": "close"},
+                        ),
+                        timeout=5,
+                    ).read()
+                    posted = True
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.4 * (attempt + 1))
+            if not posted:
+                raise CaseFail(f"HID keyboard POST failed: {last_exc}")
+            hits = []
+            fmt = "llHHi"
+            size = struct.calcsize(fmt)
+            end = time.monotonic() + 2.5
+            while time.monotonic() < end:
+                r, _, _ = select.select([fd], [], [], 0.2)
+                if not r:
+                    continue
+                data = os.read(fd, size * 8)
+                for i in range(0, len(data), size):
+                    if i + size > len(data):
+                        break
+                    _a, _b, typ, code, value = struct.unpack(fmt, data[i : i + size])
+                    if typ == 1 and code == 104:
+                        hits.append(value)
+            last_hid = None
+            break
+        except OSError as exc:
+            last_hid = exc
+            s.info(f"HID kbd open/read try {hid_try + 1}: {exc}")
+            time.sleep(0.5)
+        finally:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    if last_hid is not None and not (1 in hits and 0 in hits):
+        raise CaseFail(f"HID pageup path failed: {last_hid}") from last_hid
+    s.check("HID pageup reached host", 1 in hits and 0 in hits, f"hits={hits}")
     # MIDI port writable (host → device)
     try:
         out = subprocess.run(
@@ -3799,6 +3819,7 @@ def case_usb_midi_hid(s: Suite) -> None:
 
 def case_hotspot_sta_coex(s: Suite) -> None:
     """Hotspot + home STA: LAN HTTP stays up; SoftAP serves captive probes."""
+    _restore_usb_jtag(s, "hotspot-sta-coex")
     if _usb_gadget_active(s):
         raise CaseSkip("hotspot-sta-coex skipped while USB MIDI+HID gadget is active")
     _wifi_api(s, {"apAlways": True, "ap": True})
@@ -4005,12 +4026,52 @@ def _usb_gadget_active(s: Suite) -> bool:
     )
 
 
+def _restore_usb_jtag(s: Suite, label: str = "usb-jtag-restore") -> None:
+    """Drop leftover MIDI+HID gadget so SoftAP/JTAG cases can run.
+
+    A prior L2/L3 leaving peri+HID on makes SoftAP dark (heap~7k) and skips
+    the whole SoftAP matrix on the next gated L123.
+    """
+    if not _usb_gadget_active(s):
+        return
+    s.info(f"{label}: leftover USB gadget — restoring Serial/JTAG")
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"http://{s.ip}/api/v1/midi/settings?usbMidiHost=0&usbMidiPeripheral=0&usbHid=0",
+                method="POST",
+                data=b"",
+            ),
+            timeout=5,
+        ).read()
+    except Exception as exc:
+        s.info(f"{label}: JTAG restore POST: {exc}")
+        return
+    end = time.monotonic() + 45.0
+    while time.monotonic() < end:
+        try:
+            midi = api("/api/v1/midi")
+            jtag = midi.get("usbJtag") is True
+        except Exception:
+            jtag = False
+        # Firmware can flip usbJtag before the host re-enums off 303a:0002.
+        host_jtag = "303a:1001" in _lsusb_text().lower()
+        host_gadget = _usb_showbox_present()
+        if jtag and (host_jtag or not host_gadget):
+            s.info(f"{label}: usbJtag back host_jtag={host_jtag}")
+            time.sleep(1.5)
+            return
+        time.sleep(1.0)
+    s.info(f"{label}: usbJtag not confirmed after restore")
+
+
 def case_softap_services(s: Suite) -> None:
     """Join ShowboxMod SoftAP from laptop Wi-Fi; prove services on 192.168.4.1."""
     if _softap_iface() is None:
         raise CaseSkip("no wifi iface for SoftAP client join")
-    # L2 leaves MIDI+HID gadget on for L3; SoftAP softAP() then stays dark
-    # (heap~7k, apIp=0). SoftAP matrix already ran in L2 before gadget.
+    # SoftAP cases run before usb-midi-hid. Leftover gadget from a prior run
+    # must be cleared — skip would drop the whole SoftAP matrix.
+    _restore_usb_jtag(s, "softap-services")
     if _usb_gadget_active(s):
         raise CaseSkip("SoftAP join skipped while USB MIDI+HID gadget is active")
     wifi = _wait_softap_up(s, timeout=70.0)
@@ -4035,6 +4096,7 @@ def case_softap_street(s: Suite) -> None:
     """Street musician: SoftAP with no remembered home STA (forget pfSenseAP)."""
     if _softap_iface() is None:
         raise CaseSkip("no wifi iface for SoftAP client join")
+    _restore_usb_jtag(s, "softap-street")
     if _usb_gadget_active(s):
         raise CaseSkip("SoftAP street skipped while USB MIDI+HID gadget is active")
     home_ssid = "pfSenseAP"
