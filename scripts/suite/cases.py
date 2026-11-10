@@ -4111,34 +4111,56 @@ def _probe_softap_services(s: Suite, ap_ip: str) -> None:
         else:
             s.info(f"SoftAP telnet soft-skip: {detail}")
 
-    ws = LiveWs(ap_ip)
-    ws.start()
+    # Suite LiveWs on the STA IP still holds a firmware slot; SoftAP-only
+    # street (L3 FAIL: handshake timed out after softap-services passed) needs
+    # that slot + quiet :80 before a fresh AP-side socket will open.
     try:
-        ws.got_link.wait(6.0)
-        ws.got_entity.wait(3.0)
-        s.check("SoftAP websocket link", ws.got_link.is_set() or bool(ws.last_link), f"err={ws.error}")
-        if not (ws.got_entity.is_set() or ws.entities):
-            try:
-                api_url = f"http://{ap_ip}/api/v1/showbox/entities/FRONT_LED"
-                urllib.request.urlopen(
-                    urllib.request.Request(
-                        api_url,
-                        data=json.dumps({"value": True}).encode(),
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    ),
-                    timeout=4,
-                ).read()
-                ws.got_entity.wait(3.0)
-            except Exception as exc:
-                s.info(f"SoftAP WS entity poke: {exc}")
-        s.check(
-            "SoftAP websocket entity",
-            ws.got_entity.is_set() or bool(ws.entities),
-            f"n={len(ws.entities)} err={ws.error}",
-        )
-    finally:
-        ws.close()
+        s.ws.close()
+    except Exception:
+        pass
+    wait_http_quiet(ap_ip, timeout=12.0)
+    ws_ok = False
+    ws_err = ""
+    ws_entities: dict[str, Any] = {}
+    for attempt in range(3):
+        ws = LiveWs(ap_ip)
+        ws.start()
+        try:
+            ws.got_link.wait(8.0 if attempt else 6.0)
+            ws.got_entity.wait(3.0)
+            if ws.got_link.is_set() or bool(ws.last_link):
+                if not (ws.got_entity.is_set() or ws.entities):
+                    try:
+                        api_url = f"http://{ap_ip}/api/v1/showbox/entities/FRONT_LED"
+                        urllib.request.urlopen(
+                            urllib.request.Request(
+                                api_url,
+                                data=json.dumps({"value": True}).encode(),
+                                headers={"Content-Type": "application/json"},
+                                method="POST",
+                            ),
+                            timeout=4,
+                        ).read()
+                        ws.got_entity.wait(3.0)
+                    except Exception as exc:
+                        s.info(f"SoftAP WS entity poke: {exc}")
+                ws_ok = True
+                ws_err = ws.error
+                ws_entities = dict(ws.entities)
+                break
+            ws_err = ws.error or "no link"
+            s.info(f"SoftAP WS attempt {attempt + 1}: {ws_err}")
+        finally:
+            ws.close()
+        wait_http_quiet(ap_ip, timeout=8.0)
+        time.sleep(0.8)
+    s.check("SoftAP websocket link", ws_ok, f"err={ws_err}")
+    s.check(
+        "SoftAP websocket entity",
+        bool(ws_entities),
+        f"n={len(ws_entities)} err={ws_err}",
+    )
+    # SoftAP probe owns the only live socket; revive suite WS on STA later.
 
     rtp = RtpMidi(ap_ip)
     try:
@@ -4226,6 +4248,7 @@ def case_softap_services(s: Suite) -> None:
             _wifi_api(s, {"ap": False, "apAlways": False})
         except Exception as exc:
             s.info(f"SoftAP cleanup after services: {exc}")
+        _ensure_live_ws(s, "softap-services-done")
 
 
 def case_softap_street(s: Suite) -> None:
@@ -4332,12 +4355,39 @@ def case_softap_street(s: Suite) -> None:
             restored is not None,
             f"wifi={restored}",
         )
+        # connectSta remembers asynchronously; a soft reboot while
+        # remembered=[] bricks STA until portal SoftAP (L3 aftermath).
+        remembered_ok = False
+        for _ in range(8):
+            try:
+                w = _wifi_api(s) or {}
+            except Exception:
+                w = {}
+            if any(r.get("ssid") == home_ssid for r in (w.get("remembered") or [])):
+                remembered_ok = True
+                break
+            try:
+                _wifi_api(
+                    s,
+                    {
+                        "ssid": home_ssid,
+                        "password": home_psk,
+                        "autoConnect": True,
+                        "ap": False,
+                        "apAlways": False,
+                    },
+                )
+            except Exception as exc:
+                s.info(f"street remember refresh: {exc}")
+            time.sleep(1.0)
+        if not remembered_ok:
+            s.info("street: home SSID not remembered — skip soft reboot")
         # SoftAP-only street leaves largest≈7.6k; next L2 cases then wedge :80.
         try:
             heap = int((_wifi_api(s) or {}).get("heapLargest") or 0)
         except Exception:
             heap = 0
-        if heap and heap < 9000:
+        if remembered_ok and heap and heap < 9000:
             s.info(f"street heapLargest={heap} — soft reboot before next case")
             try:
                 cf.http_post(f"{s.session.base}/api/v1/console", {"cmd": "reboot"}, timeout=3.0)
@@ -4349,6 +4399,7 @@ def case_softap_street(s: Suite) -> None:
                 if wait_http_quiet(s.ip, timeout=2.0):
                     break
                 time.sleep(1.0)
+        _ensure_live_ws(s, "softap-street-done")
 
 
 # ---------------------------------------------------------------------------
