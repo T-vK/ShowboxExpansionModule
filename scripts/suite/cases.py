@@ -4162,18 +4162,63 @@ def case_hotspot_sta_coex(s: Suite) -> None:
             raise CaseSkip(f"no wifi iface for SoftAP client ({how})")
         raise CaseFail(f"could not join ShowboxMod SoftAP: {how}")
     try:
-        # Captive portal probes must answer on the SoftAP subnet.
-        for path, need in (
-            ("/generate_204", None),
-            ("/hotspot-detect.html", b"Success"),
-            ("/ncsi.txt", b"Microsoft"),
-            ("/api/v1/wifi", b'"ap"'),
-        ):
-            c, b = http_get_retry(f"http://{ap_ip}{path}", timeout=3.0, attempts=4, min_bytes=1)
-            if need is None:
-                s.check(f"SoftAP {path}", c in (200, 204, 302, 301) or c == 511, f"code={c} bytes={len(b)}")
-            else:
-                s.check(f"SoftAP {path}", c == 200 and need in b, f"code={c} bytes={len(b)}")
+        # OS probes must redirect to the web UI. A success page makes Android
+        # skip opening it. Do not follow the redirect: the UI body wedges :80.
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        for path in ("/generate_204", "/hotspot-detect.html", "/ncsi.txt"):
+            c, loc = 0, ""
+            probe = urllib.request.Request(
+                f"http://{ap_ip}{path}",
+                headers={"Connection": "close", "User-Agent": "showbox-suite"},
+                method="GET",
+            )
+            try:
+                with opener.open(probe, timeout=4) as resp:
+                    c = resp.getcode() or 0
+                    loc = resp.headers.get("Location") or ""
+            except urllib.error.HTTPError as err:
+                c = err.code
+                loc = err.headers.get("Location") if err.headers else ""
+            except Exception:
+                c, loc = 0, ""
+            s.check(
+                f"SoftAP {path} portal",
+                c in (301, 302, 303, 307) and loc.startswith(f"http://{ap_ip}/"),
+                f"code={c} location={loc!r}",
+            )
+        cap_code, cap_body = 0, b""
+        cap_req = urllib.request.Request(
+            f"http://{ap_ip}/captive-portal",
+            headers={
+                "Accept": "application/captive+json",
+                "Connection": "close",
+                "User-Agent": "showbox-suite",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(cap_req, timeout=4) as resp:
+                cap_code = resp.getcode() or 0
+                cap_body = resp.read()
+        except urllib.error.HTTPError as err:
+            cap_code = err.code
+            cap_body = err.read() if err.fp else b""
+        except Exception:
+            cap_code, cap_body = 0, b""
+        s.check(
+            "SoftAP captive-portal API",
+            cap_code == 200
+            and b'"captive":true' in cap_body
+            and b"user-portal-url" in cap_body
+            and b"venue-info-url" not in cap_body,
+            f"code={cap_code} bytes={len(cap_body)}",
+        )
+        c, b = http_get_retry(f"http://{ap_ip}/api/v1/wifi", timeout=3.0, attempts=4, min_bytes=1)
+        s.check("SoftAP /api/v1/wifi", c == 200 and b'"ap"' in b, f"code={c} bytes={len(b)}")
         # Laptop left home Wi-Fi to join SoftAP, so http://STA-IP is the wrong
         # probe (single-radio host). Prove LAN still answers via ethernet, and
         # SoftAP /api/v1/wifi already showed sta=true above.

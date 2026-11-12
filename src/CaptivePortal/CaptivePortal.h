@@ -48,6 +48,10 @@ private:
 
     void startDns();
     void stopDns();
+    // DHCP option 114 (RFC 8910). The API says a login is required and
+    // points at the web UI, which is what makes Android open the page.
+    // The gateway stays advertised: without one, Android skips that check.
+    void advertiseCapport();
     void applyScan();
     bool radioOn() const;
     bool staUp() const;
@@ -70,6 +74,8 @@ private:
     UltimateBaseFirmware* firmware = nullptr;
     bool dnsUp = false;
     bool apUp = false;
+    bool capportSet = false;
+    uint32_t capportTryMs = 0;
     NetMode mode = NetMode::SoftAp;
     bool apWanted = true;
     bool apAlways = false;

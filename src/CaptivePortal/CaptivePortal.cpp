@@ -15,6 +15,8 @@ namespace {
 constexpr const char* kApSsid = "ShowboxMod";
 constexpr const char* kApPass = "showboxmod";
 constexpr uint32_t kFallbackApMs = 8000;
+// Fixed SoftAP address. The DHCP server keeps this pointer for its lifetime.
+constexpr char kCapportUri[] = "http://192.168.4.1/captive-portal";
 }
 
 const char* CaptivePortal::netModeName(NetMode m) {
@@ -395,8 +397,8 @@ bool CaptivePortal::apIfaceLive(uint8_t expectChannel) const {
         return false;
     }
     // Beacon can advertise ShowboxMod a beat before softAPIP is bound —
-    // treat SSID+mode as live only when the AP address is up so captive
-    // clients have a gateway. Callers that see SSID-without-IP should
+    // treat SSID+mode as live only when the AP address is up so clients
+    // can open the portal. Callers that see SSID-without-IP should
     // softAPConfig rather than softAPdisconnect (that fight left L1 dark).
     if (WiFi.softAPIP()[0] == 0) {
         return false;
@@ -509,6 +511,8 @@ void CaptivePortal::ensureAp() {
             }
             debugLog("ap reclaim ssid ip=%s", WiFi.softAPIP().toString().c_str());
         } else {
+            capportSet = false;
+            capportTryMs = 0;
             const bool began = WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
             debugLog("ap begin=%d ip=%s ch=%u wanted=%d always=%d ssid=%s", began ? 1 : 0,
                 WiFi.softAPIP().toString().c_str(), (unsigned)channel, apWanted ? 1 : 0,
@@ -522,6 +526,8 @@ void CaptivePortal::ensureAp() {
             }
             if (began && !apIfaceLive(channel) && !apSsidOnAir()) {
                 debugLog("ap begin partial (ssid=%s) — reassert", WiFi.softAPSSID().c_str());
+                capportSet = false;
+                capportTryMs = 0;
                 WiFi.softAP(kApSsid, kApPass, channel, 0, 2);
                 delay(20);
                 if (apSsidOnAir() && WiFi.softAPIP()[0] == 0) {
@@ -554,6 +560,8 @@ void CaptivePortal::ensureAp() {
     // lost its config; re-assert the hotspot identity.
     if (WiFi.softAPSSID() != kApSsid) {
         debugLog("ap ssid drift -> %s, reasserting", WiFi.softAPSSID().c_str());
+        capportSet = false;
+        capportTryMs = 0;
         if (!WiFi.softAP(kApSsid, kApPass, channel, 0, 2) || WiFi.softAPIP()[0] == 0) {
             if (apSsidOnAir() && WiFi.softAPIP()[0] == 0) {
                 bindApAddress();
@@ -566,9 +574,12 @@ void CaptivePortal::ensureAp() {
     }
     lanNoteApActive(true);
     startDns();
+    advertiseCapport();
 }
 
 void CaptivePortal::stopAp() {
+    capportSet = false;
+    capportTryMs = 0;
     stopDns();
     lanNoteApActive(false);
     if (!apUp && WiFi.softAPIP()[0] == 0) {
@@ -604,6 +615,43 @@ void CaptivePortal::dropApForSta(uint8_t kind) {
         lanNoteApForcedDown();
         lastApTryMs = millis();
         debugLog("ap: forced down for STA — SoftAP retry after backoff");
+    }
+}
+
+void CaptivePortal::advertiseCapport() {
+    if (capportSet || WiFi.softAPIP()[0] == 0) {
+        return;
+    }
+    // ensureAp runs about once a second. A failed attempt must not stop and
+    // start the DHCP server on every tick.
+    if (capportTryMs != 0 && (int32_t)(millis() - capportTryMs) < 15000) {
+        return;
+    }
+    capportTryMs = millis();
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (netif == nullptr) {
+        return;
+    }
+    const esp_err_t stopped = esp_netif_dhcps_stop(netif);
+    if (stopped != ESP_OK && stopped != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        debugLog("ap capport stop %d", (int)stopped);
+        return;
+    }
+    // The server stores this pointer and reads it on each offer.
+    // Leave the default gateway in place. Android does not open the portal
+    // on a network that has no route.
+    char* uri = const_cast<char*>(kCapportUri);
+    const esp_err_t set = esp_netif_dhcps_option(
+        netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI, uri, sizeof(kCapportUri) - 1);
+    const esp_err_t started = esp_netif_dhcps_start(netif);
+    if (set == ESP_OK && (started == ESP_OK || started == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)) {
+        capportSet = true;
+        debugLog("ap capport %s", kCapportUri);
+        return;
+    }
+    debugLog("ap capport set=%d start=%d", (int)set, (int)started);
+    if (started != ESP_OK && started != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        esp_netif_dhcps_start(netif);
     }
 }
 

@@ -69,43 +69,50 @@ static bool isOsProbeHost(const String& host) {
         || host == "connectivity.samsung.com.cn";
 }
 
-static void sendOsProbeReply(AsyncWebServerRequest* request) {
-    const String& path = request->url();
-    AsyncWebServerResponse* response = nullptr;
-    if (path == "/generate_204" || path == "/gen_204") {
-        response = request->beginResponse(204);
-    } else if (path == "/connecttest.txt") {
-        response = request->beginResponse(200, "text/plain", "Microsoft Connect Test");
-    } else if (path == "/ncsi.txt") {
-        response = request->beginResponse(200, "text/plain", "Microsoft NCSI");
-    } else if (path == "/success.txt") {
-        response = request->beginResponse(200, "text/plain", "success");
-    } else {
-        response = request->beginResponse(200, "text/html",
-            "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+static String portalUrl() {
+    IPAddress ip = WiFi.softAPIP();
+    if (ip[0] == 0) {
+        ip = IPAddress(192, 168, 4, 1);
     }
-    response->addHeader("Cache-Control", "no-store");
-    request->send(response);
+    return String("http://") + ip.toString() + "/";
 }
 
-static void sendNoContent(AsyncWebServerRequest* request) {
-    AsyncWebServerResponse* response = request->beginResponse(204);
-    response->addHeader("Cache-Control", "no-store");
-    request->send(response);
+static void sendPortalRedirect(AsyncWebServerRequest* request) {
+    request->redirect(portalUrl());
 }
 
+// A success answer tells the phone the Wi-Fi has internet, so it never
+// opens the page. A redirect is what starts that open.
 static bool sendOsProbe(AsyncWebServerRequest* request) {
     const String path = request->url();
     const String host = requestHost(request);
-    if (isOsProbePath(path)) {
-        sendOsProbeReply(request);
-        return true;
-    }
-    if (isOsProbeHost(host) && (path == "/" || path.length() == 0)) {
-        sendNoContent(request);
+    if (isOsProbePath(path) || (isOsProbeHost(host) && (path == "/" || path.length() == 0))) {
+        sendPortalRedirect(request);
         return true;
     }
     return false;
+}
+
+static bool wantsCapportJson(AsyncWebServerRequest* request) {
+    if (!request->hasHeader("Accept")) {
+        return false;
+    }
+    String accept = request->getHeader("Accept")->value();
+    accept.toLowerCase();
+    return accept.indexOf("application/captive+json") >= 0;
+}
+
+static void sendCapport(AsyncWebServerRequest* request) {
+    if (!wantsCapportJson(request)) {
+        sendPortalRedirect(request);
+        return;
+    }
+    // user-portal-url is the page Android opens on connect. venue-info-url
+    // is a second notice that opens a normal browser, so it stays unset.
+    const String body = String("{\"captive\":true,\"user-portal-url\":\"") + portalUrl() + "\"}";
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/captive+json", body);
+    response->addHeader("Cache-Control", "private, no-store");
+    request->send(response);
 }
 
 static bool redirectHotspotBrowser(CaptivePortal* portal, AsyncWebServerRequest* request) {
@@ -119,10 +126,6 @@ static bool redirectHotspotBrowser(CaptivePortal* portal, AsyncWebServerRequest*
     const String apIp = WiFi.softAPIP().toString();
     if (host.length() == 0 || host == apIp || host == "showbox.local" || host == "showbox") {
         return false;
-    }
-    if (isOsProbeHost(host)) {
-        sendNoContent(request);
-        return true;
     }
     request->redirect(String("http://") + apIp + "/");
     return true;
@@ -2053,6 +2056,10 @@ void RestApiRouter::setup() {
         sendWebUi(request);
     });
 
+    _server->on("/captive-portal", HTTP_GET, [](AsyncWebServerRequest* request) {
+        sendCapport(request);
+    });
+
     if (_portal != nullptr) {
         auto captive = [this](AsyncWebServerRequest* request) {
             if (sendOsProbe(request)) {
@@ -2061,7 +2068,7 @@ void RestApiRouter::setup() {
             if (redirectHotspotBrowser(_portal, request)) {
                 return;
             }
-            sendOsProbeReply(request);
+            sendPortalRedirect(request);
         };
         _server->on("/generate_204", HTTP_GET, captive);
         _server->on("/gen_204", HTTP_GET, captive);
