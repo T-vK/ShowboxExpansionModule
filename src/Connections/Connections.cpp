@@ -295,6 +295,7 @@ void Connections::applyAdvertisingPolicy() {
     }
     bool pedal = multiMidi != nullptr && multiMidi->outgoingCount() > 0;
     radio->setPedalShare(pedal);
+    radio->setPairingBoost(pairingWindowOpen());
     // A live BLE central plus continuous ShowboxMod ads holds PTA so ARP/ICMP
     // die. Keep ads off until a pairing window, then pulse from BleRadio::apply.
     if (pedal && !pairingWindowOpen()) {
@@ -306,7 +307,15 @@ void Connections::applyAdvertisingPolicy() {
         want = false;
     }
     radio->setAdvertiseAllowed(want);
+    // Wi-Fi-first coex holds a 400 ms pairing advert for several seconds.
+    // Balance only while that window is actually advertising.
+    lanSetPairingAir(want && pairingWindowOpen());
     radio->apply();
+    char line[80];
+    snprintf(line, sizeof(line), "adv on=%d allowed=%d links=%d itvl=%u",
+        radio->advertising() ? 1 : 0, radio->advertiseAllowed() ? 1 : 0, radio->gapLinkCount(),
+        (unsigned)radio->advInterval());
+    noteLog(line);
 }
 
 void Connections::load() {
@@ -396,6 +405,25 @@ void Connections::tick() {
         applyPairingMixIfIdle();
         applyAdvertisingPolicy();
     }
+    // A central that connects and then vanishes stops the controller
+    // advert. The pairing window stays open and nothing else calls
+    // apply(), so the air stays quiet. Restart from this loop, which is
+    // the task allowed to start and stop advertising. The 1.5 s wait
+    // leaves a real connect alone while the controller has paused ads.
+    {
+        static uint32_t advDownSinceMs = 0;
+        if (radio != nullptr && radio->advertiseAllowed() && !radio->advertising()) {
+            uint32_t nowMs = millis();
+            if (advDownSinceMs == 0) {
+                advDownSinceMs = nowMs;
+            } else if ((int32_t)(nowMs - advDownSinceMs) >= 1500) {
+                advDownSinceMs = nowMs;
+                applyAdvertisingPolicy();
+            }
+        } else {
+            advDownSinceMs = 0;
+        }
+    }
     if (multiMidi != nullptr) {
         BLEServer* server = multiMidi->bleGattServer();
         bool pedal = multiMidi->outgoingCount() > 0;
@@ -428,8 +456,13 @@ void Connections::tick() {
     bool uartHot = showbox != nullptr && showbox->uartHot();
     // JSON walk lives in flash on core 1 with the UART ISR. When the mixer
     // link is busy, wait 8s so we are not in flash on every other heartbeat.
+    // A host or pedal link change still refreshes immediately: ble-pair only
+    // waits 3 s, and an 8 s-stale "connected: false" fails a live ACL.
     uint32_t jsonEvery = uartHot ? 8000 : 1500;
-    if (lastStatusMs == 0 || (int32_t)(millis() - lastStatusMs) > (int32_t)jsonEvery) {
+    int linksNow = radio != nullptr ? radio->gapLinkCount() : 0;
+    bool linkChanged = linksNow != lastCacheLinks || outgoingUsed() != lastCacheOut;
+    if (statusForce || linkChanged || lastStatusMs == 0
+            || (int32_t)(millis() - lastStatusMs) > (int32_t)jsonEvery) {
         refreshStatusCache();
     }
     enforcePeripheralSlots();
@@ -718,6 +751,13 @@ Hid::Mix Connections::mixFromPeer(const BlePeers::Peer& peer) const {
 }
 
 void Connections::onIncoming(const char* address, uint16_t connId, bool connected) {
+    // gapLinkCount() only updates from the scan task, and that task skips
+    // the update while a pedal is up and no host is linked. The 8 s status
+    // cache then still says hostUsed=0 after BlueZ is already connected.
+    // The host list itself is filled before this callback. Ask the loop to
+    // publish it. Do not build the JSON here: this is the NimBLE host task.
+    statusForce = true;
+    debugLog("ble host %s %d", address != nullptr ? address : "?", connected ? 1 : 0);
     if (!connected) {
         if (hid != nullptr) {
             hid->clearConnMix(connId);

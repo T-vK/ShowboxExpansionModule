@@ -271,21 +271,24 @@ void BleMidi::scanLoop() {
         if (radio != nullptr) {
             radio->service();
         }
-        // The looper pedal is Bluetooth. Advertising stays quiet while Wi-Fi
-        // is down so the access point can rejoin. Auto-scan and remembered
-        // pedal connects also wait 20s: they share 2.4 GHz with STA associate.
-        bool wifiUp = WiFi.status() == WL_CONNECTED;
-        static uint32_t wifiDownSince = 0;
-        if (wifiUp) {
-            wifiDownSince = 0;
-        } else if (wifiDownSince == 0) {
-            wifiDownSince = millis();
+        // STA association shares 2.4 GHz with the pedal. Stay quiet only while
+        // there is no network at all. SoftAP never reaches WL_CONNECTED; treating
+        // that as "Wi-Fi down" stopped ShowboxMod adverts on every BLE-task
+        // pass whenever AIRSTEP was not already linked. The pairing window
+        // stayed open (pairingMs ~88s) and BlueZ's scan saw nothing.
+        bool staUp = WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+        bool apUp = WiFi.softAPIP()[0] != 0;
+        bool netUp = staUp || apUp;
+        static uint32_t netDownSince = 0;
+        if (netUp) {
+            netDownSince = 0;
+        } else if (netDownSince == 0) {
+            netDownSince = millis();
         }
-        // Association to pfSense can take >20s under coex; keep BLE quiet.
-        bool holdForWifi = !wifiUp && (int32_t)(millis() - wifiDownSince) < 45000;
+        bool holdForWifi = !netUp && (int32_t)(millis() - netDownSince) < 45000;
         bool holdForHttps = lanCoexHoldOutgoingHttps(coex);
         bool holdAdv = connectedCount() > 0 || (radio != nullptr && radio->hasIncoming());
-        if (!wifiUp && !holdAdv) {
+        if (!netUp && !holdAdv) {
             BLEAdvertising* advertising = BLEDevice::getAdvertising();
             if (advertising != nullptr) {
                 advertising->stop();
@@ -422,7 +425,7 @@ void BleMidi::scanLoop() {
         pruneUnseen();
         scanning = false;
         scanFull = false;
-        if (wifiUp) {
+        if (netUp) {
             advertiseIfEnabled();
         }
 
@@ -1081,7 +1084,11 @@ void BleMidi::keepAdvertising() {
             radio->service();
         }
     }
-    if (WiFi.status() != WL_CONNECTED) {
+    // Same rule as scanLoop: SoftAP is a live network. Returning here used
+    // to leave a pairing-window advert stopped for the whole AP session.
+    bool netUp = (WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0)
+        || WiFi.softAPIP()[0] != 0;
+    if (!netUp) {
         return;
     }
     // A live pedal with ads disallowed must not call apply()/ble_gap_adv_stop

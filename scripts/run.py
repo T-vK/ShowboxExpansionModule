@@ -31,10 +31,14 @@ NET_CHOICES = ("softap", "sta", "ethernet")
 
 
 def apply_net_defaults(args: argparse.Namespace) -> None:
-    """Resolve --ip/--host from --net when the CLI did not override them."""
+    """Resolve --ip/--host from --net when the CLI did not override them.
+
+    SoftAP ignores SHOWBOX_IP (that is the desk STA address). Use
+    SHOWBOX_SOFTAP_IP only when you need a non-default SoftAP address.
+    """
     if args.ip is None:
         if args.net == "softap":
-            args.ip = os.environ.get("SHOWBOX_IP", SOFTAP_IP)
+            args.ip = os.environ.get("SHOWBOX_SOFTAP_IP", SOFTAP_IP)
         elif args.net == "ethernet":
             args.ip = os.environ.get("SHOWBOX_ETH", os.environ.get("SHOWBOX_IP", IP))
         else:
@@ -82,33 +86,43 @@ def main_cases(*names: str, ip: str | None = None, host: str | None = None, extr
 
 
 def selected_cases(args: argparse.Namespace) -> list[tuple]:
-    catalog = all_cases() if args.case else cases_for_level(args.level)
+    net = getattr(args, "net", None)
+    catalog = all_cases(net=net) if args.case else cases_for_level(args.level, net=net)
     if not args.case:
         return catalog
     wanted = [name.replace("_", "-") for name in args.case]
-    by_name = {name: fn for name, fn in all_cases()}
+    by_name = {name: fn for name, fn in all_cases(net=None)}
     missing = [name for name in wanted if name not in by_name]
     if missing:
         print("unknown cases:", ", ".join(missing))
-        print("known:", ", ".join(name for name, _fn in all_cases()))
+        print("known:", ", ".join(name for name, _fn in all_cases(net=None)))
         sys.exit(2)
+    # Explicit --case still honors SoftAP omit unless user forces a STA/eth case.
+    if net == "softap":
+        from suite.cases import SOFTAP_OMIT
+
+        skipped = [n for n in wanted if n in SOFTAP_OMIT]
+        if skipped:
+            print(f"softap omit (use --net sta to run): {', '.join(skipped)}")
+        wanted = [n for n in wanted if n not in SOFTAP_OMIT]
     return [(name, by_name[name]) for name in wanted]
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    net = getattr(args, "net", None)
     if args.list:
-        print("level 1:")
-        for name, _fn in cases_for_level(1):
+        print(f"level 1 (net={net}):")
+        for name, _fn in cases_for_level(1, net=net):
             print(f"  {name}")
         print("level 2 extra:")
-        l1 = {name for name, _fn in cases_for_level(1)}
-        for name, _fn in cases_for_level(2):
+        l1 = {name for name, _fn in cases_for_level(1, net=net)}
+        for name, _fn in cases_for_level(2, net=net):
             if name not in l1:
                 print(f"  {name}")
         print("level 3 extra:")
-        l2 = {name for name, _fn in cases_for_level(2)}
-        for name, _fn in cases_for_level(3):
+        l2 = {name for name, _fn in cases_for_level(2, net=net)}
+        for name, _fn in cases_for_level(3, net=net):
             if name not in l2:
                 print(f"  {name}")
         return 0

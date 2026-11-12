@@ -17,15 +17,55 @@ constexpr const char* kApPass = "showboxmod";
 constexpr uint32_t kFallbackApMs = 8000;
 }
 
+const char* CaptivePortal::netModeName(NetMode m) {
+    switch (m) {
+    case NetMode::SoftAp:
+        return "softap";
+    case NetMode::Sta:
+        return "sta";
+    case NetMode::Ethernet:
+        return "ethernet";
+    }
+    return "softap";
+}
+
+bool CaptivePortal::parseNetMode(const String& raw, NetMode& out) {
+    String s = raw;
+    s.trim();
+    s.toLowerCase();
+    if (s == "softap" || s == "ap" || s == "hotspot") {
+        out = NetMode::SoftAp;
+        return true;
+    }
+    if (s == "sta" || s == "station" || s == "wifi") {
+        out = NetMode::Sta;
+        return true;
+    }
+    if (s == "ethernet" || s == "eth" || s == "lan") {
+        out = NetMode::Ethernet;
+        return true;
+    }
+    return false;
+}
+
 void CaptivePortal::loadPrefs() {
     Preferences prefs;
     if (!prefs.begin("radio", true)) {
+        mode = NetMode::SoftAp;
+        apWanted = true;
+        autoConnect = false;
         return;
+    }
+    // Missing key → SoftAP (gig default). Explicit 0/1/2 wins over legacy flags.
+    mode = static_cast<NetMode>(prefs.getUChar("netmode", static_cast<uint8_t>(NetMode::SoftAp)));
+    if (mode > NetMode::Ethernet) {
+        mode = NetMode::SoftAp;
     }
     apWanted = prefs.getBool("hotspot", true);
     apAlways = prefs.getBool("apalways", false);
     apAuto = prefs.getBool("apauto", true);
-    autoConnect = prefs.getBool("stauto", true);
+    // SoftAP-default: stauto defaults false so reboot does not chase home STA.
+    autoConnect = prefs.getBool("stauto", mode == NetMode::Sta);
     String packed = prefs.getString("nets", "");
     prefs.end();
     rememberedN = 0;
@@ -56,35 +96,97 @@ void CaptivePortal::loadPrefs() {
     }
 }
 
+void CaptivePortal::applyNetMode(bool boot) {
+    switch (mode) {
+    case NetMode::SoftAp:
+        autoConnect = false;
+        apAlways = false;
+        apWanted = true;
+        apAuto = true;
+        pendingStaJoin = false;
+        WiFi.setAutoReconnect(false);
+        if (staUp()) {
+            WiFi.disconnect(false);
+        }
+        if (!boot || radioOn()) {
+            ensureAp();
+        }
+        break;
+    case NetMode::Sta:
+        autoConnect = true;
+        apAlways = false;
+        apAuto = true;
+        WiFi.setAutoReconnect(true);
+        if (radioOn() && rememberedN > 0 && remembered[0].ssid.length() > 0) {
+            if (!apAlways) {
+                apWanted = false;
+            }
+            pendingStaSsid = remembered[0].ssid;
+            pendingStaPass = remembered[0].pass;
+            pendingStaJoin = true;
+            pendingStaJoinAtMs = millis() + (boot ? 800 : 200);
+            lanNoteStaJoin(90000);
+            staJoinDeadlineMs = millis() + 90000;
+            debugLog("sta join queued mode=%s ssid=%s", netModeName(mode), pendingStaSsid.c_str());
+        } else {
+            apWanted = true;
+            ensureAp();
+        }
+        break;
+    case NetMode::Ethernet:
+        autoConnect = false;
+        apAlways = false;
+        apWanted = false;
+        apAuto = false;
+        pendingStaJoin = false;
+        WiFi.setAutoReconnect(false);
+        stopAp();
+        if (staUp()) {
+            WiFi.disconnect(false);
+        }
+        break;
+    }
+    persistWanted();
+}
+
+bool CaptivePortal::setNetMode(NetMode next) {
+    if (next > NetMode::Ethernet) {
+        return false;
+    }
+    if (mode == next) {
+        applyNetMode(false);
+        return true;
+    }
+    debugLog("netMode %s -> %s", netModeName(mode), netModeName(next));
+    mode = next;
+    applyNetMode(false);
+    return true;
+}
+
+NetMode CaptivePortal::cycleNetMode() {
+    NetMode next = NetMode::SoftAp;
+    switch (mode) {
+    case NetMode::SoftAp:
+        next = NetMode::Sta;
+        break;
+    case NetMode::Sta:
+        next = NetMode::Ethernet;
+        break;
+    case NetMode::Ethernet:
+        next = NetMode::SoftAp;
+        break;
+    }
+    setNetMode(next);
+    return mode;
+}
+
 void CaptivePortal::begin(AsyncWebServer* /*server*/, UltimateBaseFirmware* firmwareIn) {
     firmware = firmwareIn;
     loadPrefs();
-    WiFi.setAutoReconnect(autoConnect);
-    // WiFiManager no longer autoConnects. Kick STA from remembered nets so
-    // reboot restores LAN without SoftAP thrash. Keep SoftAP off during the
-    // join — ensureAp() mid-handshake was aborting WiFi.begin().
-    debugLog("portal begin radio=%d auto=%d nets=%u apWanted=%d apAlways=%d",
-        radioOn() ? 1 : 0, autoConnect ? 1 : 0, (unsigned)rememberedN,
+    debugLog("portal begin mode=%s radio=%d auto=%d nets=%u apWanted=%d apAlways=%d",
+        netModeName(mode), radioOn() ? 1 : 0, autoConnect ? 1 : 0, (unsigned)rememberedN,
         apWanted ? 1 : 0, apAlways ? 1 : 0);
-    if (radioOn() && autoConnect && rememberedN > 0 && remembered[0].ssid.length() > 0) {
-        // Hotspot+STA (apAlways): SoftAP stays wanted; joinInFlight suppresses
-        // SoftAP mid-handshake. Clearing apWanted here undid temporary-yield
-        // prefs restore and left SoftAP dark across reboot.
-        if (!apAlways) {
-            apWanted = false;
-            persistWanted();
-        }
-        pendingStaSsid = remembered[0].ssid;
-        pendingStaPass = remembered[0].pass;
-        pendingStaJoin = true;
-        pendingStaJoinAtMs = millis() + 800;
-        lanNoteStaJoin(90000);
-        staJoinDeadlineMs = millis() + 90000;
-        debugLog("sta boot join queued ssid=%s passLen=%u", pendingStaSsid.c_str(),
-            (unsigned)pendingStaPass.length());
-        return;
-    }
-    ensureAp();
+    applyNetMode(true);
 }
 
 bool CaptivePortal::radioOn() const {
@@ -107,6 +209,13 @@ bool CaptivePortal::fromAccessPoint(IPAddress local) const {
 bool CaptivePortal::apShouldRun() const {
     if (!radioOn() || portalOpen()) {
         return false;
+    }
+    if (mode == NetMode::Ethernet) {
+        return false;
+    }
+    // SoftAP-only gig mode: keep the phone hotspot up even with BLE MIDI.
+    if (mode == NetMode::SoftAp) {
+        return apWanted || (apAuto && millis() > kFallbackApMs);
     }
     // AP+STA plus BLE makes showbox.local unusable on the LAN unless the
     // user explicitly wants the hotspot always on.
@@ -138,6 +247,7 @@ void CaptivePortal::flushWanted() {
     if (!prefs.begin("radio", false)) {
         return;
     }
+    prefs.putUChar("netmode", static_cast<uint8_t>(mode));
     prefs.putBool("hotspot", apWanted);
     prefs.putBool("apalways", apAlways);
     prefs.putBool("apauto", apAuto);
@@ -477,6 +587,10 @@ void CaptivePortal::stopAp() {
 }
 
 void CaptivePortal::dropApForSta(uint8_t kind) {
+    // SoftAP-only gig mode: never tear the phone hotspot for STA TX health.
+    if (mode == NetMode::SoftAp) {
+        return;
+    }
     if (WiFi.softAPIP()[0] == 0 && !apUp) {
         return;
     }
@@ -619,6 +733,7 @@ bool CaptivePortal::scanJson(String& json, String& error) {
 
 String CaptivePortal::statusJson() const {
     JsonDocument doc;
+    doc["netMode"] = netModeName(mode);
     doc["sta"] = staUp();
     doc["ssid"] = WiFi.SSID();
     doc["ip"] = WiFi.localIP().toString();
@@ -697,6 +812,9 @@ bool CaptivePortal::connectSta(const String& ssid, const String& password, Strin
         pass = passwordFor(ssid);
     }
     rememberNet(ssid, pass);
+    // Explicit STA join from UI/API leaves SoftAP-only gig mode.
+    mode = NetMode::Sta;
+    autoConnect = true;
     WiFi.setAutoReconnect(autoConnect);
     // Defer the radio flip so SoftAP can finish the HTTP response that
     // queued this join. Stopping AP here made curl see HTTP 000 and left

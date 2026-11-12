@@ -81,7 +81,8 @@ void IRAM_ATTR UARTInterceptor::pullHwFifo(
     uint16_t hR = holdR;
     const uint16_t parseMask = static_cast<uint16_t>(parseCap - 1u);
     const uint16_t holdMask = static_cast<uint16_t>(holdCap - 1u);
-    const bool allowTx = !(txPort == UART_NUM_1 && pauseTx1);
+    const bool allowTx = !(txPort == UART_NUM_1 && pauseTx1)
+        && !(txPort == UART_NUM_2 && pauseTx2);
     drainHoldLocked(txPort, holdRing, hR, hW, holdMask, cutCount, allowTx);
     uint32_t cnt = uart_ll_get_rxfifo_len(rx);
     while (cnt > 0) {
@@ -404,6 +405,12 @@ void UARTInterceptor::sendPacket(uint8_t* packet, size_t length, Direction direc
     if (pumpLock != nullptr && xSemaphoreGetMutexHolder(pumpLock) != xTaskGetCurrentTaskHandle()) {
         took = xSemaphoreTake(pumpLock, pdMS_TO_TICKS(8)) == pdTRUE;
     }
+    if (quietActive()) {
+        if (took) {
+            xSemaphoreGive(pumpLock);
+        }
+        return;
+    }
     if (direction == DEVICE2_TO_DEVICE1) {
         if (unplugActive) {
             // Line is tri-stated toward the base; nothing in flight may leak
@@ -464,7 +471,7 @@ void UARTInterceptor::drainHoldFromTask() {
     uint16_t hW1 = holdW1;
     uint16_t hR2 = holdR2;
     uint16_t hW2 = holdW2;
-    drainHoldLocked(UART_NUM_2, holdRing1, hR1, hW1, static_cast<uint16_t>(kHold - 1u), cutCount1, true);
+    drainHoldLocked(UART_NUM_2, holdRing1, hR1, hW1, static_cast<uint16_t>(kHold - 1u), cutCount1, !pauseTx2);
     drainHoldLocked(UART_NUM_1, holdRing2, hR2, hW2, static_cast<uint16_t>(kHold - 1u), cutCount2, !pauseTx1);
     holdR1 = hR1;
     holdR2 = hR2;
@@ -483,6 +490,22 @@ void UARTInterceptor::processPort(HardwareSerial& rx, HardwareSerial& tx,
             break;
         }
         rxCount = rxCount + static_cast<uint32_t>(n);
+        const bool suppress = (direction == DEVICE2_TO_DEVICE1 && pauseTx1)
+            || (direction == DEVICE1_TO_DEVICE2 && pauseTx2);
+        if (suppress) {
+            if (packetFinder != nullptr) {
+                activeFramer = (direction == DEVICE1_TO_DEVICE2) ? &framerState1 : &framerState2;
+                activeMaxPacketSize = (direction == DEVICE1_TO_DEVICE2) ? buffer1MaxSize : buffer2MaxSize;
+                packetFinder(buffer.data(), &bufferPosition, tmp, &n, [&]() {
+                    if (packetHandler != nullptr) {
+                        size_t length = bufferPosition;
+                        packetHandler(buffer.data(), length, direction);
+                    }
+                });
+            }
+            avail = rx.available();
+            continue;
+        }
         // Cut-through shares the UART with injected packets (looper presses,
         // entity writes). Without this lock the two writers interleave
         // mid-packet and the devices silently drop the corrupted frames.
@@ -618,7 +641,31 @@ void UARTInterceptor::stampAgesFromTask() {
     updateResyncPause(now);
 }
 
+void UARTInterceptor::holdQuiet(uint32_t ms) {
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    quietUntilMs = now + ms;
+    pauseTx1 = true;
+    pauseTx2 = true;
+}
+
+bool UARTInterceptor::quietActive() const {
+    if (quietUntilMs == 0) {
+        return false;
+    }
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    return (int32_t)(now - quietUntilMs) < 0;
+}
+
 void UARTInterceptor::updateResyncPause(uint32_t now) {
+    if (quietUntilMs != 0) {
+        if ((int32_t)(now - quietUntilMs) < 0) {
+            pauseTx1 = true;
+            pauseTx2 = true;
+            return;
+        }
+        quietUntilMs = 0;
+        pauseTx2 = false;
+    }
     if (unplugActive) {
         pauseTx1 = true;
         return;

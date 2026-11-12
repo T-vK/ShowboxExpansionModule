@@ -302,26 +302,19 @@ void BleRadio::stopNow() {
     stopGapAdv(BLEDevice::getAdvertising());
     advertised = false;
     advIntervalApplied = false;
+    appliedItvlMin = 0;
     restartAdvertising = false;
 }
 
 void BleRadio::resumeExisting() {
+    // Do not stamp the 2.5 s background interval over a pairing window.
+    // start() returns immediately while GAP is already active, so the
+    // previous code marked that slow interval "applied" and apply() never
+    // restarted at 400 ms.
     adsAllowed = true;
-    restartAdvertising = false;
-    BLEAdvertising* advertising = BLEDevice::getAdvertising();
-    if (advertising == nullptr) {
-        return;
-    }
-    advertising->setMinInterval(BleRadio::kAdvItvlMin);
-    advertising->setMaxInterval(BleRadio::kAdvItvlMax);
-    advertising->setScanResponse(false);
-    if (!ble_gap_adv_active()) {
-        advertising->start();
-    }
-    advertised = ble_gap_adv_active();
-    advertisedMidi = midiOn;
-    advertisedHid = hidOn;
-    advIntervalApplied = advertised;
+    restartAdvertising = true;
+    advIntervalApplied = false;
+    apply();
 }
 
 void BleRadio::setAdvertiseAllowed(bool allowed) {
@@ -336,6 +329,15 @@ void BleRadio::setPedalShare(bool share) {
     pedalShare = share;
 }
 
+void BleRadio::setPairingBoost(bool on) {
+    if (on == pairingBoost) {
+        return;
+    }
+    pairingBoost = on;
+    restartAdvertising = true;
+    advIntervalApplied = false;
+}
+
 void BleRadio::apply() {
     if (!BLEDevice::getInitialized()) {
         return;
@@ -348,10 +350,13 @@ void BleRadio::apply() {
     bool want = (midiOn || hidOn) && adsAllowed;
     uint16_t advMin = BleRadio::kAdvItvlMin;
     uint16_t advMax = BleRadio::kAdvItvlMax;
-    if (pedalShare && adsAllowed) {
-        // 100 ms ads plus AIRSTEP used to kill ARP. 2560 ms was too
-        // slow for the 8 s host scan. 400 ms stays visible and leaves
-        // Wi-Fi gaps next to the 200 ms pedal.
+    if (pairingBoost) {
+        // Coex still stretches this. 400 ms (0x280) showed up on the laptop
+        // about every 2 s with AIRSTEP linked, so a 2 s scan missed it.
+        // 100 ms is only used while the pairing window is open.
+        advMin = 0xA0;
+        advMax = 0xC0;
+    } else if (pedalShare && adsAllowed) {
         advMin = 0x280;
         advMax = 0x320;
     }
@@ -361,12 +366,14 @@ void BleRadio::apply() {
         stopGapAdv(advertising);
         advertised = false;
         advIntervalApplied = false;
+        appliedItvlMin = 0;
         restartAdvertising = false;
         return;
     }
     bool active = ble_gap_adv_active();
     bool payloadSame = advertised && midiOn == advertisedMidi && hidOn == advertisedHid;
-    if (active && payloadSame && advIntervalApplied && !restartAdvertising) {
+    bool intervalSame = advIntervalApplied && appliedItvlMin == advMin;
+    if (active && payloadSame && intervalSame && !restartAdvertising) {
         return;
     }
     uint32_t now = millis();
@@ -382,7 +389,7 @@ void BleRadio::apply() {
         && (int32_t)(now - lastIncomingMs) < 800) {
         return;
     }
-    if (!restartAdvertising && active && lastAdvStartMs != 0 && (int32_t)(now - lastAdvStartMs) < 5000) {
+    if (!restartAdvertising && intervalSame && active && lastAdvStartMs != 0 && (int32_t)(now - lastAdvStartMs) < 5000) {
         return;
     }
     if (active) {
@@ -390,6 +397,7 @@ void BleRadio::apply() {
         if (ble_gap_adv_active()) {
             restartAdvertising = true;
             advIntervalApplied = false;
+            appliedItvlMin = 0;
             return;
         }
     }
@@ -447,13 +455,19 @@ void BleRadio::apply() {
         advertisedMidi = midiOn;
         advertisedHid = hidOn;
         advIntervalApplied = true;
+        appliedItvlMin = advMin;
         restartAdvertising = false;
     } else {
         advertised = false;
         advIntervalApplied = false;
+        appliedItvlMin = 0;
         restartAdvertising = false;
         lastAdvStartMs = now;
     }
+}
+
+bool BleRadio::advertising() const {
+    return advertised && ble_gap_adv_active();
 }
 
 void BleRadio::service() {

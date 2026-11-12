@@ -7,6 +7,10 @@
 class UltimateBaseFirmware;
 class AsyncWebServer;
 
+// Gig default is SoftAP-only (phone joins ShowboxMod). STA/Ethernet are
+// explicit desk/dev modes — see docs/net-mode-softap-default.md.
+enum class NetMode : uint8_t { SoftAp = 0, Sta = 1, Ethernet = 2 };
+
 class CaptivePortal {
 public:
     void begin(AsyncWebServer* server, UltimateBaseFirmware* firmware);
@@ -25,6 +29,11 @@ public:
     bool alwaysAp() const { return apAlways; }
     bool autoAp() const { return apAuto; }
     bool autoConnectOn() const { return autoConnect; }
+    NetMode netMode() const { return mode; }
+    bool setNetMode(NetMode next);
+    NetMode cycleNetMode();
+    static const char* netModeName(NetMode m);
+    static bool parseNetMode(const String& raw, NetMode& out);
     bool fromAccessPoint(IPAddress local) const;
     String statusJson() const;
     bool connectSta(const String& ssid, const String& password, String& error);
@@ -55,15 +64,17 @@ private:
     void rememberNet(const String& ssid, const String& password);
     String passwordFor(const String& ssid) const;
     void runPendingStaJoin();
+    void applyNetMode(bool boot);
 
     DNSServer dns;
     UltimateBaseFirmware* firmware = nullptr;
     bool dnsUp = false;
     bool apUp = false;
+    NetMode mode = NetMode::SoftAp;
     bool apWanted = true;
     bool apAlways = false;
     bool apAuto = true;
-    bool autoConnect = true;
+    bool autoConnect = false; // SoftAP-default: do not auto-join home STA
     bool apWantedDirty = false;
     bool scanAsked = false;
     bool scanReady = false;

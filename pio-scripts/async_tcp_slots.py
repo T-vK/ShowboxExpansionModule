@@ -44,7 +44,23 @@ def pool_absent():
                 return True
     return False
 
+def raise_listen_backlog():
+    # Default backlog is 5. Ten mixer tabs connecting together overflow it
+    # and the extras never complete the handshake (ws-multiclient linked=7).
+    old = "static uint8_t backlog = 5;"
+    new = "static uint8_t backlog = 12;"
+    for cand in candidates:
+        if not os.path.isfile(cand):
+            continue
+        src = open(cand, encoding="utf-8").read()
+        if old not in src:
+            continue
+        open(cand, "w", encoding="utf-8").write(src.replace(old, new, 1))
+        print("async_tcp_slots.py: listen backlog 5 -> 12 in %s" % cand)
+
+
 def main():
+    raise_listen_backlog()
     if pool_absent():
         return
     old_pool = "const int _number_of_closed_slots = CONFIG_LWIP_MAX_ACTIVE_TCP;"

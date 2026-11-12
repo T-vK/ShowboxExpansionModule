@@ -42,16 +42,16 @@ def _join_showbox_softap(password: str = SOFTAP_PASSWORD) -> tuple[bool, str]:
             subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
         except (OSError, subprocess.TimeoutExpired):
             pass
-    for attempt in range(5):
+    for attempt in range(2):
         try:
             subprocess.run(
                 ["nmcli", "device", "wifi", "rescan", "ifname", iface],
                 capture_output=True,
                 text=True,
-                timeout=8,
+                timeout=4,
                 check=False,
             )
-            time.sleep(1.5 + attempt)
+            time.sleep(0.4)
             listed = subprocess.run(
                 ["nmcli", "-t", "-f", "SSID", "device", "wifi", "list", "ifname", iface],
                 capture_output=True,
@@ -78,7 +78,7 @@ def _join_showbox_softap(password: str = SOFTAP_PASSWORD) -> tuple[bool, str]:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=35,
+                timeout=12,
                 check=False,
             )
             if out.returncode == 0:

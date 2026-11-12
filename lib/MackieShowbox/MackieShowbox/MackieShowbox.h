@@ -26,6 +26,21 @@ public:
 
     void sendLooperButtonAction(looper_button_action action, bool withContext = true);
     void tapLooper(uint8_t times = 1);
+    // Stamp the moment a direct gesture is handed to the UART. The packet
+    // handler records how long the base takes to announce a new LOOPER_STATE.
+    void armLooperGesture();
+    struct LooperWire {
+        uint8_t state;
+        uint32_t seq;
+        uint32_t ageMs;
+        uint8_t armed;
+        uint8_t haveLat;
+        uint32_t latMs;
+        uint8_t latFrom;
+        uint8_t latTo;
+        uint32_t latSeq;
+    };
+    LooperWire looperWire() const;
     void noteLooperOutgoing();
     bool takeLooperOutgoing();
     void injectPacket(const uint8_t* data, size_t length, const char* dir = "both");
@@ -97,6 +112,7 @@ public:
     bool uartHot(uint32_t windowMs = 40) const;
     void waitQuiet(uint32_t maxMs = 40) const;
     void wireUnplug(uint32_t ms);
+    void holdQuiet(uint32_t ms);
     bool wireUnplugActive() const { return interceptor.wireUnplugActive(); }
     uint32_t wireUnplugCount() const { return interceptor.wireUnplugCount(); }
 
@@ -268,6 +284,18 @@ private:
     volatile uint32_t restoreAtMs = 0;
     volatile uint32_t ignoreTouchUntil = 0;
     volatile uint32_t looperHoldUntil = 0;
+    void noteLooperWire(uint8_t state);
+    volatile uint32_t looperWireMs = 0;
+    volatile uint32_t looperWireSeq = 0;
+    volatile uint8_t looperWireState = 0;
+    volatile uint8_t looperArmed = 0;
+    volatile uint8_t looperArmFrom = 0;
+    volatile uint32_t looperArmMs = 0;
+    volatile uint8_t looperHaveLat = 0;
+    volatile uint32_t looperLatMs = 0;
+    volatile uint8_t looperLatFrom = 0;
+    volatile uint8_t looperLatTo = 0;
+    volatile uint32_t looperLatSeq = 0;
     bool looperOutgoing = false;
     volatile uint32_t restoreCount = 0;
     volatile uint32_t dumpGen = 0;

@@ -75,15 +75,21 @@ IPAddress WiredNet::localIP() const {
 }
 
 bool lanHasIp() {
-    return WiFi.localIP() != IPAddress() || (ETH.hasIP() && ETH.localIP() != IPAddress());
+    return WiFi.localIP() != IPAddress()
+        || (ETH.hasIP() && ETH.localIP() != IPAddress())
+        || WiFi.softAPIP() != IPAddress();
 }
 
 IPAddress lanIP() {
+    // Prefer STA, then Ethernet, then SoftAP (gig SoftAP-only default).
     if (WiFi.localIP() != IPAddress()) {
         return WiFi.localIP();
     }
     if (ETH.hasIP() && ETH.localIP() != IPAddress()) {
         return ETH.localIP();
+    }
+    if (WiFi.softAPIP() != IPAddress()) {
+        return WiFi.softAPIP();
     }
     return IPAddress();
 }

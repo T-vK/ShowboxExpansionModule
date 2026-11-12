@@ -13,6 +13,9 @@ void lanSetMultiMidi(MultiMidi* mm);
 void lanSetCaptivePortal(CaptivePortal* portal);
 void lanPreferWifiAirtime();
 void lanPreferWifiWithBle();
+// Pairing window: BLE adverts must land inside a 2s scan. Wi-Fi-first coex
+// stretches a 400 ms advert to several seconds while SoftAP is up.
+void lanSetPairingAir(bool on);
 void lanRefreshPhy();
 void lanNoteBleLive(bool on);
 bool lanBleLive();

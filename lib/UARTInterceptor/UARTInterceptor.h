@@ -36,6 +36,10 @@ public:
     // UART: tri-state the base-side pins, drop in-flight toward-base bytes,
     // then reattach and re-sync after `ms`.
     void wireUnplug(uint32_t ms);
+    // Stop forwarding both ways so each side sees idle UART for `ms`.
+    // Unlike wireUnplug this does not drive a break.
+    void holdQuiet(uint32_t ms);
+    bool quietActive() const;
     bool wireUnplugActive() const { return unplugActive; }
     uint32_t wireUnplugCount() const { return unplugCount; }
     uint32_t rxAgeMs(Direction fromDevice) const;
@@ -122,6 +126,8 @@ private:
     // error. BLE radio TDM is enough to glitch a start bit; continuous
     // mixer traffic then never gives the base an idle gap.
     volatile bool pauseTx1 = false;
+    volatile bool pauseTx2 = false;
+    volatile uint32_t quietUntilMs = 0;
     volatile uint32_t pauseCount = 0;
     volatile uint8_t alignTx1 = 0;
     // Base-wedge wire unplug state

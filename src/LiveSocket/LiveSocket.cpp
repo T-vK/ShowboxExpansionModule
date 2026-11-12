@@ -8,8 +8,36 @@
 #include "constants.h"
 #include <esp_heap_caps.h>
 #include <ArduinoJson.h>
+#include <lwip/tcpip.h>
+#include <lwip/priv/tcp_priv.h>
 #include <cstdio>
 #include <cstring>
+
+namespace {
+
+// TIME_WAIT holds a PCB for 2*MSL (120 s) and the prebuilt lwIP pool is 16.
+// A page load plus 10 mixer tabs then fails the handshake. Drop the dead
+// PCBs; a delayed old segment is cheaper than refusing a live client.
+void purgeTimeWait(void*) {
+    struct tcp_pcb* pcb = tcp_tw_pcbs;
+    while (pcb != nullptr) {
+        struct tcp_pcb* next = pcb->next;
+        tcp_abort(pcb);
+        pcb = next;
+    }
+}
+
+void releaseTimeWaitSlots() {
+    static uint32_t lastMs = 0;
+    const uint32_t now = millis();
+    if (lastMs != 0 && (int32_t)(now - lastMs) < 200) {
+        return;
+    }
+    lastMs = now;
+    tcpip_callback_with_block(purgeTimeWait, nullptr, 0);
+}
+
+}  // namespace
 
 bool LiveSocket::sendIfReady(AsyncWebSocketClient* client, const char* body, size_t len) {
     if (client == nullptr || body == nullptr || len == 0) {
@@ -437,6 +465,7 @@ void LiveSocket::dropClients() {
 }
 
 void LiveSocket::tick() {
+    releaseTimeWaitSlots();
     // Close FIN is often lost next to BLE, so clients sit in
     // WS_DISCONNECTING forever (count() ignores them, cleanupClients
     // only erases shouldBeDeleted, which needs _client==nullptr). Each

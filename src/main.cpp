@@ -330,6 +330,7 @@ void setup() {
     frontPanel.attach(&connections, &hid, &ubfw);
     frontPanel.begin();
     actionRules.setFrontPanel(&frontPanel);
+    actionRules.setCaptivePortal(&captivePortal);
     connections.setFrontPanel(&frontPanel);
     lanKeepMdns();
     if (frontPanel.wifiRadioOn()) {

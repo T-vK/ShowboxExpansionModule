@@ -10,15 +10,18 @@ class Connections;
 class Hid;
 class FrontPanel;
 class LiveSocket;
+class CaptivePortal;
 
 class ActionRules {
 public:
     void begin(MultiMidi* midiIn, MackieShowbox* showboxIn, Connections* connectionsIn, Hid* hidIn = nullptr);
     void setLiveSocket(LiveSocket* socket);
     void setFrontPanel(FrontPanel* panelIn);
+    void setCaptivePortal(CaptivePortal* portalIn);
     // Showbox UART listeners are free functions; they forward WS pushes here.
     void notifyLiveEntity(const char* name, const char* value);
     void notifyLiveLink(bool flushMixer = false);
+    const char* rewriteLooperEcho(const char* heard);
     void setVariable(const char* name, float value);
     void setDebugSerial(Print* serial);
     void tick();
@@ -74,6 +77,9 @@ private:
         uint8_t looperKind = 0;
         uint8_t looperStep = 0;
         uint8_t stallTries = 0;
+        // Set when this job will write channel gain. The NVS save stays
+        // off the UART until that write has gone quiet.
+        bool gainBoost = false;
         char triggerValue[16] = {};
         LocalVar locals[8] = {};
         uint8_t localCount = 0;
@@ -131,6 +137,7 @@ private:
     Connections* connections = nullptr;
     Hid* hid = nullptr;
     FrontPanel* panel = nullptr;
+    CaptivePortal* portal = nullptr;
     LiveSocket* live = nullptr;
     Print* debug = nullptr;
     StoredVar globals[24] = {};
@@ -157,12 +164,24 @@ private:
     uint8_t lastMidiInCc = 0xFF;
     uint8_t lastMidiInCh = 0xFF;
     uint32_t looperChangedAtMs = 0;
+    // When the stop DOUBLE was handed to the mixer. A tap in the next
+    // 1400 ms is ignored: measured 0–900 ms after the stop announcement
+    // the mixer stays in stop, and 1200 ms after it the tap reaches play.
+    uint32_t lastStopSentMs = 0;
     uint32_t looperTapWatch = 0;
     uint8_t looperTapStateBefore = 0xFF;
     uint8_t looperTapPhase = 0;
     uint8_t looperTapRetries = 0;
     uint32_t looperTapDumpSeq = 0;
     char looperTapOp[8] = {};
+    // State a clear just left, and when empty was actually announced.
+    // A copy of that previous state still in the UART is not a new play.
+    // The copy can arrive after the next gesture has already been sent, so
+    // the guard stays up until a different state has been announced.
+    uint8_t looperClearFrom = 0xFF;
+    uint32_t looperClearSentMs = 0;
+    uint32_t looperClearLandedMs = 0;
+    uint32_t looperClearMovedMs = 0;
     uint32_t ignoreShowboxUntil = 0;
     // While fire("showbox", entity, value) evaluates conditions, showbox
     // leaves for that same entity must use the event value — the live store
@@ -185,7 +204,6 @@ private:
     uint32_t lastLooperButtonMs = 0;
     void noteOwnGainWrite(int id, float value);
     bool looperWireBusy() const;
-    bool looperPressIgnore() const;
     void* jacks[8] = {};
     bool dirty = false;
     portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;

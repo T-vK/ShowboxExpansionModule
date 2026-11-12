@@ -264,7 +264,8 @@ static bool mdnsIgmpJoined = false;
 static uint32_t lastIgmpReportMs = 0;
 
 static void staJoinMdnsGroup() {
-    IPAddress ip = WiFi.localIP();
+    // SoftAP-only gig: lanIP() is 192.168.4.1. STA-first when dual-homed.
+    IPAddress ip = lanIP();
     ip4_addr_t ifaddr = ip4From(ip);
     if (ifaddr.addr == 0) {
         return;
@@ -386,9 +387,25 @@ static void lanStaPhy() {
     staProto = proto;
 }
 
+namespace {
+volatile bool sPairingAir = false;
+
+void applyCoexPreference() {
+    // Balance still delivered one ShowboxMod advert about every 2 s with
+    // AIRSTEP linked, so a 2 s scan missed the pairing window. Bluetooth
+    // preference is only held while that window is advertising.
+    esp_coex_preference_set(sPairingAir ? ESP_COEX_PREFER_BT : ESP_COEX_PREFER_WIFI);
+}
+}
+
+void lanSetPairingAir(bool on) {
+    sPairingAir = on;
+    applyCoexPreference();
+}
+
 void lanPreferWifiAirtime() {
     lanStaPhy();
-    esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+    applyCoexPreference();
 }
 
 void lanPreferWifiWithBle() {
@@ -400,7 +417,7 @@ void lanPreferWifiWithBle() {
     // matching that listen interval; with BT coex the STA honours it even
     // under WIFI_PS_NONE. Keep the STA listening every beacon.
     esp_wifi_set_inactive_time(WIFI_IF_STA, 1);
-    esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+    applyCoexPreference();
     bleModemSleep = false;
 }
 
@@ -1010,6 +1027,11 @@ void lanSetCaptivePortal(CaptivePortal* portal) {
 
 // SoftAP teardown belongs to CaptivePortal (clears apUp latch + DNS).
 static void lanDropSoftApForSta(uint8_t kind) {
+    // SoftAP-only gig mode: CaptivePortal::dropApForSta is a no-op; skip the
+    // bare WiFi.softAPdisconnect fallback too.
+    if (sPortal != nullptr && sPortal->netMode() == NetMode::SoftAp) {
+        return;
+    }
     if (sPortal != nullptr) {
         sPortal->dropApForSta(kind);
         return;
@@ -1500,7 +1522,7 @@ void lanKeepWifi(const FrontPanel& panel) {
         misses = 0;
         WiFi.setSleep(false);
         esp_wifi_set_ps(WIFI_PS_NONE);
-        esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+        applyCoexPreference();
         static int upLogs = 0;
         if (wifiWasDown) {
             wifiWasDown = false;

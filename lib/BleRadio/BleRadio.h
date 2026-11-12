@@ -42,9 +42,12 @@ public:
     // Advertising is a radio duty cycle. Keep it off once a host is linked
     // unless Connections opens a pairing window.
     void setAdvertiseAllowed(bool allowed);
+    // Pairing window: 100 ms adverts. Coex stretches them; 400 ms still
+    // missed a 2 s scan. Background ads stay at kAdvItvlMin.
+    void setPairingBoost(bool on);
     bool advertiseAllowed() const { return adsAllowed; }
-    bool advertising() const { return advertised; }
-    uint16_t advInterval() const { return kAdvItvlMin; }
+    bool advertising() const;
+    uint16_t advInterval() const { return appliedItvlMin; }
     static constexpr uint16_t kAdvItvlMin = 0x1000;  // 2560 ms. 1280 ms ads plus AIRSTEP still killed ARP.
     static constexpr uint16_t kAdvItvlMax = 0x1400;  // 3200 ms. Still found in an 8s scan.
     // 200 ms. AIRSTEP floors here and rejects slower offers. Treating 200 ms as
@@ -99,7 +102,9 @@ private:
     bool advertisedHid = false;
     volatile bool restartAdvertising = false;
     bool advIntervalApplied = false;
+    uint16_t appliedItvlMin = 0;
     bool pedalShare = false;
+    bool pairingBoost = false;
     uint32_t lastAdvStartMs = 0;
     uint32_t lastIncomingMs = 0;
     volatile int liveLinks = 0;

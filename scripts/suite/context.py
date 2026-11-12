@@ -466,8 +466,15 @@ class Suite:
             raise CaseFail(f"SoftAP suite: join {SOFTAP_IP} / ShowboxMod failed: {how}")
         self.info(f"SoftAP joined: {how}")
 
-        self.ip = self.args.ip or SOFTAP_IP
+        # After join, traffic must hit the SoftAP address — never leftover STA IP.
+        want = getattr(self.args, "ip", None) or SOFTAP_IP
+        if want.startswith("192.168.4.") or want == SOFTAP_IP:
+            self.ip = want
+        else:
+            self.info(f"SoftAP: ignoring non-AP --ip {want}; using {SOFTAP_IP}")
+            self.ip = SOFTAP_IP
         self.host = self.args.host or HOST
+        self.args.ip = self.ip
 
     def start(self) -> None:
         import check_features as cf
@@ -483,17 +490,22 @@ class Suite:
         mdns_fast.IP = self.ip
         mdns_fast.HOST = self.host
         self.session = cf.Session(self.ip, self.host, STALE_MS)
-        end = time.monotonic() + 90.0
+        end = time.monotonic() + 8.0
+        linked = False
         while time.monotonic() < end:
             if ping_ok(self.ip):
-                code, body = http_get(f"http://{self.ip}/api/v1/showbox/link", timeout=3.0)
+                code, body = http_get(f"http://{self.ip}/api/v1/showbox/link", timeout=2.0)
                 if code == 200 and body:
                     try:
                         data = json.loads(body.decode("utf-8", "replace"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         data = {}
                     if isinstance(data, dict) and data.get("ok") is True:
+                        linked = True
                         break
+            time.sleep(0.4)
+        if not linked:
+            raise CaseFail(f"showbox link not up at {self.ip} within 8s")
         self.ws.start()
         self.console.pull()
 
@@ -543,13 +555,25 @@ class Suite:
         self._cc_gen["INPUT2_GAIN"] = self.ws.gen("INPUT2_GAIN")
         self.last_cc_at = time.monotonic()
 
+    def _ws_live(self) -> bool:
+        ws = self.ws
+        thread = getattr(ws, "_thread", None)
+        return (
+            thread is not None
+            and thread.is_alive()
+            and not ws._stop.is_set()
+        )
+
     def _entity_now(self, name: str) -> Optional[float]:
-        val = self.ws.entities.get(name)
-        if val is not None:
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                pass
+        # A closed socket keeps the last value. Trusting it makes every
+        # later press wait out the timeout, then sample HTTP once.
+        if self._ws_live():
+            val = self.ws.entities.get(name)
+            if val is not None:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    pass
         try:
             return entity(name)
         except Exception:
@@ -762,8 +786,13 @@ class Suite:
         raise CaseFail(last)
 
     def send_cc(self, number: int, value: int = 127) -> None:
-        """Real MIDI: prefer an open RTP session, else BLE."""
+        """Send on the one session this case opened. Do not switch transports."""
+        if self.rtp is not None and self.ble is not None and self.ble.connected:
+            raise CaseFail("both AppleMIDI and BLE MIDI are open")
         if self.rtp is not None:
             self.rtp_cc(number, value)
             return
-        self.ble_cc(number, value)
+        if self.ble is not None and self.ble.connected:
+            self.ble_cc(number, value)
+            return
+        raise CaseFail("no MIDI session open")

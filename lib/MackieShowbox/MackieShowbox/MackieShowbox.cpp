@@ -382,9 +382,9 @@ void MackieShowbox::forceEntityResync() {
 }
 
 void MackieShowbox::sendLooperButtonAction(looper_button_action action, bool withContext) {
-    // Cycle is DOWN/UP (tapLooper). Stop is DOUBLE_PRESS alone — wrapping it
-    // with DOWN/UP first cycles play↔overdub, then the mixer ignores the
-    // double. Clear from PLAY/OVERDUB is DOWN+LONG+UP in one burst.
+    // Cycle is DOWN/UP (tapLooper). Stop is DOUBLE_PRESS alone. Bare
+    // LONG_PRESS clears RECORD. PLAY and OVERDUB clear on DOWN+LONG+UP
+    // (withContext). STOP has no single clear.
     uint8_t buf[32];
     size_t n = 0;
     const uint8_t down[8] = { 0xBE, 0xEF, 0x01, 0x17, 0x00, static_cast<uint8_t>(looper_button_action::DOWN), 0xEF, 0xBE };
@@ -421,6 +421,42 @@ void MackieShowbox::tapLooper(uint8_t times) {
         n += 8;
     }
     interceptor.sendPacket(buf, n, TO_BASE);
+}
+
+void MackieShowbox::armLooperGesture() {
+    looperArmFrom = entityValues[LOOPER_STATE].uint8Value;
+    looperArmMs = millis();
+    looperHaveLat = 0;
+    looperArmed = 1;
+}
+
+void MackieShowbox::noteLooperWire(uint8_t state) {
+    const uint32_t now = millis();
+    looperWireMs = now;
+    looperWireState = state;
+    looperWireSeq = looperWireSeq + 1;
+    if (looperArmed && state != looperArmFrom) {
+        looperLatMs = now - looperArmMs;
+        looperLatFrom = looperArmFrom;
+        looperLatTo = state;
+        looperLatSeq = looperWireSeq;
+        looperHaveLat = 1;
+        looperArmed = 0;
+    }
+}
+
+MackieShowbox::LooperWire MackieShowbox::looperWire() const {
+    LooperWire w = {};
+    w.state = looperWireState;
+    w.seq = looperWireSeq;
+    w.ageMs = looperWireSeq == 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(millis() - looperWireMs);
+    w.armed = looperArmed;
+    w.haveLat = looperHaveLat;
+    w.latMs = looperLatMs;
+    w.latFrom = looperLatFrom;
+    w.latTo = looperLatTo;
+    w.latSeq = looperLatSeq;
+    return w;
 }
 
 void MackieShowbox::noteLooperOutgoing() {
@@ -895,6 +931,10 @@ void MackieShowbox::waitQuiet(uint32_t maxMs) const {
     }
 }
 
+void MackieShowbox::holdQuiet(uint32_t ms) {
+    interceptor.holdQuiet(ms);
+}
+
 void MackieShowbox::wireUnplug(uint32_t ms) {
     if (!uartStarted) {
         return;
@@ -1056,6 +1096,13 @@ UARTInterceptor::PacketHandlerResult MackieShowbox::handlePacket(uint8_t* raw_pa
                 char heard[8];
                 snprintf(heard, sizeof(heard), "%u", value);
                 entityListener(entityId, heard);
+            }
+            if (entityId == LOOPER_STATE && !fromMixer) {
+                // The listener may have dropped a stale play/overdub copy
+                // that arrived after a clear and put DELETE back. Note that
+                // value, or the wire sample stays on the copy and a clear
+                // looks like it never left play.
+                noteLooperWire(entityValues[LOOPER_STATE].uint8Value);
             }
         } else if (entityType == FLOAT) {
             if (fromMixer && analogEntity(entityId)) {
@@ -1488,7 +1535,7 @@ void MackieShowbox::tick() {
     // heartbeats within a second of module boot, so "silent 20 s after
     // boot" is also a wedge (a panic reboot cuts the UART mid-transaction
     // without draining), not just "silent after having been heard".
-    if (uartStarted) {
+    if (uartStarted && !interceptor.quietActive()) {
         if (uartUpSinceMs == 0) {
             uartUpSinceMs = millis();
         }

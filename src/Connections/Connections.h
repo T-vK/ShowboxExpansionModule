@@ -181,7 +181,9 @@ private:
     uint32_t pairingUntilMs = 0;
     // Set from the NimBLE host callback. GAP start/stop must run on the loop.
     volatile bool pendingRadioPolicy = false;
-    bool statusForce = false;
+    // Written from the NimBLE host task in onIncoming and read on the
+    // loop. A plain bool can stay stale in a register across that hop.
+    volatile bool statusForce = false;
     int hostSlots = 1;
     int periSlots = 2;
     bool rebootPending = false;

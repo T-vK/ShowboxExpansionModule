@@ -800,6 +800,39 @@ void RestApiRouter::setup() {
         }
         request->send(200, "application/json", "{\"ok\":true}");
     });
+    // Direct gestures. tapLooper / sendLooperButtonAction only. The latency
+    // is the base's LOOPER_STATE packet, stamped in the UART handler.
+    _server->on("/api/v1/showbox/looper", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        const MackieShowbox::LooperWire w = _showbox->looperWire();
+        const uint32_t baseAge = _showbox->baseAgeMs();
+        char body[240];
+        snprintf(body, sizeof(body),
+            "{\"state\":%u,\"seq\":%u,\"ageMs\":%u,\"armed\":%u,\"haveLat\":%u,\"latMs\":%u,\"from\":%u,\"to\":%u,\"latSeq\":%u,\"baseAgeMs\":%u}",
+            w.state, (unsigned)w.seq, (unsigned)w.ageMs, w.armed, w.haveLat,
+            (unsigned)w.latMs, w.latFrom, w.latTo, (unsigned)w.latSeq, (unsigned)baseAge);
+        request->send(200, "application/json", body);
+    });
+    _server->on("/api/v1/showbox/action/looper", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        String gesture;
+        if (!requireParam(request, "gesture", gesture)) {
+            return;
+        }
+        gesture.toLowerCase();
+        _showbox->armLooperGesture();
+        if (gesture == "tap") {
+            _showbox->tapLooper(1);
+        } else if (gesture == "double") {
+            _showbox->sendLooperButtonAction(looper_button_action::DOUBLE_PRESS, false);
+        } else if (gesture == "long") {
+            _showbox->sendLooperButtonAction(looper_button_action::LONG_PRESS, false);
+        } else if (gesture == "longctx") {
+            _showbox->sendLooperButtonAction(looper_button_action::LONG_PRESS, true);
+        } else {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"gesture\"}");
+            return;
+        }
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
     _server->on("/api/v1/showbox/action/looper_button", HTTP_POST, [this](AsyncWebServerRequest* request) {
         JsonDocument doc;
         String actionName;
@@ -866,6 +899,15 @@ void RestApiRouter::setup() {
         }
         if (ms < 500) {
             ms = 500;
+        }
+        const AsyncWebParameter* quiet = findParam(request, "quiet");
+        if (quiet != nullptr) {
+            uint32_t qms = static_cast<uint32_t>(quiet->value().toInt());
+            if (qms < 1000) qms = 1000;
+            if (qms > 60000) qms = 60000;
+            _showbox->holdQuiet(qms);
+            request->send(200, "application/json", "{\"ok\":true,\"quiet\":" + String((unsigned)qms) + "}");
+            return;
         }
         if (ms > 20000) {
             ms = 20000;
